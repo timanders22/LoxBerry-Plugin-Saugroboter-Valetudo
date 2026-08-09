@@ -13,6 +13,15 @@ PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
 
+## Was 1.0.5 behebt
+
+Nur eine Richtigstellung, kein Code. In 1.0.4 stand, der 404 beim Abruf der
+`prerelease.cfg` komme daher, dass `raw.githubusercontent.com` einer
+Umbenennung des Repositories nicht folge. Das ist **falsch** — es folgt ihr;
+nachgeprüft am alten Repo-Namen. Die Datei existierte damals schlicht noch
+nicht im Repository, sie kam erst mit 1.0.4 dazu. Die Adressen bleiben auf dem
+heutigen Namen, aber aus dem richtigen Grund.
+
 ## Was 1.0.4 behebt
 
 **`cron.php` liegt jetzt unter `bin/` statt unter `webfrontend/html/`.**
@@ -55,12 +64,15 @@ Der feste Name greift jetzt nur noch dort, wo der ermittelte nachweislich kein
 Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heißt er `html`
 bzw. `htmlauth`.
 
-**`PRERELEASECFG` hätte ins Leere gezeigt.** In 1.0.2 war der Eintrag leer,
-obwohl Auto-Update eingeschaltet ist; 1.0.3 füllte ihn — aber mit dem **alten**
-Repo-Namen (ohne `-Valetudo`). `github.com` leitet nach einer Umbenennung
-weiter, `raw.githubusercontent.com` aber nicht: dort kam schlicht
-`404: Not Found` zurück. Nachgeprüft, bevor es jemandem auffallen konnte;
-jetzt in `plugin.cfg` und in `prerelease.cfg` selbst korrigiert.
+**`PRERELEASECFG` zeigte ins Leere.** In 1.0.2 war der Eintrag leer, obwohl
+Auto-Update eingeschaltet ist; 1.0.3 füllte ihn — aber mit dem **alten**
+Repo-Namen (ohne `-Valetudo`). Der Abruf ergab `404: Not Found`. Grund war
+allerdings nicht der alte Name: `prerelease.cfg` existierte im Repository
+schlicht noch gar nicht, sie kam erst mit dieser Fassung dazu. GitHub leitet
+nach einer Umbenennung weiter, `raw.githubusercontent.com` ebenso — das ist
+nachgeprüft. Die Adressen stehen jetzt trotzdem auf dem heutigen Namen: Auf
+ein Weiterleitungsziel sollte sich ein Auto-Update nicht stützen, es
+verschwindet in dem Augenblick, in dem jemand den alten Namen neu vergibt.
 
 **An den Loxone-Adressen ändert sich nichts** — außer beim Test-Push, der nun
 `&token=` braucht. `robo.php` bleibt, wo es ist, mit denselben Parametern.
