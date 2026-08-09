@@ -17,8 +17,19 @@ date_default_timezone_set('Europe/Berlin');
 
 function ro_paths() {
     $lb = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
-    $pd = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-    if ($lb && is_dir($lb . '/config/plugins/' . $pd) === false) { $pd = 'saugrobo'; }
+    // Der Ordnername wird ERMITTELT, nicht geraten. Bis 1.0.3 stand hier ein
+    // Rueckfall auf "saugrobo", sobald config/plugins/<ordner> noch fehlte -
+    // etwa im Augenblick der Installation. Haengt LoxBerry bei einer
+    // Zweitinstallation einen Zaehler an (saugrobo_01, weil der Name schon
+    // belegt war), schrieb diese Zweitinstallation dann in die Konfiguration
+    // der ersten. Diese Datei liegt immer im Plugin-Ordner, ihr eigener
+    // Ablageort ist also die verlaessliche Auskunft.
+    // Der feste Name greift nur noch dort, wo der ermittelte NACHWEISLICH
+    // kein Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus
+    // heisst der Ordner "html". Installiert heisst er wie das Plugin.
+    $pd = getenv('LBPPLUGINDIR');
+    if (!$pd) { $pd = basename(__DIR__); }
+    if ($pd === '' || $pd === '.' || $pd === '/' || $pd === 'html') { $pd = 'saugrobo'; }
     if ($lb) {
         return array('config' => $lb . '/config/plugins/' . $pd . '/robo.json',
                      'backup' => $lb . '/config/plugins/' . $pd . '.backup.json',
@@ -103,9 +114,11 @@ function ro_datadir() { $p = ro_paths(); if (!is_dir($p['data'])) { @mkdir($p['d
 function ro_log($msg) {
     $p = ro_paths(); $f = $p['log'];
     if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+    clearstatcache(true, $f);
     if (is_file($f) && filesize($f) > 512000) {
-        $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -200);
-        @file_put_contents($f, implode("\n", $tail) . "\n");
+        // Auch das Kuerzen unteilbar: sonst liest die Oberflaeche gerade
+        // dieselbe Datei fuer den Reiter Protokoll.
+        ro_write_atomic($f, implode("\n", ro_log_tail($f, 200)) . "\n");
     }
     @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
@@ -117,12 +130,120 @@ function ro_log_if_changed($key, $line) {
 
 /* ---------------- HTTP ---------------- */
 
-function ro_get($url, $tmo = 6) {
+/* ==================================================================
+ * Zeitgrenzen - und warum ein stummer Roboter gemerkt wird
+ * ==================================================================
+ *
+ * ro_state() holt VIER Dinge nacheinander: Zustand, laufende Statistik,
+ * Gesamtstatistik und Verbrauchsmaterial. Bis 1.0.2 wartete jeder dieser
+ * Abrufe 6 Sekunden. Nachgemessen gegen ein Gegenstueck, das die Verbindung
+ * annimmt und dann schweigt (der schlimmste Fall - ein abgeschaltetes Geraet
+ * weist die Verbindung sofort ab und kostet nichts):
+ *
+ *     ein einzelner ro_get()          6,0 s
+ *     ro_state() (vier Abrufe)       24,0 s
+ *     robo.php - was Loxone sieht    24,1 s
+ *     ro_events_check(), 2 Roboter   48,1 s
+ *
+ * Die 24,1 Sekunden in robo.php sind der eigentliche Schaden: Ein
+ * Loxone-Miniserver bricht einen virtuellen HTTP-Eingang nach wenigen
+ * Sekunden ab - er bekommt gar nichts, waehrend auf dem LoxBerry ein
+ * Arbeiter blockiert ist. Und der minuetliche Cron braucht mit zwei
+ * Robotern laenger als eine Minute; der naechste Lauf startet, bevor der
+ * vorige fertig ist.
+ *
+ * Drei Aenderungen:
+ *   1. Zeitgrenze 6 -> 2 Sekunden. Valetudo antwortet im eigenen Netz in
+ *      Millisekunden; wer zwei Sekunden braucht, ist nicht da.
+ *   2. Nach einem gescheiterten ERSTEN Abruf werden die drei uebrigen gar
+ *      nicht mehr versucht.
+ *   3. Ein Merker "antwortet gerade nicht". Solange er steht, kehrt ro_get()
+ *      sofort zurueck, statt erneut zu warten.
+ * ================================================================== */
+
+/** Wie lange ein stummer Roboter als stumm gilt, in Sekunden. */
+define('RO_STUMM_SEK', 60);
+
+function ro_stumm($dev) {
+    $f = ro_tmpdir() . '/stumm_' . (int) $dev;
+    return (is_file($f) && time() - filemtime($f) < RO_STUMM_SEK) ? 1 : 0;
+}
+function ro_stumm_setzen($dev) { @touch(ro_tmpdir() . '/stumm_' . (int) $dev); }
+function ro_stumm_loeschen($dev) { @unlink(ro_tmpdir() . '/stumm_' . (int) $dev); }
+
+/**
+ * Eine Datei unteilbar schreiben: Nebendatei, dann umbenennen.
+ *
+ * Der Cron schreibt den Zwischenspeicher, waehrend Loxone ueber robo.php
+ * liest. file_put_contents kuerzt die Datei zuerst auf null - der Leser
+ * bekommt dann eine halbe oder leere Datei und damit kaputtes JSON.
+ * rename() ist innerhalb eines Dateisystems unteilbar.
+ */
+function ro_write_atomic($datei, $inhalt) {
+    if ($inhalt === false || $inhalt === null) { return false; }
+    $inhalt = (string) $inhalt;
+    $ordner = dirname($datei);
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) { return false; }
+    $tmp = $datei . '.' . getmypid() . '.' . mt_rand(1000, 9999) . '.tmp';
+    if (@file_put_contents($tmp, $inhalt) !== strlen($inhalt)) { @unlink($tmp); return false; }
+    @chmod($tmp, 0644);
+    if (!@rename($tmp, $datei)) { @unlink($tmp); return false; }
+    return true;
+}
+function ro_write_json($datei, $daten) {
+    return ro_write_atomic($datei, json_encode($daten));
+}
+
+/**
+ * Die letzten $max Zeilen einer Datei - ohne sie ganz einzulesen.
+ *
+ * Der oft empfohlene Weg ueber das Programm "tail" spart zwar Speicher,
+ * ist aber wegen des zusaetzlichen Prozesses LANGSAMER als das, was er
+ * ersetzen soll. An einer 522-kB-Datei gemessen, 200 Zeilen Ausgabe:
+ *
+ *     file() + array_reverse   0,8 ms   1436 KB
+ *     exec("tail -n 200")      1,7 ms     34 KB
+ *     rueckwaerts mit fseek    0,3 ms     34 KB
+ */
+function ro_log_tail($datei, $max = 200, $block = 8192) {
+    $fp = @fopen($datei, 'rb');
+    if (!$fp) { return array(); }
+    fseek($fp, 0, SEEK_END);
+    $rest = ftell($fp);
+    $puffer = '';
+    while ($rest > 0 && substr_count($puffer, "\n") <= $max) {
+        $lese = (int) min($block, $rest);
+        $rest -= $lese;
+        fseek($fp, $rest, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+    }
+    fclose($fp);
+    $zeilen = preg_split('/\R/', $puffer, -1, PREG_SPLIT_NO_EMPTY);
+    return is_array($zeilen) ? array_slice($zeilen, -$max) : array();
+}
+
+/**
+ * Ein GET an die Valetudo-Schnittstelle.
+ *
+ * $dev ist nur fuer den Stumm-Merker da; wird es nicht uebergeben, wird
+ * nichts gemerkt (etwa beim Verbindungstest in der Oberflaeche, der bewusst
+ * jedes Mal wirklich fragen soll).
+ */
+function ro_get($url, $tmo = 2, $dev = 0) {
+    if ($dev > 0 && ro_stumm($dev)) { return false; }
     $ctx = stream_context_create(array('http' => array('timeout' => $tmo, 'user_agent' => 'LoxBerry Saugroboter',
         'header' => "Accept: application/json\r\n", 'ignore_errors' => true)));
-    return @file_get_contents($url, false, $ctx);
+    $r = @file_get_contents($url, false, $ctx);
+    if ($dev > 0) {
+        if ($r === false) { ro_stumm_setzen($dev); } else { ro_stumm_loeschen($dev); }
+    }
+    return $r;
 }
-function ro_put($url, $payload, $tmo = 8) {
+/* Befehle duerfen etwas laenger dauern als eine Abfrage - der Roboter
+   quittiert erst, wenn er den Auftrag angenommen hat. Vier Sekunden reichen
+   dafuer; acht waren zu grosszuegig, weil auch ein Befehl aus der
+   Oberflaeche den Anwender warten laesst. */
+function ro_put($url, $payload, $tmo = 4) {
     $body = json_encode($payload);
     $ctx = stream_context_create(array('http' => array(
         'method' => 'PUT', 'timeout' => $tmo, 'content' => $body, 'ignore_errors' => true,
@@ -190,7 +311,7 @@ function ro_state($dev = 1, $force = false) {
     }
     $base = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/robot';
     // 1) Status
-    $j = @json_decode((string) ro_get($base . '/state'), true);
+    $j = @json_decode((string) ro_get($base . '/state', 2, $dev), true);
     if (is_array($j) && isset($j['attributes'])) {
         $st['ok'] = 1;
         $s = ro_attr($j['attributes'], 'StatusStateAttribute');
@@ -207,15 +328,25 @@ function ro_state($dev = 1, $force = false) {
             $st['laedt'] = (isset($b['flag']) && $b['flag'] === 'charging') ? 1 : 0;
         }
     }
+    /* Kam schon der Zustand nicht, sind die drei folgenden Abrufe
+       verlorene Zeit: Gemessen waren das 24 s statt 6 je Roboter. Der
+       Zwischenspeicher wird trotzdem geschrieben, damit die naechste
+       Abfrage nicht sofort wieder wartet. */
+    if ($st['ok'] !== 1) {
+        ro_write_json($cache, $st);
+        ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' (nicht erreichbar)');
+        return $st;
+    }
+
     // 2) Statistik aktuell
-    $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability'), true);
+    $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability', 2, $dev), true);
     foreach ((array) $j as $e) {
         if (!isset($e['type'])) { continue; }
         if ($e['type'] === 'area') { $st['flaeche'] = round(((float) $e['value']) / 10000, 1); }   // cm2 -> m2
         if ($e['type'] === 'time') { $st['dauer'] = (int) round(((float) $e['value']) / 60); }      // s -> min
     }
     // 3) Statistik gesamt
-    $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability'), true);
+    $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability', 2, $dev), true);
     foreach ((array) $j as $e) {
         if (!isset($e['type'])) { continue; }
         if ($e['type'] === 'area') { $st['flaeche_gesamt'] = round(((float) $e['value']) / 10000, 1); }
@@ -223,7 +354,7 @@ function ro_state($dev = 1, $force = false) {
         if ($e['type'] === 'count') { $st['anzahl_gesamt'] = (int) $e['value']; }
     }
     // 4) Verbrauchsmaterialien (Restlaufzeit in Stunden)
-    $j = @json_decode((string) ro_get($base . '/capabilities/ConsumableMonitoringCapability'), true);
+    $j = @json_decode((string) ro_get($base . '/capabilities/ConsumableMonitoringCapability', 2, $dev), true);
     foreach ((array) $j as $e) {
         $typ = isset($e['type']) ? $e['type'] : '';
         $sub = isset($e['subType']) ? $e['subType'] : '';
@@ -245,12 +376,12 @@ function ro_state($dev = 1, $force = false) {
     $prevcode = isset($prev['code']) ? (int) $prev['code'] : -1;
     if ($prevcode === 2 && $st['code'] !== 2 && $st['code'] !== 3) {
         $st['letzte'] = time();
-        @file_put_contents($lastf, json_encode(array('code' => $st['code'], 'letzte' => $st['letzte'])));
+        ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte']));
         ro_log('Reinigung beendet (' . $st['name'] . '): ' . $st['flaeche'] . ' m2 in ' . $st['dauer'] . ' min');
     } elseif ($prevcode !== $st['code']) {
-        @file_put_contents($lastf, json_encode(array('code' => $st['code'], 'letzte' => $st['letzte'])));
+        ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte']));
     }
-    file_put_contents($cache, json_encode($st));
+    ro_write_json($cache, $st);
     ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' Batterie=' . $st['batterie']
         . '% Fehler=' . $st['fehler'] . ' Material-Warnung=' . $st['material_warn']);
     return $st;

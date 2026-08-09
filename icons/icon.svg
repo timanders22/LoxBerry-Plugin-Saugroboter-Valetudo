@@ -1,10 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#6dac20"/>
-  <circle cx="256" cy="262" r="132" fill="#ffffff"/>
-  <circle cx="256" cy="262" r="132" fill="none" stroke="#4f8016" stroke-width="10"/>
-  <rect x="150" y="140" width="212" height="26" rx="13" fill="#ffffff"/>
-  <circle cx="200" cy="205" r="20" fill="#6dac20"/>
-  <circle cx="256" cy="300" r="52" fill="#cfe3b4"/>
-  <circle cx="256" cy="300" r="22" fill="#6dac20"/>
-  <circle cx="330" cy="205" r="12" fill="#e65100"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Icon: Round Robot Vacuum Cleaner -->
+    <!-- Outer Robot Chassis Body -->
+    <circle cx="256" cy="180" r="90" fill="#ffffff" />
+    <!-- Outer Bumper Accent Cutout / Ring -->
+    <circle cx="256" cy="180" r="76" fill="#6dac20" />
+
+    <!-- LIDAR / Laser Navigation Turret (Top Puck) -->
+    <circle cx="256" cy="150" r="28" fill="#ffffff" />
+    <circle cx="256" cy="150" r="18" fill="#6dac20" />
+    <!-- Laser Lens Dot -->
+    <circle cx="256" cy="150" r="6" fill="#ffffff" />
+
+    <!-- Front Bumper Arc Cutout -->
+    <path d="M 180 180 A 76 76 0 0 1 332 180" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" />
+
+    <!-- Control Buttons on Robot Hood -->
+    <circle cx="236" cy="216" r="6" fill="#ffffff" />
+    <circle cx="256" cy="222" r="8" fill="#ffffff" />
+    <circle cx="276" cy="216" r="6" fill="#ffffff" />
+
+    <!-- Flanking Left Symbol: Dust / Cleaning Motion Waves -->
+    <g transform="translate(112, 180)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -8 -6 Q 0 -12 8 -6 M -12 0 Q 0 -8 12 0 M -8 6 Q 0 0 8 6" fill="none" stroke="#6dac20" stroke-width="3" stroke-linecap="round" />
+    </g>
+
+    <!-- Flanking Right Symbol: Wi-Fi / Connectivity -->
+    <g transform="translate(400, 180)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -12 -6 A 16 16 0 0 1 12 -6 M -8 0 A 10 10 0 0 1 8 0 M -4 6 A 4 4 0 0 1 4 6" fill="none" stroke="#6dac20" stroke-width="3" stroke-linecap="round" />
+      <circle cx="0" cy="10" r="2" fill="#6dac20" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Saugroboter Valetudo</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

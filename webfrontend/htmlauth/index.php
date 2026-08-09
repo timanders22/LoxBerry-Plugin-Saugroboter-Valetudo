@@ -13,10 +13,18 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
 $rb_lbhome = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
-$rb_plugin = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-if ($rb_lbhome && is_dir($rb_lbhome . '/config/plugins/' . $rb_plugin) === false) {
-    $rb_plugin = basename(dirname(__DIR__));
-    if (is_dir($rb_lbhome . '/config/plugins/' . $rb_plugin) === false) { $rb_plugin = 'saugrobo'; }
+// Ermitteln, nicht raten - siehe die ausfuehrliche Begruendung in
+// ro_paths() in robo_lib.php: der Rueckfall auf einen festen Namen liesse
+// eine Zweitinstallation (saugrobo_01) in die Konfiguration der ersten
+// greifen. Der mittlere Kandidat der alten Fassung war ohnehin wirkungslos:
+// basename(dirname(__DIR__)) ergibt "plugins", nie einen Plugin-Ordner.
+// Der feste Name greift nur noch dort, wo der ermittelte NACHWEISLICH kein
+// Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst der
+// Ordner "htmlauth". Installiert heisst er immer wie das Plugin.
+$rb_plugin = getenv('LBPPLUGINDIR');
+if (!$rb_plugin) { $rb_plugin = basename(__DIR__); }
+if ($rb_plugin === '' || $rb_plugin === '.' || $rb_plugin === '/' || $rb_plugin === 'htmlauth') {
+    $rb_plugin = 'saugrobo';
 }
 if ($rb_lbhome) {
     $rb_sdk = $rb_lbhome . '/libs/phplib/loxberry_system.php';
@@ -42,7 +50,13 @@ if ((!is_file($rb_cfgfile) || trim((string) @file_get_contents($rb_cfgfile)) ===
 }
 
 $rb_saved = false; $rb_err = ''; $rb_note = '';
-$rb_tab = preg_match('/^tab-(settings|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
+/* Aktiver Reiter: aus dem abgesendeten Formular (activetab) oder aus der
+   Adresse (?form=...). Letzteres brauchen die Reiter, seit sie echte
+   Verweise sind. Die Positivliste MUSS jeden Reiter enthalten. */
+$rb_muster = '/^tab-(settings|loxone|test|log)$/';
+$rb_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
+    : (isset($_GET['form']) ? 'tab-' . (string) $_GET['form'] : '');
+$rb_tab = preg_match($rb_muster, $rb_wunsch) ? $rb_wunsch : 'tab-settings';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     @mkdir(dirname($rb_logfile), 0775, true);
@@ -142,7 +156,9 @@ $rb_states = array();
 foreach ($rb_robots as $rb_k => $rb_r) { $rb_states[$rb_k] = ro_state($rb_k); }
 $rb_loglines = array();
 if (is_file($rb_logfile)) {
-    $rb_loglines = array_slice(array_reverse(file($rb_logfile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()), 0, 300);
+    // ro_log_tail() liest nur das Ende der Datei - siehe die Messwerte
+    // im Kommentar in robo_lib.php.
+    $rb_loglines = array_reverse(ro_log_tail($rb_logfile, 300));
 }
 
 function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
@@ -171,7 +187,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; text-decoration: none !important; display: inline-block; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
 .sm-pane { display: none; padding-top: 4px; }
 .sm-pane.sm-active { display: block; }
@@ -224,15 +240,34 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 </div>
 <?php } ?>
 
+<?php
+/*
+ * Reiter als echte Verweise, sm-active vom SERVER.
+ *
+ * Bis 1.0.2 standen hier <div class="sm-tab"> ohne Verweis, und sm-active
+ * vergab allein das JavaScript am Seitenende. Da .sm-pane auf display:none
+ * steht, war die Seite ohne JavaScript vollstaendig leer - und die Reiter
+ * liessen sich nicht einmal anklicken, weil ein <div> kein Verweis ist.
+ *
+ * Diese Liste, die Positivliste in $rb_muster und die id der Flaechen
+ * muessen deckungsgleich bleiben - alle drei.
+ */
+$rb_reiter = array(
+    'tab-settings' => ro_t('REITER.EINSTELLUNGEN'),
+    'tab-loxone'   => ro_t('REITER.LOXONE'),
+    'tab-test'     => ro_t('REITER.TEST'),
+    'tab-log'      => ro_t('REITER.LOG'),
+);
+?>
 <div class="sm-tabs">
-    <div class="sm-tab" data-pane="tab-settings"><?php echo ro_t('REITER.EINSTELLUNGEN'); ?></div>
-    <div class="sm-tab" data-pane="tab-loxone"><?php echo ro_t('REITER.LOXONE'); ?></div>
-    <div class="sm-tab" data-pane="tab-test"><?php echo ro_t('REITER.TEST'); ?></div>
-    <div class="sm-tab" data-pane="tab-log"><?php echo ro_t('REITER.LOG'); ?></div>
+<?php foreach ($rb_reiter as $rb_id => $rb_bez) { ?>
+    <a class="sm-tab<?php echo $rb_tab === $rb_id ? ' sm-active' : ''; ?>" data-pane="<?php echo htmlspecialchars($rb_id, ENT_QUOTES, 'UTF-8'); ?>"
+       href="index.php?form=<?php echo htmlspecialchars(substr($rb_id, 4), ENT_QUOTES, 'UTF-8'); ?>"><?php echo $rb_bez; ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= <?php echo ro_t('TEXT.EINSTELLUNG'); ?>en ================= -->
-<div class="sm-pane" id="tab-settings">
+<div class="sm-pane<?php echo $rb_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -246,7 +281,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 <tr>
 <td><?= $rb_i + 1 ?></td>
 <td><input data-role="none" type="text" name="r_name[]" value="<?= rb_e($rb_r['name']) ?>" placeholder="<?= $rb_i === 0 ? 'z. B. Saugroboter OG' : 'leer = ungenutzt' ?>"></td>
-<td><input data-role="none" type="text" name="r_ip[]" value="<?= rb_e($rb_r['ip']) ?>" placeholder="<?= $rb_i === 0 ? 'z. B. 192.168.1.36' : '' ?>"></td>
+<td><input data-role="none" type="text" name="r_ip[]" value="<?= rb_e($rb_r['ip']) ?>" placeholder="<?= $rb_i === 0 ? 'z. B. 192.168.1.10' : '' ?>"></td>
 <td><input data-role="none" type="number" name="r_port[]" value="<?= (int) $rb_r['port'] ?>" min="1" max="65535"></td>
 </tr>
 <?php } ?>
@@ -301,7 +336,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
     </div>
     <div>
         <label><?php echo ro_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= rb_e($rb_tts['ip']) ?>" placeholder="z. B. 192.168.1.50">
+        <input data-role="none" type="text" name="tts_ip" value="<?= rb_e($rb_tts['ip']) ?>" placeholder="z. B. 192.168.1.20">
     </div>
     <div>
         <label>Port</label>
@@ -352,7 +387,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 </div>
 
 <!-- ================= Einbindung in Loxone ================= -->
-<div class="sm-pane" id="tab-loxone">
+<div class="sm-pane<?php echo $rb_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo ro_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo ro_t('TEXT.DAS_PLUGIN_FASST_DIE_VIER_VALETUDO'); ?> <b><?php echo ro_t('TEXT.EINER'); ?></b> <?php echo ro_t('TEXT.ABFRAGE_ZUSAMMEN_STATT_BISHER_VIER'); ?> <b><?php echo ro_t('TEXT.STATUSZAHL'); ?></b>.</p>
 
@@ -450,7 +485,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 </div>
 
 <!-- ================= Test ================= -->
-<div class="sm-pane" id="tab-test">
+<div class="sm-pane<?php echo $rb_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2>Test</h2>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo ro_t('LEGENDE.LESEN'); ?></span>
@@ -471,7 +506,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 
 <h3 class="sm-h3"><?php echo ro_t('TEXT.LST_ETWAS_AUS'); ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?ptest=1" target="_blank"><?php echo ro_t('TEXT.TEST_PUSHNACHRICHT'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?ptest=1&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.TEST_PUSHNACHRICHT'); ?></a>
 <a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=locate&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.ROBOTER_PIEPSEN_LASSEN'); ?></a>
 <a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=home&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.ZUR_LADESTATION_2'); ?></a>
 <a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=stop&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.STOPP'); ?></a>
@@ -493,7 +528,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 </div>
 
 <!-- ================= <?php echo ro_t('TEXT.PROTOKOLL'); ?> ================= -->
-<div class="sm-pane" id="tab-log">
+<div class="sm-pane<?php echo $rb_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
 <h2>Protokoll</h2>
 <div class="sm-small" style="margin-bottom:8px;"><?php echo ro_t('TEXT.PROTOKOLLIERT_WERDEN_STATUSNDERUNG'); ?><br><?php echo ro_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= rb_e($rb_logfile) ?></span></div>
 <?php if ($rb_loglines) { ?>
@@ -523,7 +558,7 @@ function rbTtsMode() {
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
         document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
-    tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
+    tabs.forEach(function (t) { t.addEventListener('click', function (e) { e.preventDefault(); activate(t.dataset.pane); }); });
     activate(<?= json_encode($rb_tab) ?>);
     rbTtsMode();
 })();

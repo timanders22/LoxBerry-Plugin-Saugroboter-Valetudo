@@ -18,7 +18,8 @@
  *   Ohne passendes Token aus dem Reiter "Einbindung in Loxone" antwortet
  *   ?cmd= mit HTTP 403.
  *
- * Weitere Aufrufe: ?debug=1  ?json=1  ?refresh=1  ?ptest=1
+ * Weitere Aufrufe: ?debug=1  ?json=1  ?refresh=1
+ *   ?ptest=1&token=T   Test-Pushnachricht anstossen (seit 1.0.4 tokenpflichtig)
  */
 
 require_once __DIR__ . '/robo_lib.php';
@@ -36,11 +37,22 @@ if (isset($_GET['json'])) {
 
 header('Content-Type: text/plain; charset=utf-8');
 
+/**
+ * Tokenpruefung fuer alles, was etwas AUSLOEST.
+ *
+ * Die leere Sollseite wird VOR hash_equals abgefangen: hash_equals('', '')
+ * liefert true. Ist noch kein Token vergeben, waere der Endpunkt sonst
+ * gerade dann offen, wenn er es am wenigsten sein darf.
+ */
+function ro_token_ok() {
+    $cfg = ro_config();
+    $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    if ($soll === '') { return false; }
+    return hash_equals($soll, isset($_GET['token']) ? (string) $_GET['token'] : '');
+}
+
 if (isset($_GET['cmd'])) {
-    $ro_cfg_tok = ro_config();
-    $ro_soll = isset($ro_cfg_tok['aktionstoken']) ? (string) $ro_cfg_tok['aktionstoken'] : '';
-    $ro_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
-    if ($ro_soll === '' || !hash_equals($ro_soll, $ro_ist)) {
+    if (!ro_token_ok()) {
         http_response_code(403);
         echo "CMD;OK=0;ERR=TOKEN\n";
         exit;
@@ -51,6 +63,15 @@ if (isset($_GET['cmd'])) {
 }
 
 if (isset($_GET['ptest'])) {
+    // Seit 1.0.4 tokenpflichtig wie ?cmd=. Der Aufruf setzt PTEST=1 fuer
+    // fuenf Minuten; das Loxone-Programm schickt daraufhin eine echte
+    // Pushnachricht. Ohne Token konnte jedes Geraet im Netz dem Anwender
+    // Meldungen aufs Telefon schicken.
+    if (!ro_token_ok()) {
+        http_response_code(403);
+        echo "PTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
     @file_put_contents(ro_tmpdir() . '/ptest', '1');
     ro_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten)');
     echo "PTEST;OK=1;DAUER=300\n";

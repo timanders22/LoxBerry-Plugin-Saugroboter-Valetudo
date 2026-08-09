@@ -1,4 +1,5 @@
 #!/bin/sh
 # Saugroboter (Valetudo) - minutlicher Cron (Status, Meldungen, MQTT)
-# REPLACELBPHTMLDIR wird bei der Installation durch den Plugin-HTML-Pfad ersetzt.
-php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>&1
+# REPLACELBPBINDIR wird bei der Installation durch den Plugin-bin-Pfad ersetzt.
+# Seit 1.0.4 liegt cron.php dort und nicht mehr im unangemeldeten HTML-Ordner.
+php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
