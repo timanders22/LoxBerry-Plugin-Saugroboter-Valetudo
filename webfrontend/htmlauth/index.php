@@ -165,7 +165,7 @@ function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 function rb_h($h) { return $h < 0 ? '&ndash;' : (int) $h . ' h'; }
 
 $rb_frame = class_exists('LBWeb', false);
-if ($rb_frame) { LBWeb::lbheader('Saugroboter', 'https://wiki.loxberry.de/', ''); }
+if ($rb_frame) { LBWeb::lbheader('Saugroboter', 'https://wiki.loxberry.de/', 'help.html'); }
 $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 ?>
 <style>
@@ -441,7 +441,7 @@ $rb_reiter = array(
 <div class="sm-knopfreihe sm-b-aktion">
   <form method="post" action="index.php">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" type="submit" name="token_neu" value="1">Neues Token erzeugen</button>
+    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo ro_t('TEXT.K_TOKEN_NEU'); ?></button>
   </form>
 </div>
 <div class="sm-legende">

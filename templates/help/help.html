@@ -1,29 +1,29 @@
-<h2>Saugroboter (Valetudo)</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Bindet einen Saugroboter mit der cloudfreien Firmware <b>Valetudo</b> an Loxone an — mit <b>einer</b> Abfrage statt vier und einer sauberen <b>Statuszahl</b> statt zusammengesuchter Textbruchstücke. Steuerbefehle laufen als einfache GET-Aufrufe, die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst PUT mit JSON-Rumpf).</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<p>Kompatibel mit LoxBerry 3.x und <b>LoxBerry 4</b> (reines PHP, PHP 7.4 und 8.x).</p>
+<p><TMPL_VAR HILFE.K03></p>
 
-<h3>Funktionen</h3>
+<h3><TMPL_VAR HILFE.K04></h3>
 
-<ul><li><b>Ein Endpunkt</b> fasst Status, Statistik (aktuell und gesamt) und Verbrauchsmaterial zusammen — statt vier virtuellen Eingängen im 10-Sekunden-Takt genügt einer alle 30 Sekunden</li><li><b>Statuszahl</b> für Loxone: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 9 Fehler</li><li>Batterie, Ladezustand, Fehlercode und Fehlertext</li><li>Letzte Reinigung (m²/Minuten) und Gesamtwerte (m², Stunden, Anzahl)</li><li><b>Verbrauchsmaterial</b> in Reststunden (Filter, Haupt-/Seitenbürste, Sensoren) mit frei wählbarer Warnschwelle → <code>MATWARN</code></li><li><b>Steuerung</b> per GET: <code>start</code>, <code>stop</code>, <code>pause</code>, <code>home</code>, <code>locate</code>, Raumreinigung (<code>segments</code>), Saugstärke (<code>fan</code>), gespeicherte Position (<code>goto</code>)</li><li><b>Meldungen</b>: Reinigung fertig (mit Fläche und Dauer), Störung, Wartung fällig — als Ansage (TTS) und/oder Push über Loxone</li><li>Bis zu <b>2 Roboter</b>, MQTT, JSON (inkl. Raumliste), Protokoll mit Rotation</li><li>Reiter: Einstellungen, Einbindung in Loxone (mit kompletter Baustein-Liste), Test (inkl. Segment-IDs und ungefährlichem „Piepsen"-Test), Protokoll</li></ul>
+<ul><li><TMPL_VAR HILFE.K05></li><li><TMPL_VAR HILFE.K06></li><li><TMPL_VAR HILFE.K07></li><li><TMPL_VAR HILFE.K08></li><li><TMPL_VAR HILFE.K09></li><li><TMPL_VAR HILFE.K10></li><li><TMPL_VAR HILFE.K11></li><li><TMPL_VAR HILFE.K12></li><li><TMPL_VAR HILFE.K13></li></ul>
 
-<h3>Endpunkte</h3>
+<h3><TMPL_VAR HILFE.K14></h3>
 
 <table class="sm-tbl">
-<tr><th>Aufruf</th><th>Zweck</th></tr>
-<tr><td><code>/plugins/saugrobo/robo.php</code></td><td>Loxone-Zeile <code>ROBO;OK=..;CODE=..;BATT=..;FILTER=..;MATWARN=..;…</code></td></tr>
-<tr><td><code>/plugins/saugrobo/robo.php?debug=1</code></td><td>Klartext inkl. Raumliste</td></tr>
-<tr><td><code>/plugins/saugrobo/robo.php?json=1</code></td><td>kompletter Zustand als JSON</td></tr>
-<tr><td><code>/plugins/saugrobo/robo.php?cmd=start</code></td><td>Reinigung starten (auch <code>stop</code>, <code>pause</code>, <code>home</code>, <code>locate</code>)</td></tr>
-<tr><td><code>/plugins/saugrobo/robo.php?cmd=segments&amp;p=1,4</code></td><td>nur bestimmte Räume reinigen</td></tr>
-<tr><td><code>/plugins/saugrobo/robo.php?cmd=fan&amp;p=max</code></td><td>Saugstärke setzen</td></tr>
+<tr><th><TMPL_VAR HILFE.K19></th><th><TMPL_VAR HILFE.K20></th></tr>
+<tr><td><TMPL_VAR HILFE.K21></td><td><TMPL_VAR HILFE.K22></td></tr>
+<tr><td><TMPL_VAR HILFE.K23></td><td><TMPL_VAR HILFE.K24></td></tr>
+<tr><td><TMPL_VAR HILFE.K25></td><td><TMPL_VAR HILFE.K26></td></tr>
+<tr><td><TMPL_VAR HILFE.K27></td><td><TMPL_VAR HILFE.K28></td></tr>
+<tr><td><TMPL_VAR HILFE.K29></td><td><TMPL_VAR HILFE.K30></td></tr>
+<tr><td><TMPL_VAR HILFE.K31></td><td><TMPL_VAR HILFE.K32></td></tr>
 </table>
 
-<h3>Voraussetzung</h3>
+<h3><TMPL_VAR HILFE.K15></h3>
 
-<p>Auf dem Roboter läuft <b>Valetudo</b> (Version mit <code>/api/v2</code>). Es werden keine Cloud-Dienste und keine Zugangsdaten benötigt — die Kommunikation bleibt im eigenen Netz.</p>
+<p><TMPL_VAR HILFE.K16></p>
 
-<h3>Datenschutz</h3>
+<h3><TMPL_VAR HILFE.K17></h3>
 
-<p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten. Adresse und Einstellungen liegen ausschließlich lokal (<code>config/plugins/saugrobo/robo.json</code>).</p>
+<p><TMPL_VAR HILFE.K18></p>
