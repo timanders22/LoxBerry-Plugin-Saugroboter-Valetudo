@@ -12,7 +12,7 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-$rb_lbhome = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+$rb_lbhome = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
 // Ermitteln, nicht raten - siehe die ausfuehrliche Begruendung in
 // ro_paths() in robo_lib.php: der Rueckfall auf einen festen Namen liesse
 // eine Zweitinstallation (saugrobo_01) in die Konfiguration der ersten
@@ -159,6 +159,35 @@ if (is_file($rb_logfile)) {
     // ro_log_tail() liest nur das Ende der Datei - siehe die Messwerte
     // im Kommentar in robo_lib.php.
     $rb_loglines = array_reverse(ro_log_tail($rb_logfile, 300));
+}
+
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
 }
 
 function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
