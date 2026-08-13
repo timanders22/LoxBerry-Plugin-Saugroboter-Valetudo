@@ -53,7 +53,7 @@ $rb_saved = false; $rb_err = ''; $rb_note = '';
 /* Aktiver Reiter: aus dem abgesendeten Formular (activetab) oder aus der
    Adresse (?form=...). Letzteres brauchen die Reiter, seit sie echte
    Verweise sind. Die Positivliste MUSS jeden Reiter enthalten. */
-$rb_muster = '/^tab-(settings|loxone|test|log)$/';
+$rb_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
 $rb_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
     : (isset($_GET['form']) ? 'tab-' . (string) $_GET['form'] : '');
 $rb_tab = preg_match($rb_muster, $rb_wunsch) ? $rb_wunsch : 'tab-settings';
@@ -98,6 +98,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
     $rb_tab = 'tab-loxone';
 }
 
+// ---------- MQTT speichern (eigener Reiter seit 1.0.10, Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $mq_cfg = function_exists('ro_config') ? ro_config() : array();
+    if (!is_array($mq_cfg)) { $mq_cfg = array(); }
+    $mq_cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $mq_cfg['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'saugrobo')) ?: 'saugrobo';
+    if (!is_dir($rb_cfgdir)) { @mkdir($rb_cfgdir, 0775, true); }
+    $mq_json = json_encode($mq_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($mq_json !== false && @file_put_contents($rb_cfgfile, $mq_json) !== false) {
+        @copy($rb_cfgfile, $rb_bkfile);
+    } else {
+        $rb_err = 'Konfiguration konnte nicht gespeichert werden: ' . $rb_cfgfile;
+    }
+    $rb_tab = 'tab-mqtt';
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_new = array();
     $rb_new['robots'] = array();
@@ -113,8 +129,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     }
     $rb_new['cache_sec'] = max(5, min(300, (int) (isset($_POST['cache_sec']) ? $_POST['cache_sec'] : 20)));
     $rb_new['warn_hours'] = max(0, min(200, (int) (isset($_POST['warn_hours']) ? $_POST['warn_hours'] : 10)));
-    $rb_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $rb_new['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'saugrobo')) ?: 'saugrobo';
+        // Aus dem Bestand uebernehmen, was dieses Formular nicht mitschickt.
+    // BIS 1.0.9 FEHLTE DAS FUER aktionstoken: jedes Speichern der Einstellungen
+    // warf das Token still weg, der naechste Seitenaufruf erzeugte ein NEUES -
+    // und alle Loxone-Adressen liefen auf 403.
+    // MQTT wohnt seit 1.0.10 im eigenen Reiter (Hausstandard).
+    $alt_cfg = function_exists('ro_config') ? ro_config() : array();
+    if (!is_array($alt_cfg)) { $alt_cfg = array(); }
+    $rb_new['aktionstoken'] = isset($alt_cfg['aktionstoken']) ? (string) $alt_cfg['aktionstoken'] : '';
+    $rb_new['mqtt_enabled'] = isset($alt_cfg['mqtt_enabled']) ? (int) $alt_cfg['mqtt_enabled'] : 0;
+    $rb_new['mqtt_topic'] = isset($alt_cfg['mqtt_topic']) && $alt_cfg['mqtt_topic'] !== '' ? $alt_cfg['mqtt_topic'] : 'saugrobo';
     $rb_new['notify'] = array(
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push' => isset($_POST['notify_push']) ? 1 : 0,
@@ -232,6 +256,8 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; text-decoration: none !important; display: inline-block; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
@@ -300,6 +326,7 @@ $rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
  */
 $rb_reiter = array(
     'tab-settings' => ro_t('REITER.EINSTELLUNGEN'),
+    'tab-mqtt'     => ro_t('REITER.MQTT'),
     'tab-loxone'   => ro_t('REITER.LOXONE'),
     'tab-test'     => ro_t('REITER.TEST'),
     'tab-log'      => ro_t('REITER.LOG'),
@@ -413,6 +440,16 @@ $rb_reiter = array(
     <?php echo ro_t('TEXT.DER_ORIGINALE_LOXONE_AUDIOSERVER_B'); ?> <span class="sm-mono">ANN=1</span>.
 </div>
 
+<button data-role="none" class="sm-btn" type="submit"><?php echo ro_t('TEXT.SPEICHERN'); ?></button>
+</form>
+</div>
+
+<!-- ================= Einbindung in Loxone ================= -->
+<!-- ================= Reiter: MQTT (eigener Reiter seit 1.0.10, Hausstandard) ================= -->
+<div class="sm-pane<?php echo $rb_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo ro_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <?php if (function_exists('ro_mqtt_gateway_autostart') && ro_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo ro_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -433,7 +470,6 @@ $rb_reiter = array(
 </form>
 </div>
 
-<!-- ================= Einbindung in Loxone ================= -->
 <div class="sm-pane<?php echo $rb_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo ro_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo ro_t('TEXT.DAS_PLUGIN_FASST_DIE_VIER_VALETUDO'); ?> <b><?php echo ro_t('TEXT.EINER'); ?></b> <?php echo ro_t('TEXT.ABFRAGE_ZUSAMMEN_STATT_BISHER_VIER'); ?> <b><?php echo ro_t('TEXT.STATUSZAHL'); ?></b>.</p>
