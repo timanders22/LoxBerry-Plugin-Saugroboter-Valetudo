@@ -674,3 +674,137 @@ function ro_t($schluessel)
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }
+
+/* ---------------- Loxone-Vorlage (Hausstandard "Alles auf einmal anlegen") ---------------- */
+
+/** name => array(analog, min, max, einheit, kommentar) */
+function ro_felder() {
+    return array(
+        'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar'),
+        'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 faehrt zur Station, 5 faehrt, 8 unbekannt, 9 Fehler'),
+        'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent'),
+        'LAEDT'    => array(0, 0, 1,     '',      '1 = laedt gerade'),
+        'FEHLER'   => array(1, 0, 10000, '',      'Fehlercode (0 = kein Fehler)'),
+        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Flaeche'),
+        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer'),
+        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Flaeche'),
+        'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden'),
+        'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen'),
+        'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfuegbar)'),
+        'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbuerste: Reststunden (-1 = nicht verfuegbar)'),
+        'BSEITE'   => array(1, -1, 10000, 'h',    'Seitenbuerste: Reststunden (-1 = nicht verfuegbar)'),
+        'SENSOR'   => array(1, -1, 10000, 'h',    'Sensoren: Reststunden (-1 = nicht verfuegbar)'),
+        'MATWARN'  => array(0, 0, 1,     '',      '1 = mindestens ein Teil unter der Warnschwelle'),
+        'ANN'      => array(0, 0, 1,     '',      'Meldefenster aktiv'),
+        'AUDIO'    => array(0, 0, 1,     '',      'Ansage freigegeben'),
+        'PUSH'     => array(0, 0, 1,     '',      'Push freigegeben'),
+        'PTEST'    => array(0, 0, 1,     '',      'Test-Push ausloesen'),
+    );
+}
+
+/** Gepruefter PHP-Nachbau des LoxoneTemplateBuilder - Attributreihenfolge,
+ *  CRLF und der Tabulator vor den Kindelementen entsprechen dem Original.
+ *  Uebernommen aus LoxBerry-Plugin-APC-UPS, nur das Kuerzel getauscht. */
+function ro_xml_virtual_in_http($kopf, $cmds) {
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp HintText="" ';
+    $o .= 'Title="' . ro_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . ro_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . ro_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'PollingTime="' . ro_x(isset($kopf['polling']) ? $kopf['polling'] : '30') . '"';
+    $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf; // wie Original-Export aus Loxone Config 17.1
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualInHttpCmd ';
+        $o .= 'Title="' . ro_x($c['title']) . '" ';
+        $o .= 'Comment="' . ro_x($c['comment']) . '" ';
+        $o .= 'Check="' . ro_x($c['check']) . '" ';
+        $o .= 'Signed="' . ($c['min'] < 0 ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . ($c['analog'] ? 'true' : 'false') . '" ';
+        $o .= 'SourceValLow="0" ';
+        $o .= 'DestValLow="0" ';
+        $o .= 'SourceValHigh="1" ';
+        $o .= 'DestValHigh="1" ';
+        $o .= 'DefVal="0" ';
+        $o .= 'MinVal="' . (int) $c['min'] . '" ';
+        $o .= 'MaxVal="' . (int) $c['max'] . '" ';
+        $o .= 'Unit="' . ro_x(isset($c['unit']) ? $c['unit'] : '<v>') . '" ';
+        $o .= 'HintText=""';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+function ro_x($s) {
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
+function ro_vorlage($dev = 1) {
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $ordner = getenv('LBPPLUGINDIR') ?: basename(dirname(__DIR__, 1)) ;
+    if ($ordner === 'html' || $ordner === '') { $ordner = 'saugrobo'; }
+    $dev = max(1, min(9, (int) $dev));
+    $cmds = array();
+    foreach (ro_felder() as $name => $f) {
+        list($analog, $min, $max, $einheit, $text) = $f;
+        $cmds[] = array(
+            'title' => 'ROBO_' . $name . ($dev > 1 ? '_' . $dev : ''),
+            'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            'check' => '\i' . $name . '=\i\v',
+            'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
+            'analog' => $analog, 'min' => $min, 'max' => $max,
+        );
+    }
+    return array('VI_saugroboter' . ($dev > 1 ? '_' . $dev : '') . '.xml', ro_xml_virtual_in_http(array(
+        'title' => 'Saugroboter' . ($dev > 1 ? ' ' . $dev : ''),
+        'address' => 'http://' . $host . '/plugins/' . $ordner . '/robo.php' . ($dev > 1 ? '?dev=' . $dev : ''),
+        'polling' => '30',
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Saugroboter (' . date('d.m.Y') . '). '
+                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+    ), $cmds));
+}
+
+/** Hausstandard: Gateway-Autostart aus general.json - der einzige Schluessel,
+ *  der die Frage "hoert jemand zu?" beantwortet (PLUGIN_HAUSREGELN Abschnitt 3). */
+function ro_mqtt_gateway_autostart() {
+    $p = ro_paths();
+    $gj = (isset($p['lbhome']) && $p['lbhome'] !== '' ? $p['lbhome'] : '/opt/loxberry') . '/config/system/general.json';
+    if (!is_file($gj)) { return null; }
+    $d = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($d) || !isset($d['Mqtt'])) { return null; }
+    return !empty($d['Mqtt']['Gatewayautostart']);
+}
+
+/** Vorlage der Steuerbefehle (Virtueller Ausgang) - Format wie Original-Export aus Loxone Config 17.1. */
+function ro_vo_vorlage() {
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $ordner = getenv('LBPPLUGINDIR') ?: 'saugrobo';
+    $cfg = ro_config();
+    $tok = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="Saugroboter steuern (LoxBerry-Plugin)" Comment="Steuerbefehle ueber das Plugin ' . ro_x($ordner) . ' - enthaelt das Aktionstoken." Address="http://' . ro_x($host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach (array(
+        array('Reinigung starten', '/robo.php?cmd=start', false),
+        array('Pausieren', '/robo.php?cmd=pause', false),
+        array('Stoppen', '/robo.php?cmd=stop', false),
+        array('Zur Ladestation', '/robo.php?cmd=home', false),
+        array('Roboter piepsen lassen', '/robo.php?cmd=locate', false),
+    ) as $c) {
+        $o .= "\t" . '<VirtualOutCmd Title="' . ro_x($c[0]) . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
+        $o .= 'CmdOn="' . ro_x('/plugins/' . $ordner . $c[1] . '&token=' . $tok) . '" ';
+        $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
+        $o .= 'Analog="' . (!empty($c[2]) ? 'true' : 'false') . '" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return array('VQ_saugroboter_steuern.xml', $o);
+}
