@@ -51,6 +51,23 @@ function ro_token_ok() {
     return hash_equals($soll, isset($_GET['token']) ? (string) $_GET['token'] : '');
 }
 
+/* ---------- Selbsttest: Token pruefen, ohne etwas auszuloesen ----------
+ * Hausregel: jeder Aktionsendpunkt beantwortet ?selftest=1&token=... , ohne
+ * dass etwas passiert. Sonst laesst sich nicht feststellen, ob die Adresse im
+ * Miniserver noch stimmt, ohne wirklich zu schalten.
+ */
+if (isset($_GET['selftest'])) {
+    if (!ro_token_ok()) {
+        http_response_code(403);
+        echo "SELFTEST;OK=0;ERR=TOKEN
+";
+        exit;
+    }
+    echo "SELFTEST;OK=1;TOKEN=OK;DEV=" . $dev . "
+";
+    exit;
+}
+
 if (isset($_GET['cmd'])) {
     if (!ro_token_ok()) {
         http_response_code(403);

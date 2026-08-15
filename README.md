@@ -13,6 +13,13 @@ PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
 
+## Neu in 1.0.12
+
+**Token pruefbar, ohne etwas auszuloesen.** Neuer Aufruf
+`?selftest=1&token=…` — antwortet `SELFTEST;OK=1;TOKEN=OK` beziehungsweise
+HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
+nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
+
 ## Was 1.0.5 behebt
 
 Nur eine Richtigstellung, kein Code. In 1.0.4 stand, der 404 beim Abruf der
