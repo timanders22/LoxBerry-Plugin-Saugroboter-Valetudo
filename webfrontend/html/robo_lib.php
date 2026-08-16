@@ -511,6 +511,11 @@ function ro_mqtt_publish($st = null, $dev = 1) {
                'anzahl_gesamt' => $st['anzahl_gesamt'], 'filter' => $st['filter'],
                'buerste_haupt' => $st['buerste_haupt'], 'buerste_seite' => $st['buerste_seite'],
                'sensor' => $st['sensor'], 'material_warn' => $st['material_warn']);
+    /* ann, audio, push und ptest fehlten hier. In der Vorlage fuer Loxone
+     * (ro_felder) stehen sie seit jeher, ueber HTTP kamen sie auch - nur der
+     * MQTT-Weg lieferte sie nicht. Wer umstellte, bekam 16 statt 20 Werte
+     * und merkte es erst, wenn der Test-Push nicht mehr ausloeste. */
+    $m = array_merge($m, ro_meldeflags($dev));
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) { return; }
     foreach ($m as $k => $v) {
@@ -579,6 +584,29 @@ function ro_ann_active($dev = 1) {
 function ro_ptest_active() {
     $f = ro_tmpdir() . '/ptest';
     return (is_file($f) && time() - filemtime($f) < 300) ? 1 : 0;
+}
+
+/**
+ * Die vier Meldeflags an EINER Stelle: ann, audio, push, ptest.
+ *
+ * Sie standen bisher nur in der HTTP-Antwort. Wer auf MQTT umstellte,
+ * verlor sie ersatzlos: kein Meldefenster, keine Freigaben und vor allem
+ * kein PTEST, also keine Moeglichkeit mehr, den Push-Weg zu pruefen, ohne
+ * auf ein echtes Ereignis zu warten.
+ *
+ * Seit 1.0.13 liefert diese Funktion die Werte fuer beide Wege. Sie koennen
+ * damit nicht mehr auseinanderlaufen - genau das war der Grund, sie
+ * herauszuziehen statt die Rechnung ein zweites Mal hinzuschreiben.
+ */
+function ro_meldeflags($dev = 1)
+{
+    $cfg = ro_config();
+    return array(
+        'ann'   => ro_ann_active($dev),
+        'audio' => empty($cfg['notify']['audio']) ? 0 : 1,
+        'push'  => empty($cfg['notify']['push']) ? 0 : 1,
+        'ptest' => ro_ptest_active(),
+    );
 }
 
 /** Cron: Ereignisse erkennen (fertig, Fehler, Material) und melden. */

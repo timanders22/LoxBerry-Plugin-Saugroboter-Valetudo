@@ -74,8 +74,15 @@ ro_events_check();
 
 foreach (ro_robots() as $n => $r) {
     $st = ro_state($n);
+    /* Die Meldeflags gehoeren in die Signatur, sonst waeren sie zwar in der
+     * Nachricht - aber die Nachricht ginge nicht raus. ann und ptest aendern
+     * sich naemlich OHNE Zustandswechsel, allein durch Zeitablauf. Ohne sie
+     * in der Signatur bliebe ein ptest bis zum naechsten Zustandswechsel
+     * oder bis zum halbstuendlichen Lebenszeichen liegen - sein Fenster ist
+     * aber nur fuenf Minuten breit. */
     $sig = json_encode(array($st['code'], $st['batterie'], $st['fehler'], $st['material_warn'],
-                             $st['flaeche'], $st['anzahl_gesamt']));
+                             $st['flaeche'], $st['anzahl_gesamt'], ro_meldeflags($n)));
+    if ($sig === false) { $sig = 'unlesbar'; }
     $sigf = ro_tmpdir() . '/mqtt_sig_' . $n . '.txt';
     $beat = ro_tmpdir() . '/mqtt_beat_' . $n;
     $old = is_file($sigf) ? (string) file_get_contents($sigf) : '';

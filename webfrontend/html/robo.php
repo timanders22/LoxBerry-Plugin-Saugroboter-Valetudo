@@ -91,12 +91,22 @@ if (isset($_GET['ptest'])) {
     }
     @file_put_contents(ro_tmpdir() . '/ptest', '1');
     ro_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten)');
+    /* Sofort melden, statt bis zu einer Minute auf den Cron zu warten.
+     * Ueber HTTP holt sich der Miniserver den Merker beim naechsten Abruf;
+     * ueber MQTT muss ihn das Plugin schicken - und ein Test, der erst eine
+     * Minute spaeter wirkt, sieht aus wie ein Test, der nicht wirkt.
+     * Ueber alle Roboter, weil der Merker fuer alle gilt. */
+    foreach (array_keys(ro_robots()) as $ro_n) {
+        ro_mqtt_publish(null, $ro_n);
+    }
     echo "PTEST;OK=1;DAUER=300\n";
     exit;
 }
 
 $st = ro_state($dev, isset($_GET['refresh']));
 $cfg = ro_config();
+/* Dieselbe Quelle wie die MQTT-Meldung - siehe ro_meldeflags(). */
+$flags = ro_meldeflags($dev);
 
 if (isset($_GET['debug'])) {
     $r = ro_robot($dev);
@@ -122,7 +132,4 @@ printf("ROBO;OK=%d;CODE=%d;BATT=%d;LAEDT=%d;FEHLER=%d;FLAECHE=%.1f;DAUER=%d;FLAE
     $st['ok'], $st['code'], $st['batterie'], $st['laedt'], $st['fehler'],
     $st['flaeche'], $st['dauer'], $st['flaeche_gesamt'], $st['dauer_gesamt'], $st['anzahl_gesamt'],
     $st['filter'], $st['buerste_haupt'], $st['buerste_seite'], $st['sensor'], $st['material_warn'],
-    ro_ann_active($dev),
-    empty($cfg['notify']['audio']) ? 0 : 1,
-    empty($cfg['notify']['push']) ? 0 : 1,
-    ro_ptest_active());
+    $flags['ann'], $flags['audio'], $flags['push'], $flags['ptest']);

@@ -13,6 +13,29 @@ PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
 
+## Neu in 1.0.13
+
+**Der MQTT-Weg liefert jetzt alles, was der HTTP-Weg liefert.** Bisher
+veröffentlichte das Plugin über MQTT 16 Werte, über HTTP aber 20: es fehlten
+die vier Melde-Merker `ann` (Meldefenster), `audio` und `push` (Freigaben aus
+der Konfiguration) sowie `ptest` (Test-Push). Wer auf MQTT umstellte, verlor
+damit genau die Werte, mit denen sich Ansage und Pushnachricht im Miniserver
+steuern und **prüfen** lassen — der Test-Push löste über MQTT schlicht nicht
+mehr aus.
+
+Drei Änderungen, damit das wirklich wirkt:
+
+- Die vier Merker kommen aus **einer** Funktion (`ro_meldeflags()`), die
+  beide Wege benutzen. HTTP und MQTT können nicht mehr auseinanderlaufen.
+- Sie stehen jetzt auch in der **Signatur** des Cron-Laufs. Ohne das wären
+  sie zwar in der Nachricht gewesen, die Nachricht aber nicht verschickt
+  worden: `ann` und `ptest` ändern sich allein durch Zeitablauf, nicht durch
+  einen Zustandswechsel — ein gesetzter `ptest` wäre bis zum halbstündlichen
+  Lebenszeichen liegengeblieben, sein Fenster ist aber nur fünf Minuten breit.
+- `?ptest=1&token=…` veröffentlicht **sofort**, statt bis zu eine Minute auf
+  den nächsten Cron-Lauf zu warten. Ein Test, der erst eine Minute später
+  wirkt, sieht aus wie ein Test, der nicht wirkt.
+
 ## Neu in 1.0.12
 
 **Token pruefbar, ohne etwas auszuloesen.** Neuer Aufruf
