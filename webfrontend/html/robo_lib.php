@@ -73,6 +73,24 @@ function ro_paths() {
                  'tmp' => sys_get_temp_dir() . '/saugrobo', 'lbhome' => '');
 }
 
+function ro_vorgaben()
+{
+    /* Herausgezogen aus ro_config(): die Vorgaben stehen weiterhin an
+     * EINER Stelle, jetzt aber an einer abrufbaren. Die Sicherung
+     * braucht die Schluesselliste, um Fremdes zu erkennen - ohne sie
+     * koennte sie nur alles durchwinken. */
+    return array(
+    'robots' => array(),         // [{name, ip, port}]
+    'cache_sec' => 20,           // Status-Cache (schuetzt den Roboter)
+    'warn_hours' => 10,          // Warnschwelle Verbrauchsmaterial in Stunden
+    'mqtt_enabled' => 0,
+    'mqtt_topic' => 'saugrobo',
+    'notify' => array(),
+    'tts' => array(),
+    'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
+);
+}
+
 function ro_config() {
     $p = ro_paths();
     if ((!is_file($p['config']) || trim((string) @file_get_contents($p['config'])) === '' || trim((string) @file_get_contents($p['config'])) === '{}') && is_file($p['backup'])) {
@@ -81,16 +99,7 @@ function ro_config() {
     }
     $cfg = is_file($p['config']) ? (json_decode((string) file_get_contents($p['config']), true) ?: array()) : array();
     if (!is_array($cfg)) { $cfg = array(); }
-    $cfg += array(
-        'robots' => array(),         // [{name, ip, port}]
-        'cache_sec' => 20,           // Status-Cache (schuetzt den Roboter)
-        'warn_hours' => 10,          // Warnschwelle Verbrauchsmaterial in Stunden
-        'mqtt_enabled' => 0,
-        'mqtt_topic' => 'saugrobo',
-        'notify' => array(),
-        'tts' => array(),
-        'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
-    );
+    $cfg += ro_vorgaben();
     if (!is_array($cfg['robots'])) { $cfg['robots'] = array(); }
     // Migration: Einzel-IP aus einer aelteren Fassung
     if (empty($cfg['robots']) && !empty($cfg['ip'])) {
@@ -855,4 +864,67 @@ function ro_vo_vorlage() {
     }
     $o .= '</VirtualOut>' . $crlf;
     return array('VQ_saugroboter_steuern.xml', $o);
+}
+
+
+/**
+ * Den ganzen Konfigurationsstand ablegen - und sagen, ob es geklappt hat.
+ *
+ * Bisher schrieb diese Linie mitten in index.php. Das Zurueckspielen einer
+ * Sicherung braucht aber EINE Stelle, sonst steht die Pruefung "hat es
+ * geklappt?" an vier Orten verschieden da.
+ *
+ * Der Schreibweg ist der, den die Linie ohnehin benutzt - hier wird kein
+ * Verhalten geaendert, nur ein vorhandenes zusammengefasst.
+ */
+function ro_config_speichern($cfg)
+{
+    $p = ro_paths();
+    $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+                            | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return false;   /* ungueltiges UTF-8 - lieber gar nicht schreiben
+                           als eine halbe Datei hinterlassen */
+    }
+    @mkdir(dirname($p['config']), 0775, true);
+    return (bool) (ro_write_atomic($p['config'], $js));
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
+ * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
+ * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
+ * als die alte, und man sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function ro_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(ro_t('TEXT.SICH_KEIN_JSON')), 0);
+    }
+    $neu = ro_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(ro_t('TEXT.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = ro_t('TEXT.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }
