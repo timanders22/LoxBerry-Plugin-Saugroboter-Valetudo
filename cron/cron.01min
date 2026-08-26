@@ -2,4 +2,40 @@
 # Saugroboter (Valetudo) - minutlicher Cron (Status, Meldungen, MQTT)
 # REPLACELBPBINDIR wird bei der Installation durch den Plugin-bin-Pfad ersetzt.
 # Seit 1.0.4 liegt cron.php dort und nicht mehr im unangemeldeten HTML-Ordner.
-php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+#
+# Bis 1.0.14 lautete die Zeile
+#     php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+# und verschluckte damit BEIDE Abbruchmeldungen von cron.php - auch die,
+# die sagt, dass die Bibliothek nicht gefunden wurde. Ein Cron, der jede
+# Minute ins Leere laeuft, sah genauso aus wie einer, der arbeitet.
+#
+# Die Fehlerausgabe geht deshalb in die Protokolldatei des Plugins. Die
+# normale Ausgabe ("OK") bleibt unterdrueckt - sie stuende sonst jede
+# Minute im Systemprotokoll.
+
+BIN="REPLACELBPBINDIR"
+
+# Den Protokollpfad ABLEITEN statt auf eine Umgebungsvariable zu setzen:
+# ob LoxBerry LBPLOGDIR im Cron-Zusammenhang setzt, ist hier nicht gemessen.
+# $BIN ist <home>/bin/plugins/<ordner> - also drei Ebenen bis <home>.
+ORDNER=$(basename "$BIN")
+HOME_LB=$(cd "$BIN/../../.." 2>/dev/null && pwd)
+if [ -n "$HOME_LB" ] && [ -d "$HOME_LB/log/plugins/$ORDNER" ]; then
+    LOG="$HOME_LB/log/plugins/$ORDNER/robo.log"
+else
+    LOG="/tmp/$ORDNER-cron.log"
+fi
+
+if [ ! -f "$BIN/cron.php" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: $BIN/cron.php fehlt - Platzhalter nicht ersetzt?" >> "$LOG"
+    exit 1
+fi
+
+PHP=$(command -v php 2>/dev/null)
+[ -n "$PHP" ] || PHP=/usr/bin/php
+if [ ! -x "$PHP" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: kein PHP gefunden." >> "$LOG"
+    exit 1
+fi
+
+"$PHP" "$BIN/cron.php" >/dev/null 2>>"$LOG"

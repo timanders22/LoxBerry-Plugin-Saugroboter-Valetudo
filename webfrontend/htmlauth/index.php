@@ -1,263 +1,189 @@
 <?php
 /**
  * Saugroboter (Valetudo) - Admin-Oberflaeche
- * Reiter: Einstellungen | Einbindung in Loxone | Test | Protokoll
+ * Reiter: Einstellungen | MQTT | Einbindung in Loxone | Test | Protokoll
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  *
  * WICHTIG: LBWeb::lbheader() setzt SDK-GLOBALS (u.a. $cfg aus general.json als
  * stdClass) und wuerde gleichnamige Plugin-Variablen ueberschreiben - daher
  * tragen hier ALLE Variablen ein rb_-Praefix.
+ *
+ * ==================================================================
+ * DIE REIHENFOLGE IN DIESER DATEI IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ *   1. Bibliothek laden
+ *   2. Konfiguration lesen, Vorgaben vervollstaendigen, Token erzeugen
+ *   3. WACHPOSTEN
+ *   4. Reiterwahl
+ *   5. Handler - darunter JEDER Download, der mit exit endet
+ *   6. ERST JETZT LBWeb::lbheader()
+ *   7. HTML
+ *
+ * Bis 1.0.14 standen die beiden Sicherungs-Handler hinter lbheader(). Der
+ * Seitenkopf war damit schon geschrieben, und header('Content-Type: ...')
+ * kam zu spaet. Gemessen mit PHP 8.4:
+ *
+ *   WARNUNG|Cannot modify header information - headers already sent|index.php:251
+ *   WARNUNG|dasselbe|index.php:252
+ *   Antwortkoerper: <!-- lbheader -->{ "robots": [], ... }
+ *
+ * Der Knopf "Einstellungen sichern" lieferte also KEINE Datei. Am PHP-CLI
+ * ist der Fehler unsichtbar, weil header() dort wirkungslos ist und
+ * headers_sent() immer falsch liefert - alle drei Hauswerkzeuge fuer die
+ * Sicherung meldeten gruen.
+ * ==================================================================
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
 
-$rb_lbhome = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-// Ermitteln, nicht raten - siehe die ausfuehrliche Begruendung in
-// ro_paths() in robo_lib.php: der Rueckfall auf einen festen Namen liesse
-// eine Zweitinstallation (saugrobo_01) in die Konfiguration der ersten
-// greifen. Der mittlere Kandidat der alten Fassung war ohnehin wirkungslos:
-// basename(dirname(__DIR__)) ergibt "plugins", nie einen Plugin-Ordner.
-// Der feste Name greift nur noch dort, wo der ermittelte NACHWEISLICH kein
-// Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst der
-// Ordner "htmlauth". Installiert heisst er immer wie das Plugin.
-$rb_plugin = getenv('LBPPLUGINDIR');
-if (!$rb_plugin) { $rb_plugin = basename(__DIR__); }
-if ($rb_plugin === '' || $rb_plugin === '.' || $rb_plugin === '/' || $rb_plugin === 'htmlauth') {
-    $rb_plugin = 'saugrobo';
+/* ---------- 1. Bibliothek ----------
+ *
+ * Installiert sind html/ und htmlauth/ ZWEI GETRENNTE Baeume. Von
+ * htmlauth/plugins/<ordner>/ sind es DREI dirname bis webfrontend/.
+ * Findet keiner der Kandidaten etwas, bricht die Seite mit lesbarem Text
+ * ab - bis 1.0.14 lief sie weiter und starb mitten im <style>-Block an
+ * einem "Call to undefined function ro_t()".
+ */
+$rb_kandidaten = array();
+$rb_home = getenv('LBHOMEDIR');
+$rb_pdir = getenv('LBPPLUGINDIR');
+if ($rb_home && $rb_pdir) {
+    $rb_kandidaten[] = $rb_home . '/webfrontend/html/plugins/' . $rb_pdir . '/robo_lib.php';
 }
+$rb_kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/robo_lib.php';
+$rb_kandidaten[] = dirname(__DIR__) . '/html/robo_lib.php';   // ausgepacktes Archiv
+$rb_gefunden = '';
+foreach ($rb_kandidaten as $rb_cand) {
+    if (is_file($rb_cand)) { $rb_gefunden = $rb_cand; break; }
+}
+if ($rb_gefunden === '') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "Saugroboter: robo_lib.php nicht gefunden.\nGesucht in:\n  "
+       . implode("\n  ", $rb_kandidaten) . "\n";
+    exit;
+}
+require_once $rb_gefunden;
+
+/* ---------- 2. Konfiguration ---------- */
+$rb_p = ro_paths();
+$rb_lbhome = $rb_p['lbhome'];
+$rb_plugin = $rb_p['plugin'];
+$rb_cfgdir = dirname($rb_p['config']);
+$rb_cfgfile = $rb_p['config'];
+$rb_bkfile = $rb_p['backup'];
+$rb_logfile = $rb_p['log'];
+
 if ($rb_lbhome) {
     $rb_sdk = $rb_lbhome . '/libs/phplib/loxberry_system.php';
     if (file_exists($rb_sdk)) { require_once $rb_sdk; require_once $rb_lbhome . '/libs/phplib/loxberry_web.php'; }
-    $rb_cfgdir = $rb_lbhome . '/config/plugins/' . $rb_plugin;
-    $rb_bkfile = $rb_lbhome . '/config/plugins/' . $rb_plugin . '.backup.json';
-    $rb_logfile = $rb_lbhome . '/log/plugins/' . $rb_plugin . '/robo.log';
-} else {
-    $rb_cfgdir = dirname(dirname(__DIR__)) . '/config';
-    $rb_bkfile = $rb_cfgdir . '/robo.backup.json';
-    $rb_logfile = sys_get_temp_dir() . '/saugrobo/robo.log';
-}
-$rb_cfgfile = $rb_cfgdir . '/robo.json';
-
-foreach (array(dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $rb_plugin . '/robo_lib.php',
-               dirname(__DIR__) . '/html/robo_lib.php') as $rb_cand) {
-    if (is_file($rb_cand)) { require_once $rb_cand; break; }
 }
 
-if ((!is_file($rb_cfgfile) || trim((string) @file_get_contents($rb_cfgfile)) === '' || trim((string) @file_get_contents($rb_cfgfile)) === '{}') && is_file($rb_bkfile)) {
-    @mkdir($rb_cfgdir, 0775, true);
-    @copy($rb_bkfile, $rb_cfgfile);
-}
-
-$rb_saved = false; $rb_err = ''; $rb_note = '';
-/* Aktiver Reiter: aus dem abgesendeten Formular (activetab) oder aus der
-   Adresse (?form=...). Letzteres brauchen die Reiter, seit sie echte
-   Verweise sind. Die Positivliste MUSS jeden Reiter enthalten. */
-$rb_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
-$rb_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
-    : (isset($_GET['form']) ? 'tab-' . (string) $_GET['form'] : '');
-$rb_tab = preg_match($rb_muster, $rb_wunsch) ? $rb_wunsch : 'tab-settings';
-
-// ---------- Loxone-Vorlage herunterladen (Hausstandard) ----------
-// Vor jeder Ausgabe, sonst stehen HTML-Reste in der XML-Datei.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_vo']) && function_exists('ro_vo_vorlage')) {
-    list($rb_vname, $rb_vinhalt) = ro_vo_vorlage();
-    header('Content-Type: application/x-download');
-    header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
-    echo $rb_vinhalt;
-    exit;
-}
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('ro_vorlage')) {
-    list($rb_vname, $rb_vinhalt) = ro_vorlage(isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
-    header('Content-Type: application/x-download');
-    header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
-    echo $rb_vinhalt;
-    exit;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
-    @mkdir(dirname($rb_logfile), 0775, true);
-    @file_put_contents($rb_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n");
-    $rb_tab = 'tab-log';
-}
-
-// ---------- Neues Aktionstoken erzeugen ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
-    $rb_cfg_tok = function_exists('ro_config') ? ro_config() : array();
-    if (!is_array($rb_cfg_tok)) { $rb_cfg_tok = array(); }
-    $rb_cfg_tok['aktionstoken'] = function_exists('ro_token_erzeugen') ? ro_token_erzeugen() : bin2hex(random_bytes(12));
-    if (!is_dir($rb_cfgdir)) { @mkdir($rb_cfgdir, 0775, true); }
-    $rb_json_tok = json_encode($rb_cfg_tok, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if ($rb_json_tok !== false && @file_put_contents($rb_cfgfile, $rb_json_tok) !== false) {
-        @copy($rb_cfgfile, $rb_bkfile);
-        $rb_note = 'Neues Token erzeugt. Die Adressen in Loxone muessen angepasst werden '
-                 . '- die alten funktionieren nicht mehr.';
-    }
-    $rb_tab = 'tab-loxone';
-}
-
-// ---------- MQTT speichern (eigener Reiter seit 1.0.10, Hausstandard) ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
-    $mq_cfg = function_exists('ro_config') ? ro_config() : array();
-    if (!is_array($mq_cfg)) { $mq_cfg = array(); }
-    $mq_cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $mq_cfg['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'saugrobo')) ?: 'saugrobo';
-    if (!is_dir($rb_cfgdir)) { @mkdir($rb_cfgdir, 0775, true); }
-    $mq_json = json_encode($mq_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($mq_json !== false && @file_put_contents($rb_cfgfile, $mq_json) !== false) {
-        @copy($rb_cfgfile, $rb_bkfile);
-    } else {
-        $rb_err = 'Konfiguration konnte nicht gespeichert werden: ' . $rb_cfgfile;
-    }
-    $rb_tab = 'tab-mqtt';
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
-    $rb_new = array();
-    $rb_new['robots'] = array();
-    $rb_n = isset($_POST['r_name']) ? (array) $_POST['r_name'] : array();
-    $rb_i2 = isset($_POST['r_ip']) ? (array) $_POST['r_ip'] : array();
-    $rb_p2 = isset($_POST['r_port']) ? (array) $_POST['r_port'] : array();
-    for ($rb_i = 0; $rb_i < 2; $rb_i++) {
-        $ip = trim((string) (isset($rb_i2[$rb_i]) ? $rb_i2[$rb_i] : ''));
-        if ($ip === '') { continue; }
-        if (!preg_match('/^[\w\.\-]+$/', $ip)) { $rb_err = 'Roboter ' . ($rb_i + 1) . ': ung&uuml;ltige Adresse.'; continue; }
-        $rb_new['robots'][] = array('name' => trim((string) (isset($rb_n[$rb_i]) ? $rb_n[$rb_i] : '')),
-            'ip' => $ip, 'port' => max(1, min(65535, (int) (isset($rb_p2[$rb_i]) ? $rb_p2[$rb_i] : 80))));
-    }
-    $rb_new['cache_sec'] = max(5, min(300, (int) (isset($_POST['cache_sec']) ? $_POST['cache_sec'] : 20)));
-    $rb_new['warn_hours'] = max(0, min(200, (int) (isset($_POST['warn_hours']) ? $_POST['warn_hours'] : 10)));
-        // Aus dem Bestand uebernehmen, was dieses Formular nicht mitschickt.
-    // BIS 1.0.9 FEHLTE DAS FUER aktionstoken: jedes Speichern der Einstellungen
-    // warf das Token still weg, der naechste Seitenaufruf erzeugte ein NEUES -
-    // und alle Loxone-Adressen liefen auf 403.
-    // MQTT wohnt seit 1.0.10 im eigenen Reiter (Hausstandard).
-    $alt_cfg = function_exists('ro_config') ? ro_config() : array();
-    if (!is_array($alt_cfg)) { $alt_cfg = array(); }
-    $rb_new['aktionstoken'] = isset($alt_cfg['aktionstoken']) ? (string) $alt_cfg['aktionstoken'] : '';
-    $rb_new['mqtt_enabled'] = isset($alt_cfg['mqtt_enabled']) ? (int) $alt_cfg['mqtt_enabled'] : 0;
-    $rb_new['mqtt_topic'] = isset($alt_cfg['mqtt_topic']) && $alt_cfg['mqtt_topic'] !== '' ? $alt_cfg['mqtt_topic'] : 'saugrobo';
-    $rb_new['notify'] = array(
-        'audio' => isset($_POST['notify_audio']) ? 1 : 0,
-        'push' => isset($_POST['notify_push']) ? 1 : 0,
-        'fertig' => isset($_POST['n_fertig']) ? 1 : 0,
-        'fehler' => isset($_POST['n_fehler']) ? 1 : 0,
-        'material' => isset($_POST['n_material']) ? 1 : 0,
-    );
-    $rb_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
-    $rb_new['tts'] = array(
-        'mode' => in_array($rb_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true) ? $rb_mode : 'musicserver',
-        'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
-        'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
-        'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
-        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
-        'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
-        'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
-    );
-    if ($rb_err === '') {
-        if (!is_dir($rb_cfgdir)) { @mkdir($rb_cfgdir, 0775, true); }
-        $rb_json = json_encode($rb_new, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-        // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-        if ($rb_json !== false && @file_put_contents($rb_cfgfile, $rb_json) !== false) {
-            $rb_saved = true;
-            @copy($rb_cfgfile, $rb_bkfile);
-            foreach (glob('/tmp/saugrobo/state_*.json') ?: array() as $g) { @unlink($g); }
-        } else {
-            $rb_err = 'Konfiguration konnte nicht gespeichert werden: ' . $rb_cfgfile;
-        }
-    }
-}
-
-$rb_cfg = function_exists('ro_config') ? ro_config() : array();
-if (!is_array($rb_cfg)) { $rb_cfg = array(); }
-$rb_cfg += array('robots' => array(), 'cache_sec' => 20, 'warn_hours' => 10, 'mqtt_enabled' => 0,
-    'mqtt_topic' => 'saugrobo', 'notify' => array(), 'tts' => array(), 'aktionstoken' => '');
+$rb_cfg = ro_config();
 
 // Beim ersten Aufruf ein Token erzeugen, damit der Endpunkt fuer Loxone sofort
-// benutzbar ist (schuetzt ?cmd= im unangemeldeten robo.php).
+// benutzbar ist (schuetzt ?cmd= im unangemeldeten robo.php). Aus ihm leitet
+// sich auch das Formularmerkmal des Wachpostens ab.
 if (empty($rb_cfg['aktionstoken'])) {
-    $rb_cfg['aktionstoken'] = function_exists('ro_token_erzeugen') ? ro_token_erzeugen() : bin2hex(random_bytes(12));
-    if (!is_dir($rb_cfgdir)) { @mkdir($rb_cfgdir, 0775, true); }
-    $rb_json_init = json_encode($rb_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if ($rb_json_init !== false && @file_put_contents($rb_cfgfile, $rb_json_init) !== false) {
-        @copy($rb_cfgfile, $rb_bkfile);
-    }
+    $rb_cfg['aktionstoken'] = ro_token_erzeugen();
+    ro_config_speichern($rb_cfg);
+    $rb_cfg = ro_config();
 }
-$rb_notify = is_array($rb_cfg['notify']) ? $rb_cfg['notify'] : array();
-$rb_notify += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1);
-$rb_tts = is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array();
-$rb_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
-$rb_robots = function_exists('ro_robots') ? ro_robots() : array();
-$rb_states = array();
-foreach ($rb_robots as $rb_k => $rb_r) { $rb_states[$rb_k] = ro_state($rb_k); }
-$rb_loglines = array();
-if (is_file($rb_logfile)) {
-    // ro_log_tail() liest nur das Ende der Datei - siehe die Messwerte
-    // im Kommentar in robo_lib.php.
-    $rb_loglines = array_reverse(ro_log_tail($rb_logfile, 300));
-}
+$rb_fmt = ro_formtoken($rb_cfg);
 
+$rb_meldungen = array();
+$rb_fehler = array();
+$rb_saved = false;
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+/* ---------- 3. Wachposten gegen fremde Absender ----------
  *
- * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * htmlauth/ schuetzt gegen den unangemeldeten Aufruf, NICHT dagegen, dass
+ * der Browser eines ANGEMELDETEN Bedieners ein Formular abschickt, das auf
+ * einer fremden Seite steht: die Anmeldung schickt er automatisch mit.
  *
- * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
- * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ * Bis 1.0.14 gab es hier gar nichts. Ein fremdes Formular genuegte, um mit
+ * "token_neu" saemtliche Loxone-Adressen unbrauchbar zu machen oder mit
+ * "ro_zurueck" die ganze Konfiguration zu ersetzen.
+ *
+ * Einen einzelnen Handler kann man beim Erweitern vergessen, einen
+ * Wachposten am Eingang nicht.
  */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if ($rb_fmt === '') {
+        $rb_fehler[] = ro_t('FEHLER.CSRF_KEIN_TOKEN');
+    } elseif (!ro_formtoken_ok($rb_cfg)) {
+        $rb_fehler[] = ro_t('FEHLER.CSRF');
+        ro_log('Ein Formular ohne gueltiges Merkmal wurde abgewiesen.');
+    }
+    if ($rb_fehler) {
+        // $_POST leeren, damit danach KEIN Handler mehr anlaeuft. Den aktiven
+        // Reiter behalten - die Meldung soll dort stehen, wo der Bediener war.
+        $rb_behalten = isset($_POST['activetab']) && is_string($_POST['activetab'])
+            ? $_POST['activetab'] : null;
+        $_POST = array();
+        if ($rb_behalten !== null) { $_POST['activetab'] = $rb_behalten; }
     }
 }
 
-function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
-function rb_h($h) { return $h < 0 ? '&ndash;' : (int) $h . ' h'; }
+/* ---------- 4. Reiterwahl ----------
+ * Diese Liste, die Positivliste und die id der Flaechen muessen
+ * deckungsgleich bleiben - alle drei. Der Reiter Test prueft es nach.
+ */
+$rb_reiterliste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
+$rb_tab = 'tab-settings';
+if (isset($_POST['activetab']) && is_string($_POST['activetab'])
+    && in_array((string) $_POST['activetab'], $rb_reiterliste, true)) {
+    $rb_tab = (string) $_POST['activetab'];
+} elseif (isset($_GET['form']) && is_string($_GET['form'])
+          && in_array('tab-' . (string) $_GET['form'], $rb_reiterliste, true)) {
+    $rb_tab = 'tab-' . (string) $_GET['form'];
+}
 
-$rb_frame = class_exists('LBWeb', false);
-if ($rb_frame) { LBWeb::lbheader('Saugroboter', 'https://wiki.loxberry.de/', 'help.html'); }
-$rb_host = rb_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
+/* ---------- 5. Handler ---------- */
 
-/* ---------------- Einstellungen sichern ----------------
+// --- Downloads. Sie enden mit exit und muessen VOR lbheader() stehen. ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_vo'])) {
+    list($rb_vname, $rb_vinhalt) = ro_vo_vorlage(isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
+    echo $rb_vinhalt;
+    exit;
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
+    list($rb_vname, $rb_vinhalt) = ro_vorlage(
+        isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1,
+        !empty($_POST['vorlage_belegt']));
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
+    echo $rb_vinhalt;
+    exit;
+}
+
+/* Einstellungen sichern.
  *
  * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
  * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ *
+ * Das FORMULARMERKMAL gehoert ausdruecklich NICHT hinein: es lebt eine
+ * Sitzung und schuetzt gegen fremde Absender. Es wird aus dem Aktionstoken
+ * abgeleitet und steht deshalb gar nicht erst in der Konfiguration. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_sichern'])) {
-    $ro_js = json_encode(ro_config(),
+    $rb_js = json_encode(ro_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($ro_js !== false) {
+    if ($rb_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="saugroboter_einstellungen_'
                . date('Ymd_His') . '.json"');
-        echo $ro_js;
+        header('Content-Length: ' . strlen($rb_js));
+        echo $rb_js;
         exit;
     }
-    $rb_note = ro_t('TEXT.SICH_SCHREIBFEHLER');
+    $rb_fehler[] = ro_t('TEXT.SICH_SCHREIBFEHLER');
 }
 
-/* ---------------- Einstellungen zurueckspielen ----------------
+/* Einstellungen zurueckspielen.
  *
  * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
  * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
@@ -267,36 +193,236 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
     if (!isset($_FILES['ro_sicherung']) || !is_array($_FILES['ro_sicherung'])
         || !isset($_FILES['ro_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['ro_sicherung']['tmp_name'])) {
-        $rb_note = ro_t('TEXT.SICH_KEINE_DATEI');
+        $rb_fehler[] = ro_t('TEXT.SICH_KEINE_DATEI');
     } elseif ((int) $_FILES['ro_sicherung']['size'] > 262144) {
-        $rb_note = ro_t('TEXT.SICH_ZU_GROSS');
+        $rb_fehler[] = ro_t('TEXT.SICH_ZU_GROSS');
     } else {
-        list($ro_neu, $ro_mangel, $ro_n) = ro_sicherung_lesen(
+        list($rb_neu, $rb_mangel, $rb_n) = ro_sicherung_lesen(
             (string) @file_get_contents($_FILES['ro_sicherung']['tmp_name']));
-        if ($ro_neu === null) {
+        if ($rb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
-            $rb_note = ro_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $ro_mangel);
-        } elseif (ro_config_speichern($ro_neu)) {
-            $rb_note = sprintf(ro_t('TEXT.SICH_UEBERNOMMEN'), $ro_n);
+            $rb_fehler[] = ro_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $rb_mangel);
+        } elseif (ro_config_speichern($rb_neu)) {
+            $rb_meldungen[] = sprintf(ro_t('TEXT.SICH_UEBERNOMMEN'), $rb_n);
+            /* NEU EINLESEN. Bis 1.0.14 zeichnete sich die Seite danach aus
+             * der Variablen von weiter oben - der Anwender sah seine ALTEN
+             * Werte, druckte "Speichern", und der save-Zweig machte das
+             * Zurueckspielen rueckgaengig. Auch das Formularmerkmal haengt
+             * am (neuen) Aktionstoken. */
+            $rb_cfg = ro_config();
+            $rb_fmt = ro_formtoken($rb_cfg);
         } else {
-            $rb_note = ro_t('TEXT.SICH_SCHREIBFEHLER');
+            $rb_fehler[] = ro_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
+    $rb_tab = 'tab-settings';
 }
 
+// --- Protokoll leeren ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
+    @mkdir(dirname($rb_logfile), 0775, true);
+    if (@file_put_contents($rb_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n") !== false) {
+        $rb_meldungen[] = ro_t('TEXT.LOG_GELEERT');
+    } else {
+        $rb_fehler[] = ro_t('TEXT.LOG_NICHT_GELEERT') . ' ' . $rb_logfile;
+    }
+    $rb_tab = 'tab-log';
+}
+
+// --- Neues Aktionstoken erzeugen ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
+    $rb_cfg['aktionstoken'] = ro_token_erzeugen();
+    if (ro_config_speichern($rb_cfg)) {
+        $rb_cfg = ro_config();
+        $rb_fmt = ro_formtoken($rb_cfg);
+        $rb_meldungen[] = ro_t('TEXT.TOKEN_NEU_OK');
+    } else {
+        $rb_fehler[] = ro_t('TEXT.SICH_SCHREIBFEHLER');
+    }
+    $rb_tab = 'tab-loxone';
+}
+
+// --- Verbrauchsteil zuruecksetzen (Reiter Test) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_reset'])
+    && is_string($_POST['ro_reset'])) {
+    $rb_teil = (string) $_POST['ro_reset'];
+    $rb_rdev = isset($_POST['reset_dev']) ? max(1, min(9, (int) $_POST['reset_dev'])) : 1;
+    if (preg_match('#^[a-z]+(/[a-z_]+)?$#', $rb_teil)) {
+        list($rb_ok, $rb_info) = ro_command('reset', $rb_rdev, $rb_teil);
+        if ($rb_ok) {
+            $rb_meldungen[] = sprintf(ro_t('TEXT.RESET_OK'), $rb_teil);
+        } else {
+            $rb_fehler[] = sprintf(ro_t('TEXT.RESET_FEHLER'), $rb_teil, $rb_info);
+        }
+    } else {
+        $rb_fehler[] = ro_t('TEXT.RESET_UNGUELTIG');
+    }
+    $rb_tab = 'tab-test';
+}
+
+// --- Raumliste und Faehigkeiten neu einlesen ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['neu_lesen'])) {
+    ro_cache_leeren();
+    $rb_meldungen[] = ro_t('TEXT.NEU_GELESEN');
+    $rb_tab = 'tab-test';
+}
+
+// --- MQTT speichern (eigener Reiter seit 1.0.10, Hausstandard) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $rb_cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $rb_thema = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])
+        ? trim((string) $_POST['mqtt_topic']) : 'saugrobo';
+    $rb_sauber = ro_mqtt_thema_saeubern($rb_thema);
+    if ($rb_thema !== '' && $rb_sauber !== $rb_thema) {
+        // Beanstanden, nicht stillschweigend zurechtbiegen.
+        $rb_meldungen[] = sprintf(ro_t('TEXT.MQTT_THEMA_GEAENDERT'), $rb_sauber);
+    }
+    $rb_cfg['mqtt_topic'] = $rb_sauber;
+    if (ro_config_speichern($rb_cfg)) {
+        $rb_cfg = ro_config();
+        $rb_saved = true;
+    } else {
+        $rb_fehler[] = ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile;
+    }
+    $rb_tab = 'tab-mqtt';
+}
+
+// --- Einstellungen speichern ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+    /* Aus dem Bestand uebernehmen, was dieses Formular nicht mitschickt.
+     * BIS 1.0.9 FEHLTE DAS FUER aktionstoken: jedes Speichern der Einstellungen
+     * warf das Token still weg, der naechste Seitenaufruf erzeugte ein NEUES -
+     * und alle Loxone-Adressen liefen auf 403. */
+    $rb_neu = ro_config();
+    $rb_neu['robots'] = array();
+    $rb_n1 = isset($_POST['r_name']) ? (array) $_POST['r_name'] : array();
+    $rb_i2 = isset($_POST['r_ip']) ? (array) $_POST['r_ip'] : array();
+    $rb_p2 = isset($_POST['r_port']) ? (array) $_POST['r_port'] : array();
+    $rb_u2 = isset($_POST['r_user']) ? (array) $_POST['r_user'] : array();
+    $rb_w2 = isset($_POST['r_pass']) ? (array) $_POST['r_pass'] : array();
+    $rb_alt = ro_robots();
+    for ($rb_i = 0; $rb_i < 2; $rb_i++) {
+        $rb_ip = trim((string) (isset($rb_i2[$rb_i]) ? $rb_i2[$rb_i] : ''));
+        if ($rb_ip === '') { continue; }
+        if (!preg_match('/^[\w\.\-]{1,253}$/', $rb_ip)) {
+            /* Beanstanden - aber die uebrigen Zeilen NICHT verwerfen.
+             * Bis 1.0.14 verhinderte eine falsche Adresse beim zweiten
+             * Roboter das Speichern der GANZEN Seite, ohne das zu sagen. */
+            $rb_fehler[] = sprintf(ro_t('TEXT.ROBOTER_ADRESSE_UNGUELTIG'), $rb_i + 1);
+            // Den bisherigen Eintrag behalten, damit nichts verlorengeht.
+            if (isset($rb_alt[$rb_i + 1])) { $rb_neu['robots'][] = $rb_alt[$rb_i + 1]; }
+            continue;
+        }
+        /* Ein leeres Kennwortfeld LOESCHT nicht. Der Browser fuellt
+         * type=password nicht vor; wer nur den Namen aendert, verlaere sonst
+         * die Anmeldung. Geloescht wird ueber den Haken daneben. */
+        $rb_pw = (string) (isset($rb_w2[$rb_i]) ? $rb_w2[$rb_i] : '');
+        if ($rb_pw === '' && empty($_POST['r_pass_loeschen'][$rb_i])
+            && isset($rb_alt[$rb_i + 1]['pass'])) {
+            $rb_pw = (string) $rb_alt[$rb_i + 1]['pass'];
+        }
+        if (!empty($_POST['r_pass_loeschen'][$rb_i])) { $rb_pw = ''; }
+        $rb_neu['robots'][] = array(
+            'name' => trim((string) (isset($rb_n1[$rb_i]) ? $rb_n1[$rb_i] : '')),
+            'ip' => $rb_ip,
+            'port' => max(1, min(65535, (int) (isset($rb_p2[$rb_i]) ? $rb_p2[$rb_i] : 80))),
+            'user' => trim((string) (isset($rb_u2[$rb_i]) ? $rb_u2[$rb_i] : '')),
+            'pass' => $rb_pw);
+    }
+    $rb_neu['cache_sec'] = max(5, min(300, (int) (isset($_POST['cache_sec']) ? $_POST['cache_sec'] : 20)));
+    $rb_neu['warn_hours'] = max(0, min(200, (int) (isset($_POST['warn_hours']) ? $_POST['warn_hours'] : 10)));
+    $rb_neu['warn_prozent'] = max(0, min(100, (int) (isset($_POST['warn_prozent']) ? $_POST['warn_prozent'] : 10)));
+    $rb_neu['notify'] = array(
+        'audio' => isset($_POST['notify_audio']) ? 1 : 0,
+        'push' => isset($_POST['notify_push']) ? 1 : 0,
+        'fertig' => isset($_POST['n_fertig']) ? 1 : 0,
+        'fehler' => isset($_POST['n_fehler']) ? 1 : 0,
+        'material' => isset($_POST['n_material']) ? 1 : 0,
+        'ereignis' => isset($_POST['n_ereignis']) ? 1 : 0,
+    );
+    $rb_mode = (string) (isset($_POST['tts_mode']) && is_string($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
+    $rb_neu['tts'] = array(
+        'mode' => in_array($rb_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true) ? $rb_mode : 'musicserver',
+        'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
+        'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
+        'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
+        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
+        'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
+        'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
+    );
+    /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
+     * zulaessige Werte gibt es nicht. */
+    foreach ($rb_neu as $rb_k => $rb_v) {
+        if (!array_key_exists($rb_k, ro_vorgaben())) { continue; }
+        $rb_grund = ro_wert_pruefen($rb_k, $rb_v);
+        if ($rb_grund !== '') { $rb_fehler[] = sprintf(ro_t('TEXT.SICH_WERT'), $rb_k, $rb_grund); }
+    }
+    if (!array_filter($rb_fehler)) {
+        if (ro_config_speichern($rb_neu)) {
+            $rb_saved = true;
+            $rb_cfg = ro_config();
+            $rb_fmt = ro_formtoken($rb_cfg);
+        } else {
+            $rb_fehler[] = ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile;
+        }
+    }
+    $rb_tab = 'tab-settings';
+}
+
+/* ---------- Daten fuer die Anzeige ---------- */
+$rb_notify = is_array($rb_cfg['notify']) ? $rb_cfg['notify'] : array();
+$rb_notify += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1);
+$rb_tts = is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array();
+$rb_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+$rb_robots = ro_robots();
+$rb_states = array();
+foreach ($rb_robots as $rb_k => $rb_r) { $rb_states[$rb_k] = ro_state($rb_k); }
+$rb_loglines = array();
+if (is_file($rb_logfile)) {
+    // ro_log_tail() liest nur das Ende der Datei - siehe die Messwerte
+    // im Kommentar in robo_lib.php.
+    $rb_loglines = array_reverse(ro_log_tail($rb_logfile, 300));
+}
+$rb_host = ro_host();
+
+function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+/** Restlaufzeit anzeigen: Strich, wenn das Geraet den Wert nicht liefert. */
+function rb_h($h, $einheit = 'h') { return $h < 0 ? '&ndash;' : (int) $h . '&nbsp;' . $einheit; }
+/** Ja / Nein / Strich fuer die dreiwertigen Felder. */
+function rb_jn($v) {
+    $v = (int) $v;
+    if ($v === 1) { return rb_e(ro_t('WORT.JA')); }
+    if ($v === 0) { return rb_e(ro_t('WORT.NEIN')); }
+    return '&ndash;';
+}
+/** Das versteckte Feld des Wachpostens - in JEDEM Formular. */
+function rb_fmt() {
+    global $rb_fmt;
+    return '<input data-role="none" type="hidden" name="fmt" value="' . rb_e($rb_fmt) . '">';
+}
+
+/* ---------- 6. Erst jetzt der Seitenkopf ---------- */
+$rb_frame = class_exists('LBWeb', false);
+if ($rb_frame) {
+    LBWeb::lbheader(ro_t('TEXT.TITEL') . ' ' . ro_pluginversion(),
+        'https://wiki.loxberry.de/', 'help.html');
+} else {
+    echo '<!DOCTYPE html><html lang="' . rb_e(ro_sprache()) . '"><head><meta charset="utf-8">'
+       . '<title>' . rb_e(ro_t('TEXT.TITEL')) . '</title></head><body>';
+}
 ?>
 <style>
-.sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap, .sm-wrap *, .sm-tabs, .sm-tabs * { text-shadow: none !important; }
 .sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
 .sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
-.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
+.sm-wrap input[type=text], .sm-wrap input[type=password], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
 .sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sm-row > div { flex: 1; min-width: 150px; }
 .sm-row > div > label:not([style]) { min-height: 2.6em; display: flex; align-items: flex-end; }
-.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
 .sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
 .sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
 .sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
@@ -304,58 +430,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+/* Hinweis und Warnung. Beide gehoeren zum Hausstandard, und sie heissen SO.
+   Bis 1.0.14 benutzte das HTML class="sm-warnung", der Stilblock kannte aber
+   nur sm-warn - ausgerechnet der Satz, dass die Sicherungsdatei ein Geheimnis
+   traegt, stand deshalb als nackter Fliesstext da. */
 .sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+.sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; text-decoration: none !important; display: inline-block; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-decoration: none !important; display: inline-block; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
 .sm-pane { display: none; padding-top: 4px; }
 .sm-pane.sm-active { display: block; }
-.sm-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+.sm-log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
 .sm-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
 .sm-tbl { border-collapse: collapse; margin: 8px 0; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
 .sm-tbl th { background: #f0f0f0; }
-.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button { text-shadow: none !important; box-shadow: none !important; }
-.sm-wrap a.sm-btn, .sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover { color: #fff !important; text-decoration: none; }
+.sm-breit { overflow-x: auto; }
+.sm-breit table { width: 100%; }
 
-/* --- <?php echo ro_t('TEXT.EINHEIT'); ?>liches Kachel-Raster im Reiter <?php echo ro_t('TEXT.TEST'); ?> (Standard aller Plugins) --- */
-.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+/* --- Einheitliches Kachel-Raster (Standard aller Plugins) --- */
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
 .sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
 .sm-knopfreihe form { margin: 0; display: flex; }
-.sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
-    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
 .sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
 .sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
 .sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
-.sm-btn.sm-b-lesen   { background: #6dac20; }
-.sm-btn.sm-b-technik { background: #546e7a; }
-.sm-btn.sm-b-aktion  { background: #e0620d; }
+.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button.sm-btn {
+  background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px;
+  font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600;
+  box-shadow: none !important; text-decoration: none !important;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
+.sm-wrap .sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center; margin-top: 0; }
+.sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover, .sm-wrap a.sm-btn:focus { color: #fff !important; }
+.sm-wrap .sm-btn.sm-b-lesen,   .sm-wrap .sm-btn.sm-b-lesen:hover,   .sm-wrap .sm-btn.sm-b-lesen:focus   { background: #6dac20 !important; }
+.sm-wrap .sm-btn.sm-b-technik, .sm-wrap .sm-btn.sm-b-technik:hover, .sm-wrap .sm-btn.sm-b-technik:focus { background: #546e7a !important; }
+.sm-wrap .sm-btn.sm-b-aktion,  .sm-wrap .sm-btn.sm-b-aktion:hover,  .sm-wrap .sm-btn.sm-b-aktion:focus  { background: #e0620d !important; }
 .sm-punkt.sm-b-lesen   { background: #6dac20; }
 .sm-punkt.sm-b-technik { background: #546e7a; }
 .sm-punkt.sm-b-aktion  { background: #e0620d; }
+.sm-pruef td:first-child { width: 26px; text-align: center; font-weight: 700; }
 </style>
 <div class="sm-wrap">
 
-<?php if ($rb_saved) { ?><div class="sm-alert sm-ok"><b><?php echo ro_t('TEXT.KONFIGURATION_GESPEICHERT'); ?></b> <?php echo ro_t('TEXT.INKL_SICHERUNGSKOPIE_FR_UPDATES'); ?></div><?php } ?>
-<?php if ($rb_note !== '') { ?><div class="sm-alert sm-ok"><?= rb_e($rb_note) ?></div><?php } ?>
-<?php if ($rb_err !== '') { ?><div class="sm-alert sm-err"><b><?php echo ro_t('TEXT.FEHLER'); ?></b> <?= $rb_err ?></div><?php } ?>
+<?php if ($rb_saved) { ?><div class="sm-alert sm-ok"><b><?= rb_e(ro_t('TEXT.KONFIGURATION_GESPEICHERT')) ?></b> <?= rb_e(ro_t('TEXT.INKL_SICHERUNGSKOPIE')) ?></div><?php } ?>
+<?php foreach ($rb_meldungen as $rb_m) { ?><div class="sm-hinweis"><?= $rb_m ?></div><?php } ?>
+<?php foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT.FEHLER')) ?></b> <?= $rb_f ?></div><?php } ?>
 
 <?php if (!$rb_robots) { ?>
-<div class="sm-alert sm-info"><b><?php echo ro_t('TEXT.NOCH_KEIN_ROBOTER_EINGERICHTET'); ?></b> <?php echo ro_t('TEXT.BITTE_UNTEN_DIE_ADRESSE_DER_VALETU'); ?></div>
+<div class="sm-alert sm-info"><b><?= rb_e(ro_t('TEXT.NOCH_KEIN_ROBOTER')) ?></b> <?= rb_e(ro_t('TEXT.BITTE_ADRESSE_EINTRAGEN')) ?></div>
 <?php } ?>
 <?php foreach ($rb_states as $rb_k => $rb_s) { ?>
 <div class="sm-alert <?= $rb_s['fehler'] ? 'sm-warn' : 'sm-info' ?>">
 <b><?= rb_e($rb_s['name']) ?></b>:
 <?php if ($rb_s['ok']) { ?>
-<b><?= rb_e($rb_s['text']) ?></b> <?php echo ro_t('TEXT.BATTERIE'); ?> <?= (int) $rb_s['batterie'] ?> %<?= $rb_s['laedt'] ? ' (l&auml;dt)' : '' ?>
-<?= $rb_s['fehler'] ? ' &middot; <b>Fehler ' . (int) $rb_s['fehler'] . '</b> ' . rb_e($rb_s['fehlertext']) : '' ?><br>
-<?php echo ro_t('TEXT.LETZTE_REINIGUNG'); ?> <?= rb_e($rb_s['flaeche']) ?> <?php echo ro_t('TEXT.M_SUP2_IN'); ?> <?= (int) $rb_s['dauer'] ?> min<?= $rb_s['letzte'] ? ' (' . rb_e(date('d.m.Y H:i', $rb_s['letzte'])) . ')' : '' ?><br>
-<?php echo ro_t('TEXT.GESAMT'); ?> <?= rb_e($rb_s['flaeche_gesamt']) ?> <?php echo ro_t('TEXT.M_SUP2'); ?> <?= rb_e($rb_s['dauer_gesamt']) ?> <?php echo ro_t('TEXT.H'); ?> <?= (int) $rb_s['anzahl_gesamt'] ?> <?php echo ro_t('TEXT.REINIGUNGEN'); ?><br>
-<?php echo ro_t('TEXT.VERBRAUCHSMATERIAL_FILTER'); ?> <?= rb_h($rb_s['filter']) ?> <?php echo ro_t('TEXT.HAUPTBRSTE'); ?> <?= rb_h($rb_s['buerste_haupt']) ?> <?php echo ro_t('TEXT.SEITENBRSTE'); ?> <?= rb_h($rb_s['buerste_seite']) ?> <?php echo ro_t('TEXT.SENSOREN'); ?> <?= rb_h($rb_s['sensor']) ?>
-<?= $rb_s['material_warn'] ? ' &rarr; <b>Wartung f&auml;llig</b>' : '' ?>
+<b><?= rb_e($rb_s['text']) ?></b> &middot; <?= rb_e(ro_t('TEXT.BATTERIE')) ?> <?= (int) $rb_s['batterie'] ?>&nbsp;%<?= $rb_s['laedt'] ? ' (' . rb_e(ro_t('TEXT.LAEDT')) . ')' : '' ?>
+<?= $rb_s['fehler'] ? ' &middot; <b>' . rb_e(ro_t('TEXT.FEHLER_KURZ')) . ' ' . (int) $rb_s['fehler'] . '</b> ' . rb_e($rb_s['fehlertext']) : '' ?><br>
+<?= rb_e(ro_t('TEXT.LETZTE_REINIGUNG')) ?> <?= rb_e($rb_s['flaeche']) ?>&nbsp;m&sup2; <?= rb_e(ro_t('WORT.IN')) ?> <?= (int) $rb_s['dauer'] ?>&nbsp;min<?= $rb_s['letzte'] ? ' (' . rb_e(date('d.m.Y H:i', $rb_s['letzte'])) . ')' : '' ?><br>
+<?= rb_e(ro_t('TEXT.GESAMT')) ?> <?= rb_e($rb_s['flaeche_gesamt']) ?>&nbsp;m&sup2;, <?= rb_e($rb_s['dauer_gesamt']) ?>&nbsp;h, <?= (int) $rb_s['anzahl_gesamt'] ?> <?= rb_e(ro_t('TEXT.REINIGUNGEN')) ?><br>
+<?= rb_e(ro_t('TEXT.VERBRAUCHSMATERIAL')) ?> <?= rb_e(ro_t('TEXT.FILTER')) ?> <?= rb_h($rb_s['filter']) ?> &middot; <?= rb_e(ro_t('TEXT.HAUPTBUERSTE')) ?> <?= rb_h($rb_s['buerste_haupt']) ?> &middot; <?= rb_e(ro_t('TEXT.SEITENBUERSTE')) ?> <?= rb_h($rb_s['buerste_seite']) ?> &middot; <?= rb_e(ro_t('TEXT.SENSOREN')) ?> <?= rb_h($rb_s['sensor']) ?><?php
+if ($rb_s['mop'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.WISCHBEZUG')) . ' ' . rb_h($rb_s['mop']); }
+if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEUTEL')) . ' ' . rb_h($rb_s['dock_behaelter'], '%'); }
+?>
+<?= $rb_s['material_warn'] ? ' &rarr; <b>' . rb_e(ro_t('TEXT.WARTUNG_FAELLIG')) . '</b>' : '' ?><br>
+<?= rb_e(ro_t('TEXT.ANBAUTEILE')) ?> <?= rb_e(ro_t('TEXT.BEHAELTER')) ?> <?= rb_jn($rb_s['behaelter']) ?> &middot; <?= rb_e(ro_t('TEXT.WASSERTANK')) ?> <?= rb_jn($rb_s['wassertank']) ?> &middot; <?= rb_e(ro_t('TEXT.WISCHMODUL')) ?> <?= rb_jn($rb_s['wischer']) ?>
+<?php if ($rb_s['event'] > 0) { ?><br><b><?= rb_e(ro_t('TEXT.EREIGNIS')) ?></b> <?= rb_e($rb_s['evtext']) ?> (<?= (int) $rb_s['event'] ?>)<?php } ?>
+<?php $rb_meld = ro_meldung_lesen($rb_k); if ($rb_meld !== '') { ?><br><?= rb_e(ro_t('TEXT.LETZTE_MELDUNG')) ?> <?= rb_e($rb_meld) ?><?php } ?>
 <?php } else { ?>
-<b><?php echo ro_t('TEXT.KEINE_VERBINDUNG'); ?></b> <?php echo ro_t('TEXT.ADRESSE_PRFEN_VALETUDO_OBERFLCHE_I'); ?>
+<b><?= rb_e(ro_t('TEXT.KEINE_VERBINDUNG')) ?></b> <?= rb_e(ro_t('TEXT.ADRESSE_PRUEFEN')) ?>
 <?php } ?>
 </div>
 <?php } ?>
@@ -366,11 +510,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
  *
  * Bis 1.0.2 standen hier <div class="sm-tab"> ohne Verweis, und sm-active
  * vergab allein das JavaScript am Seitenende. Da .sm-pane auf display:none
- * steht, war die Seite ohne JavaScript vollstaendig leer - und die Reiter
- * liessen sich nicht einmal anklicken, weil ein <div> kein Verweis ist.
- *
- * Diese Liste, die Positivliste in $rb_muster und die id der Flaechen
- * muessen deckungsgleich bleiben - alle drei.
+ * steht, war die Seite ohne JavaScript vollstaendig leer.
  */
 $rb_reiter = array(
     'tab-settings' => ro_t('REITER.EINSTELLUNGEN'),
@@ -382,315 +522,139 @@ $rb_reiter = array(
 ?>
 <div class="sm-tabs">
 <?php foreach ($rb_reiter as $rb_id => $rb_bez) { ?>
-    <a class="sm-tab<?php echo $rb_tab === $rb_id ? ' sm-active' : ''; ?>" data-pane="<?php echo htmlspecialchars($rb_id, ENT_QUOTES, 'UTF-8'); ?>"
-       href="index.php?form=<?php echo htmlspecialchars(substr($rb_id, 4), ENT_QUOTES, 'UTF-8'); ?>"><?php echo $rb_bez; ?></a>
+    <a data-role="none" class="sm-tab<?= $rb_tab === $rb_id ? ' sm-active' : '' ?>" data-pane="<?= rb_e($rb_id) ?>"
+       href="index.php?form=<?= rb_e(substr($rb_id, 4)) ?>"><?= rb_e($rb_bez) ?></a>
 <?php } ?>
 </div>
 
-<!-- ================= <?php echo ro_t('TEXT.EINSTELLUNG'); ?>en ================= -->
-<div class="sm-pane<?php echo $rb_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<!-- ================= Einstellungen ================= -->
+<div class="sm-pane<?= $rb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?= rb_fmt() ?>
 
-<h2><?php echo ro_t('TEXT.ROBOTER_BIS_ZU_2'); ?></h2>
-<table class="sm-tbl" style="width:100%;">
-<tr><th style="width:36px;">Nr.</th><th style="width:34%;"><?php echo ro_t('TEXT.NAME_FREI'); ?></th><th><?php echo ro_t('TEXT.ADRESSE_IP_ODER_HOSTNAME'); ?></th><th style="width:100px;"><?php echo ro_t('TEXT.PORT'); ?></th></tr>
+<h2><?= rb_e(ro_t('EINST.H_ROBOTER')) ?></h2>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th style="width:22%;"><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th style="width:90px;"><?= rb_e(ro_t('EINST.PORT')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.BENUTZER')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.KENNWORT')) ?></th></tr>
 <?php for ($rb_i = 0; $rb_i < 2; $rb_i++) {
     $rb_r = isset($rb_cfg['robots'][$rb_i]) ? (array) $rb_cfg['robots'][$rb_i] : array();
-    $rb_r += array('name' => '', 'ip' => '', 'port' => 80); ?>
+    $rb_r += array('name' => '', 'ip' => '', 'port' => 80, 'user' => '', 'pass' => ''); ?>
 <tr>
 <td><?= $rb_i + 1 ?></td>
-<td><input data-role="none" type="text" name="r_name[]" value="<?= rb_e($rb_r['name']) ?>" placeholder="<?= $rb_i === 0 ? 'z. B. Saugroboter OG' : 'leer = ungenutzt' ?>"></td>
-<td><input data-role="none" type="text" name="r_ip[]" value="<?= rb_e($rb_r['ip']) ?>" placeholder="<?= $rb_i === 0 ? 'z. B. 192.168.1.10' : '' ?>"></td>
-<td><input data-role="none" type="number" name="r_port[]" value="<?= (int) $rb_r['port'] ?>" min="1" max="65535"></td>
+<td><input data-role="none" type="text" name="r_name[<?= $rb_i ?>]" value="<?= rb_e($rb_r['name']) ?>" placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.NAME_BEISPIEL') : ro_t('EINST.LEER_UNGENUTZT')) ?>"></td>
+<td><input data-role="none" type="text" name="r_ip[<?= $rb_i ?>]" value="<?= rb_e($rb_r['ip']) ?>" placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.IP_BEISPIEL') : '') ?>"></td>
+<td><input data-role="none" type="number" name="r_port[<?= $rb_i ?>]" value="<?= (int) $rb_r['port'] ?>" min="1" max="65535"></td>
+<td><input data-role="none" type="text" name="r_user[<?= $rb_i ?>]" value="<?= rb_e($rb_r['user']) ?>" autocomplete="off"></td>
+<td><input data-role="none" type="password" name="r_pass[<?= $rb_i ?>]" value="" autocomplete="new-password" placeholder="<?= rb_e($rb_r['pass'] !== '' ? ro_t('EINST.GESETZT') : '') ?>">
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
+<input data-role="none" type="checkbox" name="r_pass_loeschen[<?= $rb_i ?>]" value="1"> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?></label></td>
 </tr>
 <?php } ?>
 </table>
-<div class="sm-small"><?php echo ro_t('TEXT.VORAUSSETZUNG_AUF_DEM_ROBOTER_LUFT'); ?> <b><?php echo ro_t('TEXT.VALETUDO'); ?></b> <?php echo ro_t('TEXT.CLOUDFREIE_FIRMWARE_DIE_ADRESSE_IS'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.DEV_2'); ?></span> <?php echo ro_t('TEXT.ABGEFRAGT'); ?></div>
+</div>
+<div class="sm-small"><?= ro_t('EINST.ROBOTER_HINWEIS') ?></div>
+<div class="sm-small"><?= ro_t('EINST.ANMELDUNG_HINWEIS') ?></div>
 
 <div class="sm-row">
     <div>
-        <label><?php echo ro_t('TEXT.STATUS_CACHE_SEKUNDEN'); ?></label>
+        <label><?= rb_e(ro_t('EINST.CACHE')) ?></label>
         <input data-role="none" type="number" name="cache_sec" value="<?= (int) $rb_cfg['cache_sec'] ?>" min="5" max="300">
-        <div class="sm-small"><?php echo ro_t('TEXT.HUFIGERE_ABFRAGEN_WERDEN_AUS_DEM_Z'); ?></div>
+        <div class="sm-small"><?= rb_e(ro_t('EINST.CACHE_HINWEIS')) ?></div>
     </div>
     <div>
-        <label><?php echo ro_t('TEXT.WARNSCHWELLE_VERBRAUCHSMATERIAL_ST'); ?></label>
+        <label><?= rb_e(ro_t('EINST.WARN_STUNDEN')) ?></label>
         <input data-role="none" type="number" name="warn_hours" value="<?= (int) $rb_cfg['warn_hours'] ?>" min="0" max="200">
-        <div class="sm-small"><?php echo ro_t('TEXT.UNTERHALB_DIESER_RESTLAUFZEIT_MELD'); ?><span class="sm-mono"><?php echo ro_t('TEXT.MATWARN_1'); ?></span>).</div>
+        <div class="sm-small"><?= ro_t('EINST.WARN_STUNDEN_HINWEIS') ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('EINST.WARN_PROZENT')) ?></label>
+        <input data-role="none" type="number" name="warn_prozent" value="<?= (int) $rb_cfg['warn_prozent'] ?>" min="0" max="100">
+        <div class="sm-small"><?= rb_e(ro_t('EINST.WARN_PROZENT_HINWEIS')) ?></div>
     </div>
 </div>
 
-<h2><?php echo ro_t('TEXT.MELDUNGEN'); ?></h2>
+<h2><?= rb_e(ro_t('EINST.H_MELDUNGEN')) ?></h2>
 <div style="margin-bottom:10px;">
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($rb_notify['audio']) ? 'checked' : '' ?><?php echo ro_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($rb_notify['audio']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.AUDIO_AKTIV')) ?>
     </label>
-    <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($rb_notify['push']) ? 'checked' : '' ?><?php echo ro_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($rb_notify['push']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.PUSH_AKTIV')) ?>
     </label>
-    <div class="sm-small"><?php echo ro_t('TEXT.DIE_ANSAGE_SPRICHT_DAS_PLUGIN_SELB'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.ANN_1'); ?></span>.</div>
+    <div class="sm-small"><?= ro_t('EINST.MELDUNG_HINWEIS') ?></div>
 </div>
 <div>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;">
-        <input data-role="none" type="checkbox" name="n_fertig" <?= !empty($rb_notify['fertig']) ? 'checked' : '' ?><?php echo ro_t('TEXT.REINIGUNG_FERTIG_MIT_FLCHE_UND_DAU'); ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="n_fertig" <?= !empty($rb_notify['fertig']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.N_FERTIG')) ?>
     </label>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;">
-        <input data-role="none" type="checkbox" name="n_fehler" <?= !empty($rb_notify['fehler']) ? 'checked' : '' ?><?php echo ro_t('TEXT.STRUNG_FEHLER'); ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="n_fehler" <?= !empty($rb_notify['fehler']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.N_FEHLER')) ?>
     </label>
-    <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="n_material" <?= !empty($rb_notify['material']) ? 'checked' : '' ?><?php echo ro_t('TEXT.WARTUNG_FLLIG_HCHSTENS_1_TGLICH'); ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="n_material" <?= !empty($rb_notify['material']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.N_MATERIAL')) ?>
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="n_ereignis" <?= !empty($rb_notify['ereignis']) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.N_EREIGNIS')) ?>
     </label>
 </div>
 
-<h2><?php echo ro_t('TEXT.SPRACHAUSGABE'); ?></h2>
+<h2><?= rb_e(ro_t('EINST.H_SPRACHAUSGABE')) ?></h2>
 <div class="sm-row">
     <div>
-        <label><?php echo ro_t('TEXT.AUDIO_AUSGABE'); ?></label>
+        <label><?= rb_e(ro_t('EINST.TTS_WEG')) ?></label>
         <select data-role="none" name="tts_mode" id="tts_mode" onchange="rbTtsMode()">
-            <option value="musicserver"<?= $rb_tts['mode'] === 'musicserver' ? ' selected' : '' ?><?php echo ro_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
-            <option value="ms4h"<?= $rb_tts['mode'] === 'ms4h' ? ' selected' : '' ?><?php echo ro_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
-            <option value="audioserver"<?= $rb_tts['mode'] === 'audioserver' ? ' selected' : '' ?><?php echo ro_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
-            <option value="custom"<?= $rb_tts['mode'] === 'custom' ? ' selected' : '' ?><?php echo ro_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
+            <option value="musicserver"<?= $rb_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_MUSICSERVER')) ?></option>
+            <option value="ms4h"<?= $rb_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_MS4H')) ?></option>
+            <option value="audioserver"<?= $rb_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_AUDIOSERVER')) ?></option>
+            <option value="custom"<?= $rb_tts['mode'] === 'custom' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_EIGEN')) ?></option>
         </select>
     </div>
     <div>
-        <label><?php echo ro_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= rb_e($rb_tts['ip']) ?>" placeholder="z. B. 192.168.1.20">
+        <label><?= rb_e(ro_t('EINST.TTS_IP')) ?></label>
+        <input data-role="none" type="text" name="tts_ip" value="<?= rb_e($rb_tts['ip']) ?>" placeholder="<?= rb_e(ro_t('EINST.IP_BEISPIEL2')) ?>">
     </div>
     <div>
-        <label>Port</label>
+        <label><?= rb_e(ro_t('EINST.PORT')) ?></label>
         <input data-role="none" type="number" name="tts_port" value="<?= (int) $rb_tts['port'] ?>" min="1" max="65535">
     </div>
 </div>
 <div class="sm-row">
     <div>
-        <label><?php echo ro_t('TEXT.ZONEN'); ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= rb_e($rb_tts['zones']) ?>" placeholder="z. B. 2,4,6">
-        <div class="sm-small"><?php echo ro_t('TEXT.ZONENNUMMERN_MIT_KOMMA_Z_B'); ?> <span class="sm-mono">2,4,6</span><?php echo ro_t('TEXT.DIE_LAUTSTRKE_KOMMT_AUS_DEM_FELD_D'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.ZONE_LAUTSTRKE'); ?></span> <?php echo ro_t('TEXT.Z_B'); ?> <span class="sm-mono">2~25,4~40</span><?php echo ro_t('TEXT.LEERZEICHEN_NACH_DEM_KOMMA_SIND_ER'); ?> <span class="sm-mono">2,4,6</span> und <span class="sm-mono">2, 4, 6</span> <?php echo ro_t('TEXT.FUNKTIONIEREN_BEIDE'); ?></div>
+        <label><?= rb_e(ro_t('EINST.ZONEN')) ?></label>
+        <input data-role="none" type="text" name="tts_zones" value="<?= rb_e($rb_tts['zones']) ?>" placeholder="2,4,6">
+        <div class="sm-small"><?= ro_t('EINST.ZONEN_HINWEIS') ?></div>
     </div>
     <div>
-        <label><?php echo ro_t('TEXT.LAUTSTRKE'); ?></label>
+        <label><?= rb_e(ro_t('EINST.LAUTSTAERKE')) ?></label>
         <input data-role="none" type="number" name="tts_volume" value="<?= (int) $rb_tts['volume'] ?>" min="1" max="100">
     </div>
     <div>
-        <label><?php echo ro_t('TEXT.SPRACHE'); ?></label>
+        <label><?= rb_e(ro_t('EINST.SPRACHE')) ?></label>
         <input data-role="none" type="text" name="tts_lang" value="<?= rb_e($rb_tts['lang']) ?>" maxlength="2">
     </div>
 </div>
 <div id="tts_template_row">
-    <label><?php echo ro_t('TEXT.URL_VORLAGE_FR_AUDIOSERVER4HOME_MS'); ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="<?php echo ro_t('TEXT.HTTP'); ?>{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= rb_e($rb_tts['template']) ?></textarea>
-    <div class="sm-small"><?php echo ro_t('TEXT.PLATZHALTER'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.IP_PORT_ZONES_VOL_LANG_TEXT'); ?></span><?php echo ro_t('TEXT.LEER_STANDARD_VORLAGE'); ?></div>
+    <label><?= rb_e(ro_t('EINST.TTS_VORLAGE')) ?></label>
+    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= rb_e($rb_tts['template']) ?></textarea>
+    <div class="sm-small"><?= ro_t('EINST.TTS_VORLAGE_HINWEIS') ?></div>
 </div>
 <div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
-    <?php echo ro_t('TEXT.DER_ORIGINALE_LOXONE_AUDIOSERVER_B'); ?> <span class="sm-mono">ANN=1</span>.
+    <?= ro_t('EINST.TTS_AUDIOSERVER_HINWEIS') ?>
 </div>
 
-<button data-role="none" class="sm-btn" type="submit"><?php echo ro_t('TEXT.SPEICHERN'); ?></button>
-</form>
-</div>
-
-<!-- ================= Einbindung in Loxone ================= -->
-<!-- ================= Reiter: MQTT (eigener Reiter seit 1.0.10, Hausstandard) ================= -->
-<div class="sm-pane<?php echo $rb_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
-<form action="index.php" method="post">
-<input data-role="none" type="hidden" name="mqtt_save" value="1">
-<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
-<h2><?php echo ro_t('TEXT.MQTT_OPTIONAL'); ?></h2>
-<?php if (function_exists('ro_mqtt_gateway_autostart') && ro_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo ro_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
-<label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($rb_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo ro_t('TEXT.ZUSTAND_PER_MQTT_VERFFENTLICHEN'); ?>
-</label>
-<div class="sm-row" style="margin-top:6px;">
-    <div>
-        <label><?php echo ro_t('TEXT.TOPIC_PRFIX'); ?></label>
-        <input data-role="none" type="text" name="mqtt_topic" value="<?= rb_e($rb_cfg['mqtt_topic']) ?>" placeholder="saugrobo">
-        <div class="sm-small"><?php echo ro_t('TEXT.VERFFENTLICHT_U_A'); ?> <span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?><?php echo ro_t('TEXT.CODE'); ?></span>,
-        <span class="sm-mono"><?php echo ro_t('TEXT.STATUS'); ?></span>, <span class="sm-mono"><?php echo ro_t('TEXT.BATTERIE_2'); ?></span>, <span class="sm-mono"><?php echo ro_t('TEXT.FEHLER_2'); ?></span>,
-        <span class="sm-mono"><?php echo ro_t('TEXT.FLAECHE'); ?></span>, <span class="sm-mono"><?php echo ro_t('TEXT.FILTER'); ?></span>, <span class="sm-mono"><?php echo ro_t('TEXT.MATERIAL_WARN'); ?></span>
-        <?php echo ro_t('TEXT.ROBOTER_2'); ?> <span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/2/...</span>).</div>
-    </div>
-</div>
-
-<button data-role="none" class="sm-btn" type="submit"><?php echo ro_t('TEXT.SPEICHERN'); ?></button>
-</form>
-</div>
-
-<div class="sm-pane<?php echo $rb_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
-<h2><?php echo ro_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
-<p><?php echo ro_t('TEXT.DAS_PLUGIN_FASST_DIE_VIER_VALETUDO'); ?> <b><?php echo ro_t('TEXT.EINER'); ?></b> <?php echo ro_t('TEXT.ABFRAGE_ZUSAMMEN_STATT_BISHER_VIER'); ?> <b><?php echo ro_t('TEXT.STATUSZAHL'); ?></b>.</p>
-
-<div class="sm-step"><b><?php echo ro_t('TEXT.SCHRITT_1_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo ro_t('TEXT.ABFRAGE_ALLE_30_S'); ?>
-<table class="sm-tbl">
-<tr><th><?php echo ro_t('TEXT.EIGENSCHAFT'); ?></th><th><?php echo ro_t('TEXT.WERT'); ?></th></tr>
-<tr><td>URL</td><td><span class="sm-mono">http://<?= $rb_host ?><?php echo ro_t('TEXT.PLUGINS'); ?><?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP'); ?></span> (Roboter 2: <span class="sm-mono"><?php echo ro_t('TEXT.DEV_2_2'); ?></span>)</td></tr>
-<tr><td><?php echo ro_t('TEXT.ABFRAGEZYKLUS'); ?></td><td><?php echo ro_t('TEXT.30_SEKUNDEN'); ?></td></tr>
-</table>
-</div>
-
-<div class="sm-step"><b><?php echo ro_t('TEXT.SCHRITT_2_BEFEHLSERKENNUNGEN'); ?></b>
-<table class="sm-tbl">
-<tr><th><?php echo ro_t('TEXT.BEFEHLSERKENNUNG'); ?></th><th><?php echo ro_t('TEXT.BEDEUTUNG'); ?></th></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.ICODE_I_V'); ?></span></td><td><b>Statuszahl</b><?php echo ro_t('TEXT.0_LADESTATION_1_BEREIT_2_REINIGT_3'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IBATT_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.ILAEDT_I_V'); ?></span></td><td><?php echo ro_t('TEXT.BATTERIE_IN_1_LDT_GERADE'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IFEHLER_I_V'); ?></span></td><td><?php echo ro_t('TEXT.FEHLERCODE_0_KEIN_FEHLER'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IFLAECHE_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IDAUER_I_V'); ?></span></td><td><?php echo ro_t('TEXT.LETZTE_REINIGUNG_M_SUP2_UND_MINUTE'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IFLAECHEG_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IDAUERG_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IANZAHLG_I_V'); ?></span></td><td><?php echo ro_t('TEXT.GESAMTWERTE_M_SUP2_STUNDEN_ANZAHL_'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IFILTER_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IBHAUPT_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IBSEITE_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.ISENSOR_I_V'); ?></span></td><td><?php echo ro_t('TEXT.VERBRAUCHSMATERIAL_RESTSTUNDEN_BIS'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IMATWARN_I_V'); ?></span></td><td><?php echo ro_t('TEXT.1_MINDESTENS_EIN_TEIL_UNTER_DER_WA'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IANN_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IPUSH_I_V'); ?></span> / <span class="sm-mono"><?php echo ro_t('TEXT.IPTEST_I_V'); ?></span></td><td><?php echo ro_t('TEXT.MELDEFENSTER_PUSH_FREIGABE_TEST_PU'); ?></td></tr>
-<tr><td><span class="sm-mono"><?php echo ro_t('TEXT.IOK_I_V'); ?></span></td><td><?php echo ro_t('TEXT.1_ROBOTER_ERREICHBAR'); ?></td></tr>
-</table>
-</div>
-
-<div class="sm-step"><b><?php echo ro_t('TEXT.SCHRITT_3_STEUERUNG_BER_EINEN_VIRT'); ?></b><br>
-<?php echo ro_t('TEXT.VALETUDO_VERLANGT_EIGENTLICH_PUT_A'); ?>
-<table class="sm-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td><?php echo ro_t('TEXT.ADRESSE_VIRTUELLER_AUSGANG'); ?></td><td><span class="sm-mono">http://<?= $rb_host ?></span></td></tr>
-</table>
-<table class="sm-tbl">
-<tr><th><?php echo ro_t('TEXT.BEFEHL_BEI_EIN'); ?></th><th><?php echo ro_t('TEXT.WIRKUNG'); ?></th></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_START'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.KOMPLETTREINIGUNG_STARTEN'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_PAUSE'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.PAUSIEREN'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_STOP'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.STOPPEN'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_HOME'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.ZUR_LADESTATION'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_LOCATE'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.ROBOTER_PIEPSEN_LASSEN_WIEDERFINDE'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_SEGMENTSP_1_4'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.NUR_BESTIMMTE_RUME_REINIGEN_IDS_SI'); ?></td></tr>
-<tr><td><span class="sm-mono">/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_CMD_FANP_MAX'); ?>&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?></span></td><td><?php echo ro_t('TEXT.SAUGSTRKE_LOW_MEDIUM_HIGH_MAX_TURB'); ?></td></tr>
-</table>
-<div class="sm-alert sm-warn"><b>Token n&ouml;tig:</b> Der Endpunkt liegt unangemeldet und ist deshalb mit einem Token abgesichert &ndash; ohne passendes <span class="sm-mono">&amp;token=...</span> antwortet er mit HTTP 403 (aktuelles Token im n&auml;chsten Abschnitt).</div>
-</div>
-
-<div class="sm-step"><b>Aktionstoken</b>
-<table class="sm-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>Aktuelles Token</td><td><span class="sm-mono"><?= rb_e($rb_cfg['aktionstoken']) ?></span></td></tr>
-</table>
-<div class="sm-knopfreihe sm-b-aktion">
-  <form method="post" action="index.php">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo ro_t('TEXT.K_TOKEN_NEU'); ?></button>
-  </form>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.SPEICHERN')) ?></button>
 </div>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> Aktion &ndash; &auml;ndert bestehende Loxone-Adressen</span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
 </div>
-</div>
-
-<h2><?php echo ro_t('TEXT.H_VORLAGE'); ?></h2>
-<div class="sm-hinweis"><?php echo ro_t('TEXT.H_VORLAGE_TEXT'); ?></div>
-<form action="index.php" method="post" style="margin-bottom:14px;">
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <input data-role="none" type="hidden" name="vorlage" value="1">
-  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo ro_t('TEXT.K_VORLAGE'); ?></button>
-</form>
-<form action="index.php" method="post" style="margin-bottom:14px;">
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <input data-role="none" type="hidden" name="vorlage_vo" value="1">
-  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo ro_t('TEXT.K_VORLAGE_VO'); ?></button>
 </form>
 
-<div class="sm-step"><b><?php echo ro_t('TEXT.SCHRITT_4_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
-<b><?php echo ro_t('TEXT.4A_KACHELN_UND_ZUSTANDSANZEIGE'); ?></b>
-<table class="sm-tbl">
-<tr><th><?php echo ro_t('TEXT.BAUSTEIN'); ?></th><th><?php echo ro_t('TEXT.NAME'); ?></th><th>Einstellung</th><th><?php echo ro_t('TEXT.EINGNGE'); ?></th></tr>
-<tr><td><?php echo ro_t('TEXT.STATUSBAUSTEIN'); ?></td><td><?php echo ro_t('TEXT.SAUGROBOTER_ZUSTAND'); ?></td><td><?php echo ro_t('TEXT.TEXTE_JE_WERT_0_IN_DER_LADESTATION'); ?></td><td><?php echo ro_t('TEXT.I1_CODE'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.ANALOGANZEIGEN'); ?></td><td><?php echo ro_t('TEXT.BATTERIE_FLCHE_DAUER'); ?></td><td><?php echo ro_t('TEXT.EINHEITEN'); ?> <span class="sm-mono">&lt;v.0&gt; %</span>, <span class="sm-mono"><?php echo ro_t('TEXT.V_1_M_SUP2'); ?></span>, <span class="sm-mono"><?php echo ro_t('TEXT.V_0_MIN'); ?></span></td><td><?php echo ro_t('TEXT.BATT_FLAECHE_DAUER'); ?></td></tr>
-<tr><td>Analoganzeigen</td><td><?php echo ro_t('TEXT.FILTER_BRSTEN_SENSOREN'); ?></td><td>Einheit <span class="sm-mono">&lt;v.0&gt; h</span> <?php echo ro_t('TEXT.RESTLAUFZEIT_BIS_ZUR_WARTUNG'); ?></td><td><?php echo ro_t('TEXT.FILTER_BHAUPT_BSEITE_SENSOR'); ?></td></tr>
-</table>
-<b><?php echo ro_t('TEXT.4B_MELDUNGEN_FERTIG_STRUNG_WARTUNG'); ?></b>
-<table class="sm-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_S1'); ?></td><td><?php echo ro_t('TEXT.MELDEFENSTER_AKTIV'); ?></td><td><?php echo ro_t('TEXT.EIN_0_5_AUS_0_4'); ?></td><td><?php echo ro_t('TEXT.ANN'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_S2'); ?></td><td><?php echo ro_t('TEXT.PUSH_FREIGEGEBEN'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo ro_t('TEXT.PUSH'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.UND_U1_ODER_O1'); ?></td><td><?php echo ro_t('TEXT.ROBOTER_MELDUNG'); ?></td><td><?php echo ro_t('TEXT.O1_IST_DIE_EINZIGE_QUELLE_DES_BENA'); ?></td><td><?php echo ro_t('TEXT.U1_S1_S2'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN'); ?></td><td><?php echo ro_t('TEXT.PUSH_SAUGROBOTER'); ?></td><td><?php echo ro_t('TEXT.TEXT_Z_B_SAUGROBOTER_MELDUNG_DETAI'); ?></td><td><?php echo ro_t('TEXT.O1'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_S3'); ?></td><td><?php echo ro_t('TEXT.STRUNG'); ?></td><td><?php echo ro_t('TEXT.EIN_0_5_AN_FEHLER_FR_EINE_EIGENE_W'); ?></td><td><?php echo ro_t('TEXT.FEHLER_3'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_S4'); ?></td><td><?php echo ro_t('TEXT.WARTUNG_FLLIG'); ?></td><td><?php echo ro_t('TEXT.EIN_0_5_AN_MATWARN'); ?></td><td><?php echo ro_t('TEXT.MATWARN'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN_2'); ?></td><td><?php echo ro_t('TEXT.TEST_PUSH'); ?></td><td><?php echo ro_t('TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST'); ?></td><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_AN_PTEST'); ?></td></tr>
-</table>
-<b><?php echo ro_t('TEXT.4C_AUTOMATISCH_SAUGEN_WENN_NIEMAND'); ?></b>
-<table class="sm-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td><?php echo ro_t('TEXT.SCHWELLWERTSCHALTER_S5'); ?></td><td><?php echo ro_t('TEXT.ROBOTER_IST_BEREIT'); ?></td><td><?php echo ro_t('TEXT.INVERTIERT_EIN_BEI_UNTERSCHREITEN_'); ?></td><td><?php echo ro_t('TEXT.CODE_2'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.UND_U2'); ?></td><td><?php echo ro_t('TEXT.SAUGEN_FREIGEBEN'); ?></td><td><?php echo ro_t('TEXT.AUF_DEN_VIRTUELLEN_AUSGANG'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.CMD_START'); ?></span></td><td><?php echo ro_t('TEXT.S5_ABWESENHEIT_ZEITFENSTER_NICHT_W'); ?></td></tr>
-<tr><td><?php echo ro_t('TEXT.UND_U3'); ?></td><td><?php echo ro_t('TEXT.SOFORT_HEIMSCHICKEN'); ?></td><td><?php echo ro_t('TEXT.TEXT'); ?> <span class="sm-mono"><?php echo ro_t('TEXT.CMD_HOME'); ?></span><?php echo ro_t('TEXT.WENN_JEMAND_NACH_HAUSE_KOMMT'); ?></td><td><?php echo ro_t('TEXT.ANWESENHEIT_CODE_2'); ?></td></tr>
-</table>
-<b><?php echo ro_t('TEXT.PRAXIS_ERFAHRUNG'); ?></b> <?php echo ro_t('TEXT.DER_BENACHRICHTIGUNGS_BAUSTEIN_SEN'); ?>
-</div>
-
-<div class="sm-step"><b><?php echo ro_t('TEXT.SCHRITT_5_MQTT_UND_JSON'); ?></b><br>
-<?php echo ro_t('TEXT.ALLE_WERTE_AUCH_PER_MQTT_REITER_EI'); ?>
-<span class="sm-mono">http://<?= $rb_host ?>/plugins/<?= rb_e($rb_plugin) ?><?php echo ro_t('TEXT.ROBO_PHP_JSON_1'); ?></span>
-</div>
-</div>
-
-<!-- ================= Test ================= -->
-<div class="sm-pane<?php echo $rb_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
-<h2>Test</h2>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo ro_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo ro_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo ro_t('LEGENDE.AKTION'); ?></span>
-</div>
-
-<h3 class="sm-h3"><?php echo ro_t('TEXT.ANSEHEN'); ?></h3>
-<div class="sm-knopfreihe">
-<a class="sm-btn sm-b-lesen"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php" target="_blank"><?php echo ro_t('TEXT.LOXONE_ZEILE_ABRUFEN'); ?></a>
-<a class="sm-btn sm-b-lesen"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?json=1" target="_blank"><?php echo ro_t('TEXT.JSON_ANSICHT'); ?></a>
-</div>
-
-<h3 class="sm-h3"><?php echo ro_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
-<div class="sm-knopfreihe">
-<a class="sm-btn sm-b-technik"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?debug=1&amp;refresh=1" target="_blank"><?php echo ro_t('TEXT.DEBUG_INKL_RAUMLISTE'); ?></a>
-</div>
-
-<h3 class="sm-h3"><?php echo ro_t('TEXT.LST_ETWAS_AUS'); ?></h3>
-<div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?ptest=1&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.TEST_PUSHNACHRICHT'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=locate&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.ROBOTER_PIEPSEN_LASSEN'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=home&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.ZUR_LADESTATION_2'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= rb_e($rb_plugin) ?>/robo.php?cmd=stop&amp;token=<?= rb_e($rb_cfg['aktionstoken']) ?>" target="_blank"><?php echo ro_t('TEXT.STOPP'); ?></a>
-</div>
-
-
-<div class="sm-small"><?php echo ro_t('TEXT.PIEPSEN_LASSEN_IST_DER_UNGEFHRLICH'); ?></div>
-<?php $rb_seg = function_exists('ro_segments') ? ro_segments(1) : array(); if ($rb_seg) { ?>
-<h2><?php echo ro_t('TEXT.RUME_SEGMENT_IDS'); ?></h2>
-<table class="sm-tbl"><tr><th>ID</th><th>Name</th><th><?php echo ro_t('TEXT.AUFRUF_FR_LOXONE'); ?></th></tr>
-<?php foreach ($rb_seg as $rb_id => $rb_nm) { ?>
-<tr><td><span class="sm-mono"><?= rb_e($rb_id) ?></span></td><td><?= rb_e($rb_nm) ?></td>
-<td><span class="sm-mono"><?php echo ro_t('TEXT.CMD_SEGMENTSP'); ?><?= rb_e($rb_id) ?></span></td></tr>
-<?php } ?></table>
-<div class="sm-small"><?php echo ro_t('TEXT.MEHRERE_RUME_MIT_KOMMA'); ?> <span class="sm-mono">?cmd=segments&amp;p=<?= rb_e(implode(',', array_slice(array_keys($rb_seg), 0, 2))) ?></span></div>
-<?php } else { ?>
-<div class="sm-alert sm-info"><?php echo ro_t('TEXT.RAUMLISTE_NOCH_NICHT_VERFGBAR_ERSC'); ?></div>
-<?php } ?>
-</div>
-
-<!-- ================= <?php echo ro_t('TEXT.PROTOKOLL'); ?> ================= -->
-<div class="sm-pane<?php echo $rb_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
-<h2>Protokoll</h2>
-<div class="sm-small" style="margin-bottom:8px;"><?php echo ro_t('TEXT.PROTOKOLLIERT_WERDEN_STATUSNDERUNG'); ?><br><?php echo ro_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= rb_e($rb_logfile) ?></span></div>
-<?php if ($rb_loglines) { ?>
-<div class="sm-log"><?= rb_e(implode("\n", $rb_loglines)) ?></div>
-<?php } else { ?>
-<div class="sm-alert sm-info"><?php echo ro_t('TEXT.NOCH_KEINE_PROTOKOLL_EINTRGE_VORHA'); ?></div>
-<?php } ?>
-<form action="index.php" method="post" style="margin-top:10px;">
-    <input data-role="none" type="hidden" name="clearlog" value="1">
-    <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo ro_t('TEXT.PROTOKOLL_LEEREN'); ?></button>
-</form>
-</div>
-
-
-<h2><?= ro_t('TEXT.H_SICHERUNG') ?></h2>
-<div class="sm-hinweis"><?= ro_t('TEXT.SICH_ERKLAERUNG') ?></div>
-<div class="sm-warnung"><?= ro_t('TEXT.SICH_WARNUNG') ?></div>
+<h2><?= rb_e(ro_t('EINST.H_SICHERUNG')) ?></h2>
+<div class="sm-hinweis"><?= ro_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= ro_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -698,14 +662,329 @@ $rb_reiter = array(
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ro_sichern" value="1"><?= ro_t('TEXT.K_SICHERN') ?></button>
+    <?= rb_fmt() ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ro_sichern" value="1"><?= rb_e(ro_t('KNOPF.SICHERN')) ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <?= rb_fmt() ?>
     <input data-role="none" type="file" name="ro_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_zurueck" value="1"><?= ro_t('TEXT.K_ZURUECK') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_zurueck" value="1"><?= rb_e(ro_t('KNOPF.ZURUECK')) ?></button>
   </form>
 </div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= rb_e(ro_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
+</div>
+</div>
+
+<!-- ================= MQTT ================= -->
+<div class="sm-pane<?= $rb_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<?= rb_fmt() ?>
+<h2><?= rb_e(ro_t('MQTT.H_MQTT')) ?></h2>
+<?php if (ro_mqtt_gateway_autostart() === false) { ?><div class="sm-warnung"><b>MQTT:</b> <?= ro_t('MQTT.W_AUTOSTART') ?></div><?php } ?>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($rb_cfg['mqtt_enabled']) ? 'checked' : '' ?>> <?= rb_e(ro_t('MQTT.EINSCHALTEN')) ?>
+</label>
+<div class="sm-row" style="margin-top:6px;">
+    <div>
+        <label><?= rb_e(ro_t('MQTT.PRAEFIX')) ?></label>
+        <input data-role="none" type="text" name="mqtt_topic" value="<?= rb_e($rb_cfg['mqtt_topic']) ?>" placeholder="saugrobo">
+        <div class="sm-small"><?= sprintf(ro_t('MQTT.PRAEFIX_HINWEIS'),
+            '<span class="sm-mono">' . rb_e($rb_cfg['mqtt_topic']) . '/code</span>',
+            '<span class="sm-mono">' . rb_e($rb_cfg['mqtt_topic']) . '/2/&hellip;</span>') ?></div>
+    </div>
+</div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.SPEICHERN')) ?></button>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
+</div>
+</form>
+
+<h2><?= rb_e(ro_t('MQTT.H_ABO')) ?></h2>
+<?php
+/* Der Abo-Hinweis in der Fassung, die zum Gateway passt - aus EINER Quelle
+ * (ro_abo_text()). Bis 1.0.14 stand hier gar nichts: unter Gateway V1 muss
+ * das Abo von Hand eingetragen werden, sonst kommt am Miniserver nichts an,
+ * und das ist die haeufigste Fehlerursache ueberhaupt. */
+$rb_gw = ro_mqtt_gateway_info();
+$rb_gwf = ($rb_gw === null) ? 0 : (int) $rb_gw['fassung'];
+?>
+<div class="<?= $rb_gwf >= 2 ? 'sm-hinweis' : 'sm-warnung' ?>"><?= ro_abo_text() ?></div>
+<?php if ($rb_gwf < 2) { ?>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('MQTT.EINZUTRAGEN')) ?></th><th><?= rb_e(ro_t('WORT.ZWECK')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/#</span></td><td><?= rb_e(ro_t('MQTT.ABO_ALLE')) ?></td></tr>
+</table>
+<?php } ?>
+
+<h2><?= rb_e(ro_t('MQTT.H_THEMEN')) ?></h2>
+<div class="sm-hinweis"><?= ro_t('MQTT.LEBENSZEICHEN_HINWEIS') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.THEMA')) ?></th><th><?= rb_e(ro_t('WORT.BEDEUTUNG')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/ok</span></td><td><?= rb_e(ro_t('MQTT.T_OK')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/ts</span></td><td><?= rb_e(ro_t('MQTT.T_TS')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/zaehler</span></td><td><?= rb_e(ro_t('MQTT.T_ZAEHLER')) ?></td></tr>
+<?php foreach (ro_felder() as $rb_name => $rb_f) { ?>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/<?= rb_e(strtolower($rb_name)) ?></span></td><td><?= rb_e($rb_f[4]) ?><?= $rb_f[3] !== '' ? ' [' . rb_e($rb_f[3]) . ']' : '' ?></td></tr>
+<?php } ?>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status</span></td><td><?= rb_e(ro_t('MQTT.T_STATUSTEXT')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/fehlertext</span></td><td><?= rb_e(ro_t('MQTT.T_FEHLERTEXT')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/ereignistext</span></td><td><?= rb_e(ro_t('MQTT.T_EREIGNISTEXT')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/meldung</span></td><td><?= rb_e(ro_t('MQTT.T_MELDUNG')) ?></td></tr>
+</table>
+</div>
+</div>
+
+<!-- ================= Einbindung in Loxone ================= -->
+<div class="sm-pane<?= $rb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
+<h2><?= rb_e(ro_t('LOX.H_EINBINDUNG')) ?></h2>
+<p><?= ro_t('LOX.EINLEITUNG') ?></p>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT1')) ?></b>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad()) ?></span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.ROBOTER2')) ?></td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('dev' => 2))) ?></span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.ABFRAGEZYKLUS')) ?></td><td><?= rb_e(ro_t('LOX.30_SEKUNDEN')) ?></td></tr>
+</table>
+</div>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT2')) ?></b>
+<div class="sm-hinweis"><?= ro_t('LOX.SUCHTEXT_HINWEIS') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('LOX.BEFEHLSERKENNUNG')) ?></th><th><?= rb_e(ro_t('WORT.BEDEUTUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINHEIT')) ?></th></tr>
+<?php foreach (ro_felder() as $rb_name => $rb_f) { ?>
+<tr><td><span class="sm-mono"><?= rb_e(ro_check($rb_name)) ?></span></td><td><?= rb_e($rb_f[4]) ?></td><td><?= rb_e($rb_f[3]) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+</div>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT3')) ?></b><br>
+<?= ro_t('LOX.SCHRITT3_TEXT') ?>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('LOX.ADRESSE_VO')) ?></td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?></span></td></tr>
+</table>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('LOX.BEFEHL_BEI_EIN')) ?></th><th><?= rb_e(ro_t('WORT.WIRKUNG')) ?></th></tr>
+<?php foreach (ro_befehle() as $rb_bname => $rb_b) {
+    $rb_werte = array('cmd' => $rb_bname);
+    if ($rb_b[0] !== '') { $rb_werte['p'] = $rb_b[0]; }
+    $rb_werte['token'] = $rb_cfg['aktionstoken']; ?>
+<tr><td><span class="sm-mono"><?= rb_e(ro_endpunkt_pfad($rb_werte)) ?></span></td><td><?= rb_e($rb_b[1]) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-warnung"><?= ro_t('LOX.TOKEN_NOETIG') ?></div>
+</div>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.H_TOKEN')) ?></b>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('LOX.AKTUELLES_TOKEN')) ?></td><td><span class="sm-mono"><?= rb_e($rb_cfg['aktionstoken']) ?></span></td></tr>
+</table>
+<div class="sm-knopfreihe">
+  <form method="post" action="index.php">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <?= rb_fmt() ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= rb_e(ro_t('KNOPF.TOKEN_NEU')) ?></button>
+  </form>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION_TOKEN')) ?></span>
+</div>
+</div>
+
+<h2><?= rb_e(ro_t('LOX.H_VORLAGE')) ?></h2>
+<div class="sm-hinweis"><?= ro_t('LOX.VORLAGE_TEXT') ?></div>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <?= rb_fmt() ?>
+  <div class="sm-row">
+    <div>
+      <label><?= rb_e(ro_t('LOX.VORLAGE_ROBOTER')) ?></label>
+      <select data-role="none" name="vorlage_dev">
+        <option value="1">1</option><option value="2">2</option>
+      </select>
+    </div>
+    <div>
+      <label style="min-height:0;"><?= rb_e(ro_t('LOX.VORLAGE_UMFANG')) ?></label>
+      <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="vorlage_belegt" value="1"> <?= rb_e(ro_t('LOX.VORLAGE_NUR_BELEGT')) ?>
+      </label>
+      <div class="sm-small"><?= sprintf(ro_t('LOX.VORLAGE_ANZAHL'), count(ro_felder())) ?></div>
+    </div>
+  </div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="1"><?= rb_e(ro_t('KNOPF.VORLAGE_VI')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_vo" value="1"><?= rb_e(ro_t('KNOPF.VORLAGE_VO')) ?></button>
+  </div>
+</form>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
+</div>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT4')) ?></b><br>
+<b><?= rb_e(ro_t('LOX.B4A')) ?></b>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('LOX.STATUSBAUSTEIN')) ?></td><td><?= rb_e(ro_t('LOX.SAUGROBOTER_ZUSTAND')) ?></td><td><?= rb_e(ro_t('LOX.TEXTE_JE_WERT')) ?></td><td><span class="sm-mono">CODE</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.ANALOGANZEIGEN')) ?></td><td><?= rb_e(ro_t('LOX.BATT_FLAECHE_DAUER')) ?></td><td><?= rb_e(ro_t('WORT.EINHEIT')) ?> <span class="sm-mono">&lt;v.0&gt; %</span>, <span class="sm-mono">&lt;v.1&gt; m&sup2;</span>, <span class="sm-mono">&lt;v.0&gt; min</span></td><td><span class="sm-mono">BATT, FLAECHE, DAUER</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.ANALOGANZEIGEN')) ?></td><td><?= rb_e(ro_t('LOX.VERBRAUCH')) ?></td><td><?= rb_e(ro_t('WORT.EINHEIT')) ?> <span class="sm-mono">&lt;v.0&gt; h</span></td><td><span class="sm-mono">FILTER, BHAUPT, BSEITE, SENSOR, MOP</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.STATUSBAUSTEIN')) ?></td><td><?= rb_e(ro_t('LOX.STATION')) ?></td><td><?= rb_e(ro_t('LOX.TEXTE_JE_WERT_DOCK')) ?></td><td><span class="sm-mono">DOCK</span></td></tr>
+</table>
+<b><?= rb_e(ro_t('LOX.B4B')) ?></b>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S1</td><td><?= rb_e(ro_t('LOX.MELDEFENSTER')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AUS04')) ?></td><td><span class="sm-mono">ANN</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S2</td><td><?= rb_e(ro_t('LOX.PUSH_FREIGEGEBEN')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AUS04')) ?></td><td><span class="sm-mono">PUSH</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.UND_ODER')) ?></td><td><?= rb_e(ro_t('LOX.ROBOTER_MELDUNG')) ?></td><td><?= rb_e(ro_t('LOX.O1_QUELLE')) ?></td><td><span class="sm-mono">S1, S2</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.BENACHRICHTIGUNG')) ?></td><td><?= rb_e(ro_t('LOX.PUSH_SAUGROBOTER')) ?></td><td><?= rb_e(ro_t('LOX.PUSH_TEXT')) ?></td><td><span class="sm-mono">O1</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S3</td><td><?= rb_e(ro_t('LOX.STOERUNG')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">FEHLER</span></td><td><span class="sm-mono">FEHLER</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S4</td><td><?= rb_e(ro_t('LOX.WARTUNG')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">MATWARN</span></td><td><span class="sm-mono">MATWARN</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S5</td><td><?= rb_e(ro_t('LOX.BEHAELTER_VOLL')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">EVMUELL</span></td><td><span class="sm-mono">EVMUELL</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.BENACHRICHTIGUNG')) ?></td><td><?= rb_e(ro_t('LOX.TEST_PUSH')) ?></td><td><?= rb_e(ro_t('LOX.EIGENER_BAUSTEIN')) ?></td><td><span class="sm-mono">PTEST</span></td></tr>
+</table>
+<b><?= rb_e(ro_t('LOX.B4C')) ?></b>
+<table class="sm-tbl">
+<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S6</td><td><?= rb_e(ro_t('LOX.PLUGIN_LEBT')) ?></td><td><?= rb_e(ro_t('LOX.ALTER_HINWEIS')) ?></td><td><span class="sm-mono">ALTER</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S7</td><td><?= rb_e(ro_t('LOX.ROBOTER_BEREIT')) ?></td><td><?= rb_e(ro_t('LOX.INVERTIERT')) ?></td><td><span class="sm-mono">CODE</span></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U2</td><td><?= rb_e(ro_t('LOX.SAUGEN_FREIGEBEN')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=start</span></td><td><?= rb_e(ro_t('LOX.S7_ABWESENHEIT')) ?></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U3</td><td><?= rb_e(ro_t('LOX.HEIMSCHICKEN')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=home</span></td><td><?= rb_e(ro_t('LOX.ANWESENHEIT')) ?></td></tr>
+<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U4</td><td><?= rb_e(ro_t('LOX.ABSAUGEN_NACHTS')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=absaugen</span></td><td><?= rb_e(ro_t('LOX.U4_EINGAENGE')) ?></td></tr>
+</table>
+<b><?= rb_e(ro_t('LOX.PRAXIS')) ?></b> <?= ro_t('LOX.PRAXIS_TEXT') ?>
+</div>
+
+<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT5')) ?></b><br>
+<?= ro_t('LOX.SCHRITT5_TEXT') ?>
+<span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?></span>
+</div>
+</div>
+
+<!-- ================= Test ================= -->
+<div class="sm-pane<?= $rb_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
+<h2><?= rb_e(ro_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
+<div class="sm-small"><?= rb_e(ro_t('TEST.SELBST_HINWEIS')) ?></div>
+<table class="sm-tbl sm-pruef">
+<?php foreach (ro_selbsttest() as $rb_z) {
+    $rb_zeichen = $rb_z['ok'] === 1 ? '&#10003;' : ($rb_z['ok'] === 0 ? '&#10007;' : '&ndash;');
+    $rb_farbe = $rb_z['ok'] === 1 ? '#4f7d17' : ($rb_z['ok'] === 0 ? '#c62828' : '#888'); ?>
+<tr><td style="color:<?= $rb_farbe ?>;"><?= $rb_zeichen ?></td><td><?= rb_e(ro_t($rb_z['bez'])) ?></td><td><?= rb_e($rb_z['text']) ?></td></tr>
+<?php } ?>
+</table>
+
+<h2>Test</h2>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= rb_e(ro_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
+</div>
+
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.ANSEHEN')) ?></h3>
+<div class="sm-knopfreihe">
+<a data-role="none" class="sm-btn sm-b-lesen" href="<?= rb_e(ro_endpunkt_pfad()) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ZEILE')) ?></a>
+<a data-role="none" class="sm-btn sm-b-lesen" href="<?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_JSON')) ?></a>
+</div>
+
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.TECHNIK')) ?></h3>
+<div class="sm-knopfreihe">
+<a data-role="none" class="sm-btn sm-b-technik" href="<?= rb_e(ro_endpunkt_pfad(array('debug' => 1, 'refresh' => 1))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_DEBUG')) ?></a>
+<a data-role="none" class="sm-btn sm-b-technik" href="<?= rb_e(ro_endpunkt_pfad(array('selftest' => 1, 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_SELFTEST')) ?></a>
+<form method="post" action="index.php">
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?= rb_fmt() ?>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="neu_lesen" value="1"><?= rb_e(ro_t('TEST.K_NEU_LESEN')) ?></button>
+</form>
+</div>
+
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.LOEST_AUS')) ?></h3>
+<div class="sm-knopfreihe">
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('ptest' => 1, 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_PTEST')) ?></a>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'locate', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_LOCATE')) ?></a>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'home', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_HOME')) ?></a>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'stop', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_STOP')) ?></a>
+<?php if (ro_kann(1, 'AutoEmptyDockManualTriggerCapability')) { ?>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'absaugen', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ABSAUGEN')) ?></a>
+<?php } ?>
+</div>
+<div class="sm-small"><?= rb_e(ro_t('TEST.PIEPSEN_HINWEIS')) ?></div>
+
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_RESET')) ?></h3>
+<div class="sm-hinweis"><?= ro_t('TEST.RESET_HINWEIS') ?></div>
+<div class="sm-knopfreihe">
+<?php foreach (array('filter/main' => 'TEST.R_FILTER', 'brush/main' => 'TEST.R_BHAUPT',
+                     'brush/side_right' => 'TEST.R_BSEITE', 'cleaning/sensor' => 'TEST.R_SENSOR',
+                     'mop/all' => 'TEST.R_MOP') as $rb_teil => $rb_key) { ?>
+<form method="post" action="index.php">
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <input data-role="none" type="hidden" name="reset_dev" value="1">
+  <?= rb_fmt() ?>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_reset" value="<?= rb_e($rb_teil) ?>"><?= rb_e(ro_t($rb_key)) ?></button>
+</form>
+<?php } ?>
+</div>
+
+<?php $rb_seg = ro_segments(1); if ($rb_seg) { ?>
+<h2><?= rb_e(ro_t('TEST.H_RAEUME')) ?></h2>
+<table class="sm-tbl"><tr><th>ID</th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('TEST.AUFRUF')) ?></th></tr>
+<?php foreach ($rb_seg as $rb_id => $rb_nm) { ?>
+<tr><td><span class="sm-mono"><?= rb_e($rb_id) ?></span></td><td><?= rb_e($rb_nm) ?></td>
+<td><span class="sm-mono">?cmd=segments&amp;p=<?= rb_e($rb_id) ?></span></td></tr>
+<?php } ?></table>
+<div class="sm-small"><?= rb_e(ro_t('TEST.MEHRERE_RAEUME')) ?> <span class="sm-mono">?cmd=segments&amp;p=<?= rb_e(implode(',', array_slice(array_keys($rb_seg), 0, 2))) ?></span></div>
+<?php } else { ?>
+<div class="sm-alert sm-info"><?= rb_e(ro_t('TEST.RAUMLISTE_FEHLT')) ?></div>
+<?php } ?>
+
+<?php $rb_caps = ro_capabilities(1); if ($rb_caps) { ?>
+<h2><?= rb_e(ro_t('TEST.H_FAEHIGKEITEN')) ?></h2>
+<div class="sm-small"><?= rb_e(ro_t('TEST.FAEHIGKEITEN_HINWEIS')) ?></div>
+<div class="sm-breit"><table class="sm-tbl"><tr><?php
+$rb_i = 0;
+foreach ($rb_caps as $rb_c) {
+    if ($rb_i > 0 && $rb_i % 3 === 0) { echo '</tr><tr>'; }
+    echo '<td><span class="sm-mono">' . rb_e($rb_c) . '</span></td>';
+    $rb_i++;
+}
+while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
+?></tr></table></div>
+<?php } ?>
+</div>
+
+<!-- ================= Protokoll ================= -->
+<div class="sm-pane<?= $rb_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
+<h2><?= rb_e(ro_t('REITER.LOG')) ?></h2>
+<div class="sm-small" style="margin-bottom:8px;"><?= rb_e(ro_t('LOG.HINWEIS')) ?><br><?= rb_e(ro_t('LOG.DATEI')) ?> <span class="sm-mono"><?= rb_e($rb_logfile) ?></span></div>
+<?php if ($rb_loglines) { ?>
+<div class="sm-log"><?= rb_e(implode("\n", $rb_loglines)) ?></div>
+<?php } else { ?>
+<div class="sm-alert sm-info"><?= rb_e(ro_t('LOG.LEER')) ?></div>
+<?php } ?>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="clearlog" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <?= rb_fmt() ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.LOG_LEEREN')) ?></button>
+</form>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
+</div>
+</div>
+
 </div>
 <script>
 function rbTtsMode() {
@@ -727,4 +1006,4 @@ function rbTtsMode() {
 })();
 </script>
 <?php
-if ($rb_frame) { LBWeb::lbfooter(); }
+if ($rb_frame) { LBWeb::lbfooter(); } else { echo '</body></html>'; }
