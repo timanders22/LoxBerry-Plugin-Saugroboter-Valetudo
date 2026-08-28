@@ -386,7 +386,6 @@ if (is_file($rb_logfile)) {
 }
 $rb_host = ro_host();
 
-function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 /** Restlaufzeit anzeigen: Strich, wenn das Geraet den Wert nicht liefert. */
 function rb_h($h, $einheit = 'h') { return $h < 0 ? '&ndash;' : (int) $h . '&nbsp;' . $einheit; }
 /** Ja / Nein / Strich fuer die dreiwertigen Felder. */
