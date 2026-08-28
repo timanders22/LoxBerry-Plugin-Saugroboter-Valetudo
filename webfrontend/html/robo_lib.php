@@ -109,7 +109,7 @@ function ro_paths() {
         return array('config' => $lb . '/config/plugins/' . $pd . '/robo.json',
                      'backup' => $lb . '/config/plugins/' . $pd . '.backup.json',
                      'log' => $lb . '/log/plugins/' . $pd . '/robo.log',
-                     'data' => $lb . '/data/plugins/' . $pd,
+                     'datadir' => $lb . '/data/plugins/' . $pd,
                      // Der Zwischenspeicher traegt den ERMITTELTEN Ordnernamen.
                      // Bis 1.0.14 stand hier fest '/tmp/saugrobo'; zwei
                      // Installationen teilten sich damit die Sperrdatei des
@@ -133,7 +133,7 @@ function ro_paths() {
     return array('config' => dirname(dirname(__DIR__)) . '/config/robo.json',
                  'backup' => dirname(dirname(__DIR__)) . '/config/robo.backup.json',
                  'log' => sys_get_temp_dir() . '/' . $pd . '/robo.log',
-                 'data' => sys_get_temp_dir() . '/' . $pd . '/data',
+                 'datadir' => sys_get_temp_dir() . '/' . $pd . '/data',
                  'tmp' => sys_get_temp_dir() . '/' . $pd,
                  'plugin' => $pd, 'lbhome' => '');
 }
@@ -269,7 +269,7 @@ function ro_formtoken_ok($cfg = null)
 }
 
 function ro_tmpdir() { $p = ro_paths(); if (!is_dir($p['tmp'])) { @mkdir($p['tmp'], 0775, true); } return $p['tmp']; }
-function ro_datadir() { $p = ro_paths(); if (!is_dir($p['data'])) { @mkdir($p['data'], 0775, true); } return $p['data']; }
+function ro_datadir() { $p = ro_paths(); if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); } return $p['datadir']; }
 
 function ro_log($msg) {
     $p = ro_paths(); $f = $p['log'];
