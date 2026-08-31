@@ -715,12 +715,10 @@ $rb_gw = ro_mqtt_gateway_info();
 $rb_gwf = ($rb_gw === null) ? 0 : (int) $rb_gw['fassung'];
 ?>
 <div class="<?= $rb_gwf >= 2 ? 'sm-hinweis' : 'sm-warnung' ?>"><?= ro_abo_text() ?></div>
-<?php if ($rb_gwf < 2) { ?>
 <table class="sm-tbl">
 <tr><th><?= rb_e(ro_t('MQTT.EINZUTRAGEN')) ?></th><th><?= rb_e(ro_t('WORT.ZWECK')) ?></th></tr>
 <tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/#</span></td><td><?= rb_e(ro_t('MQTT.ABO_ALLE')) ?></td></tr>
 </table>
-<?php } ?>
 
 <h2><?= rb_e(ro_t('MQTT.H_THEMEN')) ?></h2>
 <div class="sm-hinweis"><?= ro_t('MQTT.LEBENSZEICHEN_HINWEIS') ?></div>
