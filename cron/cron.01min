@@ -20,8 +20,15 @@ BIN="REPLACELBPBINDIR"
 # $BIN ist <home>/bin/plugins/<ordner> - also drei Ebenen bis <home>.
 ORDNER=$(basename "$BIN")
 HOME_LB=$(cd "$BIN/../../.." 2>/dev/null && pwd)
+# EIGENE Datei fuer die Fehlerausgabe der Schale.
+#
+# Bis 1.1.3 ging sie nach robo.log - also in genau die Datei, die das Plugin
+# selbst in einem festen Format fuehrt und bei 512 kB kuerzt. Im Reiter
+# Protokoll standen danach zwei Formate gemischt, und eine Kuerzung durch das
+# Plugin konnte eine Schalenmeldung mitnehmen. Der Reiter Protokoll nennt
+# beide Dateien.
 if [ -n "$HOME_LB" ] && [ -d "$HOME_LB/log/plugins/$ORDNER" ]; then
-    LOG="$HOME_LB/log/plugins/$ORDNER/robo.log"
+    LOG="$HOME_LB/log/plugins/$ORDNER/cron.log"
 else
     LOG="/tmp/$ORDNER-cron.log"
 fi

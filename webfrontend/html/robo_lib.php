@@ -157,6 +157,51 @@ function ro_vorgaben()
 }
 
 /**
+ * Darf in diesem Prozess ueberhaupt etwas angelegt werden?
+ *
+ * BIS 1.1.3 WAR DAS EIN PARAMETER, UND DAS HAT NICHT GETRAGEN.
+ * ro_config($erzeugen = false) stand nur in ro_token_lage(). Der LESEWEG des
+ * unangemeldeten Endpunkts - also der Weg, den Loxone bei jeder Abfrage geht -
+ * laeuft ueber ro_state() -> ro_config() mit der Vorgabe true. Gemessen am
+ * 04.09.2026 in einer nachgebauten Installationslage: Konfigordner geloescht,
+ * ein Aufruf von robo.php OHNE Parameter und OHNE Token, danach lag
+ * config/plugins/<ordner>/robo.json wieder da, aus der Zweitschrift.
+ *
+ * Ein Parameter, den man an jeder Aufrufstelle durchreichen muss, wird beim
+ * naechsten Ausbau wieder an einer vergessen. Deshalb jetzt ein Schalter fuer
+ * den ganzen Prozess: robo.php setzt ihn einmal am Kopf, und ro_config()
+ * achtet ihn, gleichgueltig wer sie ruft.
+ */
+/**
+ * Der zuerst gesehene Zustand der Konfiguration - und nur der.
+ *
+ * Ein geheilter Schaden ist kein Nicht-Schaden. Die Selbstheilung laeuft beim
+ * ERSTEN Aufruf der Lesefunktion; die Pruefzeile im Reiter Test ruft sie
+ * spaeter ein zweites Mal und saehe dann eine heile Datei. Der Bediener
+ * erfuehre nie, dass etwas war. Deshalb wird der erste Befund fuer die Dauer
+ * des Prozesses festgehalten und von einem spaeteren "ok" NICHT ueberschrieben.
+ *
+ * Moegliche Zustaende: ok, fehlt, leer, kaputt, aus der Zweitschrift.
+ */
+function ro_cfg_zustand($setzen = null)
+{
+    static $zustand = 'ok';
+    static $fest = false;
+    if ($setzen !== null && !$fest) {
+        $zustand = (string) $setzen;
+        if ($setzen !== 'ok') { $fest = true; }
+    }
+    return $zustand;
+}
+
+function ro_config_erzeugen_erlauben($wert = null)
+{
+    static $erlaubt = true;
+    if ($wert !== null) { $erlaubt = (bool) $wert; }
+    return $erlaubt;
+}
+
+/**
  * Die Konfiguration lesen.
  *
  * $erzeugen = false schaltet die Wiederherstellung aus der Sicherungskopie ab.
@@ -167,16 +212,70 @@ function ro_vorgaben()
  */
 function ro_config($erzeugen = true) {
     $p = ro_paths();
-    if ($erzeugen) {
-        $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-        if (($roh === '' || $roh === '{}') && is_file($p['backup'])) {
-            @mkdir(dirname($p['config']), 0775, true);
-            @copy($p['backup'], $p['config']);
-            @chmod($p['config'], 0640);
+    $erzeugen = $erzeugen && ro_config_erzeugen_erlauben();
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+
+    /* DREI LAGEN, DIE AUSEINANDERGEHALTEN GEHOEREN.
+     *
+     *   Datei fehlt        Neuinstallation         - ein Token darf entstehen
+     *   Datei leer oder {} Aktualisierungsfall     - ein Token darf entstehen
+     *   ungueltiges JSON   BESCHAEDIGT             - Fehler, kein leerer Zustand
+     *
+     * Bis 1.1.3 fielen alle drei zusammen: json_decode(...) ?: array() machte
+     * aus einer abgeschnittenen Datei stillschweigend eine leere. Gemessen am
+     * 04.09.2026 unter 7.4 UND 8.4, mit Kontrollfall: eine beschaedigte
+     * robo.json plus EIN Oeffnen der Oberflaeche ersetzte Roboterliste,
+     * MQTT-Praefix und Aktionstoken durch Werkseinstellungen - in der
+     * Konfiguration UND in der Zweitschrift. Keine .kaputt-Datei, keine
+     * Protokollzeile. Die einzige Rettungskopie war damit ueberschrieben, und
+     * jede im Miniserver eingetragene Adresse lief auf 403.
+     */
+    $lage = 'ok';
+    $daten = null;
+    if ($roh === '' || $roh === '{}') {
+        /* "{}" gilt ausdruecklich als LEER, nicht als gueltige Konfiguration.
+         * json_decode('{}') liefert ein Feld und faellt deshalb nicht in den
+         * kaputt-Zweig - ohne diese Zeile wuerde eine Anlage, deren
+         * Konfiguration der Installer gerade auf "{}" gesetzt hat, ein NEUES
+         * Aktionstoken bekommen, waehrend die gute Zweitschrift danebenliegt.
+         * postinstall.sh behandelt denselben Fall genauso. */
+        $daten = array();
+        $lage = is_file($p['config']) ? 'leer' : 'fehlt';
+    } else {
+        $daten = json_decode($roh, true);
+        if (!is_array($daten)) { $lage = 'kaputt'; $daten = null; }
+    }
+
+    if ($lage === 'kaputt') {
+        /* Die beschaedigte Datei wird BEISEITEGELEGT, nicht ueberschrieben:
+         * sie ist das Einzige, woraus sich hinterher noch etwas holen laesst. */
+        $kaputt = $p['config'] . '.kaputt';
+        if (!is_file($kaputt)) { @copy($p['config'], $kaputt); }
+        ro_log_if_changed('cfg_kaputt', 'Die Konfiguration ist beschaedigt (kein gueltiges JSON). '
+            . 'Beiseitegelegt als ' . basename($kaputt) . '.');
+    }
+
+    /* SELBSTHEILUNG NACH INHALT, NICHT NACH FORM.
+     * Bis 1.1.3 hiess die Bedingung ($roh === '' || $roh === '{}'). Eine halb
+     * geschriebene Datei ist weder leer noch {}, wurde also nicht geheilt -
+     * und eine Zweitschrift ohne Aktionstoken wurde blind kopiert. Geprueft
+     * wird jetzt, ob die Zweitschrift ueberhaupt etwas Rettbares enthaelt. */
+    if ($erzeugen && in_array($lage, array('fehlt', 'leer', 'kaputt'), true) && is_file($p['backup'])) {
+        $bk = json_decode((string) @file_get_contents($p['backup']), true);
+        if (is_array($bk) && isset($bk['aktionstoken']) && trim((string) $bk['aktionstoken']) !== '') {
+            if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
+            if (ro_write_atomic($p['config'], json_encode($bk, JSON_PRETTY_PRINT
+                    | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0600)) {
+                $daten = $bk;
+                ro_log_if_changed('cfg_geheilt', 'Konfiguration aus der Zweitschrift wiederhergestellt ('
+                    . $lage . ').');
+                $lage = 'aus der Zweitschrift';
+            }
         }
     }
-    $cfg = is_file($p['config']) ? (json_decode((string) @file_get_contents($p['config']), true) ?: array()) : array();
-    if (!is_array($cfg)) { $cfg = array(); }
+
+    ro_cfg_zustand($lage);
+    $cfg = is_array($daten) ? $daten : array();
     $cfg += ro_vorgaben();
     if (!is_array($cfg['robots'])) { $cfg['robots'] = array(); }
     // Migration: Einzel-IP aus einer aelteren Fassung.
@@ -198,6 +297,21 @@ function ro_config($erzeugen = true) {
     return $cfg;
 }
 
+/**
+ * Die eingerichteten Roboter, nach ihrer GERAETENUMMER.
+ *
+ * BIS 1.1.3 WAR DIE NUMMER EINE AUFZAEHLUNG, UND DAS IST KEINE ADRESSE.
+ * Gemessen am 04.09.2026: Konfiguration mit zwei Robotern, die Adresse des
+ * ersten geleert - danach lieferte &dev=1 den ZWEITEN Roboter, mit dessen
+ * Namen, und &dev=2 meldete OK=0;CODE=8 fuer ein Geraet, das da ist. An der
+ * Nummer haengen der virtuelle Eingang, das MQTT-Thema und die
+ * Endpunktadresse; sie darf nicht wandern.
+ *
+ * Seit 1.1.4 traegt jede Zeile ihre Nummer selbst ($r['nr']). FEHLT SIE,
+ * GILT DIE BISHERIGE ZAEHLUNG - das ist der Aktualisierungsfall, und eine
+ * bestehende Anlage darf durch das Update keine andere Zuordnung bekommen.
+ * Beim naechsten Speichern wird die Nummer festgeschrieben.
+ */
 function ro_robots() {
     $cfg = ro_config();
     $out = array(); $n = 0;
@@ -205,7 +319,13 @@ function ro_robots() {
         $r = (array) $r;
         if (trim((string) (isset($r['ip']) ? $r['ip'] : '')) === '') { continue; }
         $n++;
-        $out[$n] = array('name' => trim((string) (isset($r['name']) ? $r['name'] : '')) !== '' ? trim((string) $r['name']) : ('Saugroboter ' . $n),
+        // Die eigene Nummer sticht die Zaehlung; eine belegte oder unsinnige
+        // Nummer faellt auf die Zaehlung zurueck, damit nie eine Zeile verschwindet.
+        $nr = isset($r['nr']) ? (int) $r['nr'] : 0;
+        if ($nr < 1 || $nr > 9 || isset($out[$nr])) { $nr = $n; }
+        while (isset($out[$nr])) { $nr++; }
+        $out[$nr] = array('nr' => $nr,
+                         'name' => trim((string) (isset($r['name']) ? $r['name'] : '')) !== '' ? trim((string) $r['name']) : ('Saugroboter ' . $nr),
                          'ip' => trim((string) $r['ip']),
                          'port' => max(1, min(65535, (int) (isset($r['port']) ? $r['port'] : 80))),
                          // Valetudo kann eine Anmeldung verlangen (express-basic-auth,
@@ -350,7 +470,7 @@ function ro_stumm_loeschen($dev) { @unlink(ro_tmpdir() . '/stumm_' . (int) $dev)
  * Anlegen, nicht hinterher"): zwischen Anlegen und chmod stand die Datei sonst
  * kurz mit der Vorgabe der umask da - und in robo.json steht das Aktionstoken.
  */
-function ro_write_atomic($datei, $inhalt, $rechte = 0640) {
+function ro_write_atomic($datei, $inhalt, $rechte = 0600) {
     if ($inhalt === false || $inhalt === null) { return false; }
     $inhalt = (string) $inhalt;
     $ordner = dirname($datei);
@@ -397,6 +517,34 @@ function ro_log_tail($datei, $max = 200, $block = 8192) {
     fclose($fp);
     $zeilen = preg_split('/\R/', $puffer, -1, PREG_SPLIT_NO_EMPTY);
     return is_array($zeilen) ? array_slice($zeilen, -$max) : array();
+}
+
+/**
+ * Das Protokoll fuer die Oberflaeche - BEIDE Dateien, juengste Zeile zuerst.
+ *
+ * Seit 1.1.4 schreibt der Minutencron seine Schalenfehler in eine eigene
+ * cron.log neben robo.log: bis 1.1.3 gingen beide in dieselbe Datei, im
+ * Reiter Protokoll standen zwei Formate gemischt, und eine Kuerzung durch das
+ * Plugin (ab 512 kB) konnte eine Schalenmeldung mitnehmen.
+ *
+ * Der Reiter muss beide zeigen - sonst waere die Trennung ein Verlust: die
+ * Zeile "Cron: kein PHP gefunden" ist genau die, die man sucht, wenn nichts
+ * mehr ankommt.
+ */
+function ro_log_lesen($max = 300)
+{
+    $p = ro_paths();
+    $zeilen = array();
+    foreach (array($p['log'], dirname($p['log']) . '/cron.log') as $datei) {
+        if (!is_file($datei)) { continue; }
+        foreach (ro_log_tail($datei, $max) as $z) {
+            if (trim($z) !== '') { $zeilen[] = $z; }
+        }
+    }
+    /* Beide Dateien tragen den Zeitstempel im selben Format am Zeilenanfang;
+     * danach laesst sich zusammenfuehren, ohne die Zeilen zu zerlegen. */
+    sort($zeilen);
+    return array_slice($zeilen, -$max);
 }
 
 /** Kopfzeilen fuer einen Abruf - mit Anmeldung, wenn eine eingetragen ist. */
@@ -906,20 +1054,27 @@ function ro_command($cmd, $dev = 1, $param = '') {
             break;
         case 'ruhezeit': // param = 22:00-07:00  oder  aus
             if (strtolower($param) === 'aus') {
-                $alt = ro_ruhezeit($dev);
+                $alt = ro_ruhezeit($dev, true);   // vor dem Schreiben frisch lesen
                 $von = is_array($alt) ? $alt['start'] : array('hour' => 22, 'minute' => 0);
                 $bis = is_array($alt) ? $alt['end'] : array('hour' => 7, 'minute' => 0);
                 list($code, $body) = ro_put($base . 'DoNotDisturbCapability',
                     array('enabled' => false, 'start' => $von, 'end' => $bis), 4, $r);
                 break;
             }
-            if (!preg_match('/^([0-2]?\d):([0-5]\d)-([0-2]?\d):([0-5]\d)$/', $param, $m)) {
-                return array(0, 'ruhezeit braucht HH:MM-HH:MM oder "aus"');
+            /* Das Muster laesst nur echte Uhrzeiten durch, und die Zahlen gehen
+             * danach UNVERAENDERT hinaus. Bis 1.1.3 hiess es ([0-2]?\d) und traf
+             * damit auch 24 bis 29; das min(23, ...) dahinter bog den Wert dann
+             * still zurecht. Gemessen am 04.09.2026 gegen eine zaehlende
+             * Gegenstelle: ?cmd=ruhezeit&p=29:30-07:00 meldete CMD;OK=1 und
+             * stellte am Geraet 23:30 ein. "Eingaben werden abgewiesen und
+             * gemeldet, nie still zurechtgebogen." */
+            if (!preg_match('/^([01]\d|2[0-3]|\d):([0-5]\d)-([01]\d|2[0-3]|\d):([0-5]\d)$/', $param, $m)) {
+                return array(0, 'ruhezeit braucht HH:MM-HH:MM (00:00 bis 23:59) oder "aus"');
             }
             list($code, $body) = ro_put($base . 'DoNotDisturbCapability', array(
                 'enabled' => true,
-                'start' => array('hour' => min(23, (int) $m[1]), 'minute' => (int) $m[2]),
-                'end'   => array('hour' => min(23, (int) $m[3]), 'minute' => (int) $m[4])), 4, $r);
+                'start' => array('hour' => (int) $m[1], 'minute' => (int) $m[2]),
+                'end'   => array('hour' => (int) $m[3], 'minute' => (int) $m[4])), 4, $r);
             break;
         case 'evquittieren': // offenes Ereignis wegdruecken
             $st = ro_state($dev);
@@ -939,6 +1094,7 @@ function ro_command($cmd, $dev = 1, $param = '') {
         // Der Zustand ist nach einem Befehl veraltet - sonst zeigt die
         // Oberflaeche bis zu cache_sec Sekunden lang den alten.
         @unlink(ro_tmpdir() . '/state_' . (int) $dev . '.json');
+        if ($cmd === 'ruhezeit') { @unlink(ro_tmpdir() . '/dnd_' . (int) $dev . '.json'); }
     }
     return array($ok, 'HTTP ' . $code);
 }
@@ -967,14 +1123,33 @@ function ro_befehle()
     );
 }
 
-/** Nicht-stoeren-Zeit lesen. Valetudo: DoNotDisturbCapability, GET / */
-function ro_ruhezeit($dev = 1)
+/**
+ * Nicht-stoeren-Zeit lesen. Valetudo: DoNotDisturbCapability, GET /
+ *
+ * MIT Zwischenspeicher, seit 1.1.4. Die Selbstpruefung steht im Reiter Test,
+ * der Reiter Test wird aber bei JEDEM Seitenaufbau mitgerendert - auch beim
+ * Reiter Protokoll. Gemessen am 04.09.2026 gegen eine zaehlende Gegenstelle:
+ * erster Seitenaufruf 10 Abrufe, jeder weitere genau EINER, und das war
+ * dieser hier. ro_state() (cache_sec), ro_segments() und ro_capabilities()
+ * (je eine Stunde) puffern; diese eine Abfrage tat es als einzige nicht.
+ */
+function ro_ruhezeit($dev = 1, $force = false)
 {
+    $dev = max(1, (int) $dev);
+    $cache = ro_tmpdir() . '/dnd_' . $dev . '.json';
+    if (!$force && is_file($cache) && time() - filemtime($cache) < 300) {
+        $c = json_decode((string) @file_get_contents($cache), true);
+        return is_array($c) && array_key_exists('d', $c) ? $c['d'] : null;
+    }
     $r = ro_robot($dev);
     if ($r === null) { return null; }
     $j = @json_decode((string) ro_get('http://' . $r['ip'] . ':' . $r['port']
         . '/api/v2/robot/capabilities/DoNotDisturbCapability', 2, $dev), true);
-    return is_array($j) ? $j : null;
+    $j = is_array($j) ? $j : null;
+    /* Auch das Nichtergebnis wird gemerkt - sonst fragt jeder Seitenaufbau
+     * erneut, und bei einem stummen Geraet kostet das je Aufruf zwei Sekunden. */
+    ro_write_json($cache, array('d' => $j));
+    return $j;
 }
 
 /**
@@ -1147,6 +1322,49 @@ function ro_mqtt_thema_saeubern($t)
  * Im Cron, der nach /dev/null schreibt, saehe das niemand. Datenstroeme
  * gehoeren zum Kern.
  */
+/**
+ * Geht dieses Thema RETAINED hinaus?
+ *
+ * Hausstandard seit 03.09.2026: Zustaende retained, Messwerte mit Zeitbezug
+ * nicht, das Lebenszeichen nie.
+ *
+ * DASS DER WEG DAS KANN, IST GEMESSEN - am Quelltext der Gegenstelle, nicht
+ * geraten. LoxBerry-Kern, sbin/mqttgateway.pl (Zweig master, abgerufen
+ * 05.09.2026):
+ *
+ *   Zeile 227   # "retain my/topic data" .... Publish a message with retain
+ *   Zeile 293   if(lc($command) ne 'publish' and lc($command) ne 'retain' ...
+ *   Zeile 354   } elsif($command eq 'retain') { ... $mqtt->retain(...) }
+ *
+ * UND EINE FALLE AUS DERSELBEN QUELLE, Zeile 360-364: ein retain mit LEEREM
+ * Wert LOESCHT das Thema aus dem Gedaechtnis des Gateways. Ein retained Thema
+ * darf deshalb nie mit leerem Wert hinausgehen - dafuer sorgt ro_mqtt_zeile().
+ *
+ * Bis 1.1.3 trug KEINE der 46 Zeilen ein retain; nach einem Neustart des
+ * Miniservers oder des Gateways stand in Loxone bis zum naechsten
+ * Signaturwechsel nichts, im Grenzfall eine halbe Stunde.
+ */
+function ro_mqtt_retain_feld($name)
+{
+    $f = ro_felder();
+    $k = strtoupper((string) $name);
+    return isset($f[$k][5]) ? (bool) $f[$k][5] : true;
+}
+
+/**
+ * Eine Zeile fuer den UDP-Eingang bauen - EINE Stelle fuer publish und retain.
+ *
+ * Ein leerer Wert wird NIE retained gesendet (siehe oben): er wuerde das Thema
+ * loeschen statt es zu setzen. In dem Fall geht die Zeile als publish hinaus,
+ * und der virtuelle Eingang behaelt seinen letzten Wert.
+ */
+function ro_mqtt_zeile($retain, $thema, $wert)
+{
+    $w = ro_mqtt_wert_saeubern($wert);
+    $befehl = ($retain && $w !== '') ? 'retain' : 'publish';
+    return $befehl . ' ' . $thema . ' ' . $w;
+}
+
 function ro_udp_senden($port, $zeilen)
 {
     $fehler = 0; $text = '';
@@ -1177,10 +1395,11 @@ function ro_mqtt_publish($st = null, $dev = 1) {
     $m = ro_mqtt_werte($st, $dev);
     $zeilen = array();
     foreach ($m as $k => $v) {
-        $zeilen[] = 'publish ' . $prefix . '/' . $k . ' ' . ro_mqtt_wert_saeubern($v);
+        $zeilen[] = ro_mqtt_zeile(ro_mqtt_retain_feld($k), $prefix . '/' . $k, $v);
     }
     /* Das Lebenszeichen haengt an der WURZEL, nicht am Geraet: es sagt etwas
-     * ueber den Cron-Lauf, nicht ueber einen einzelnen Roboter. */
+     * ueber den Cron-Lauf, nicht ueber einen einzelnen Roboter. Und es ist
+     * NIE retained - retained zeigte es fuer immer "lebt". */
     $lauf = ro_lauf_lesen();
     $zeilen[] = 'publish ' . $wurzel . '/status/ok ' . (int) $lauf['ok'];
     $zeilen[] = 'publish ' . $wurzel . '/status/ts ' . (int) $lauf['ts'];
@@ -1217,6 +1436,41 @@ function ro_mqtt_lebenszeichen()
 }
 
 /**
+ * ALLE Themen, die dieses Plugin veroeffentlicht - mit Bedeutung und Retain.
+ *
+ * Bis 1.1.3 baute die Tabelle im Reiter MQTT ihre Zeilen selbst, aus der
+ * vollen Feldliste. Der Sender nahm ALTER und ZAEHLER aus. Die Tabelle nannte
+ * deshalb zwei Themen, die es nie gab (gemessen: 48 gelistet, 46 gesendet).
+ * Jetzt gibt es EINE Liste, und die Pruefzeile im Reiter Test haelt sie gegen
+ * das, was der Sender wirklich bildet.
+ *
+ * Rueckgabe: thema => array('bedeutung' => ..., 'retain' => 0|1)
+ */
+function ro_mqtt_themen($praefix = null, $dev = 1)
+{
+    $wurzel = ro_mqtt_thema_saeubern($praefix === null ? ro_config()['mqtt_topic'] : $praefix);
+    $prefix = $wurzel . ((int) $dev > 1 ? '/' . (int) $dev : '');
+    $aus = array(
+        // Das Lebenszeichen haengt an der WURZEL und ist nie retained.
+        $wurzel . '/status/ok'      => array('bedeutung' => ro_t('MQTT.T_OK'), 'retain' => 0),
+        $wurzel . '/status/ts'      => array('bedeutung' => ro_t('MQTT.T_TS'), 'retain' => 0),
+        $wurzel . '/status/zaehler' => array('bedeutung' => ro_t('MQTT.T_ZAEHLER'), 'retain' => 0),
+    );
+    foreach (ro_felder() as $name => $f) {
+        if (ro_mqtt_ausgenommen($name)) { continue; }
+        $aus[$prefix . '/' . strtolower($name)] = array(
+            'bedeutung' => $f[4] . ($f[3] !== '' ? ' [' . $f[3] . ']' : ''),
+            'retain' => isset($f[5]) ? (int) $f[5] : 1,
+        );
+    }
+    foreach (array('status' => 'MQTT.T_STATUSTEXT', 'fehlertext' => 'MQTT.T_FEHLERTEXT',
+                   'ereignistext' => 'MQTT.T_EREIGNISTEXT', 'meldung' => 'MQTT.T_MELDUNG') as $k => $s) {
+        $aus[$prefix . '/' . $k] = array('bedeutung' => ro_t($s), 'retain' => 1);
+    }
+    return $aus;
+}
+
+/**
  * Was ueber MQTT hinausgeht - EINE Liste, damit HTTP und MQTT nicht
  * auseinanderlaufen.
  *
@@ -1233,14 +1487,42 @@ function ro_mqtt_lebenszeichen()
  * Das Lebenszeichen geht stattdessen unter <praefix>/status/ hinaus, und
  * zwar bei JEDEM Durchgang - siehe ro_mqtt_lebenszeichen().
  */
+/**
+ * Welche Felder gehen ueber MQTT NICHT hinaus?
+ *
+ * Bis 1.1.3 stand diese Entscheidung nur im Sender; die Themen-Tabelle im
+ * Reiter MQTT lief ueber die volle Feldliste und nannte deshalb
+ * <praefix>/alter und <praefix>/zaehler als veroeffentlichte Themen. Gemessen
+ * am 04.09.2026 an der gerenderten Seite: 48 Themen in der Tabelle, 46
+ * gesendet - die Differenz genau diese beiden. Wer die Tabelle abarbeitete,
+ * legte zwei virtuelle Eingaenge an, die nie einen Wert bekamen, und zwar
+ * ausgerechnet die beiden, die sagen sollen, ob das Plugin noch lebt.
+ *
+ * Jetzt fragen Sender und Tabelle dieselbe Funktion.
+ */
+function ro_mqtt_ausgenommen($name)
+{
+    return in_array(strtoupper((string) $name), array('ALTER', 'ZAEHLER'), true);
+}
+
 function ro_mqtt_werte($st, $dev = 1)
 {
+    /* DAS GERAET MUSS IM ZUSTAND STEHEN.
+     *
+     * ro_feldwert() holt ANN, AUDIO, PUSH und PTEST ueber
+     * ro_meldeflags($st['dev']). ro_zeile() setzt $st['dev'] (HTTP-Weg war
+     * deshalb richtig), ro_state() setzt den Schluessel nie - und diese
+     * Funktion reichte $dev bis 1.1.3 nicht weiter. Gemessen am 04.09.2026
+     * mit gesetztem Merker ann_2: HTTP meldete ANN=1, MQTT meldete ann=0.
+     * Wer zwei Roboter hat und ueber MQTT arbeitet, bekam fuer den zweiten
+     * nie ein Meldefenster. */
+    $st['dev'] = max(1, (int) $dev);
     $m = array();
     foreach (ro_felder() as $name => $f) {
-        if ($name === 'ALTER' || $name === 'ZAEHLER') { continue; }
+        if (ro_mqtt_ausgenommen($name)) { continue; }
         $m[strtolower($name)] = ro_feldwert($name, $st);
     }
-    // Zwei Klartexte, die es ueber HTTP nicht gibt (dort waeren sie in der
+    // Vier Klartexte, die es ueber HTTP nicht gibt (dort waeren sie in der
     // Zeile ein Trennzeichenproblem).
     $m['status'] = $st['text'];
     $m['fehlertext'] = $st['fehlertext'];
@@ -1512,50 +1794,66 @@ function ro_t($schluessel)
  */
 function ro_check($feld) { return '\i;' . $feld . '=\i\v'; }
 
-/** name => array(analog, min, max, einheit, kommentar) */
+/**
+ * Die Feldtabelle - EINE Quelle fuer Antwortzeile, MQTT, Vorlage und Anleitung.
+ *
+ *   name => array(analog, min, max, einheit, beschreibung, retain, kachelname)
+ *
+ * [5] RETAIN - Hausstandard seit 03.09.2026: Zustaende retained, Messwerte mit
+ *     Zeitbezug nicht. Nicht retained sind deshalb BATT (ein alter Ladestand
+ *     saehe nach einem Ausfall aus wie ein frischer) sowie ANN und PTEST (das
+ *     sind Zeitfenster von 10 bzw. 5 Minuten; retained stuende das Fenster fuer
+ *     immer offen). ALTER und ZAEHLER gehen ueber MQTT ohnehin nicht hinaus.
+ *
+ * [6] KACHELNAME - der Comment der Importvorlage wird in Loxone Config zum
+ *     ANZEIGENAMEN des Bausteins, nicht zur Dokumentation. Bis 1.1.3 wanderte
+ *     dort die ganze Erklaerspalte hinein; ROBO_CODE hiess danach
+ *     "Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, ...". Die Erklaerung
+ *     bleibt in [4] und steht in der Feldtabelle der Oberflaeche.
+ */
 function ro_felder() {
     return array(
-        'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar'),
-        'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 faehrt zur Station, 5 faehrt, 8 unbekannt, 9 Fehler'),
-        'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent'),
-        'LAEDT'    => array(0, 0, 1,     '',      '1 = laedt gerade'),
-        'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)'),
-        'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer'),
-        'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station'),
-        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Flaeche'),
-        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer'),
-        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Flaeche'),
-        'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden'),
-        'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen'),
-        'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfuegbar)'),
-        'FILTER2'  => array(1, -1, 10000, 'h',    'Zweitfilter: Reststunden (-1 = nicht verfuegbar)'),
-        'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbuerste: Reststunden (-1 = nicht verfuegbar)'),
-        'BSEITE'   => array(1, -1, 10000, 'h',    'Seitenbuerste: Reststunden (-1 = nicht verfuegbar)'),
-        'BSEITE2'  => array(1, -1, 10000, 'h',    'zweite Seitenbuerste: Reststunden (-1 = nicht verfuegbar)'),
-        'SENSOR'   => array(1, -1, 10000, 'h',    'Sensoren: Reststunden bis zum Reinigen (-1 = nicht verfuegbar)'),
-        'RAEDER'   => array(1, -1, 10000, 'h',    'Raeder: Reststunden (-1 = nicht verfuegbar)'),
-        'MOP'      => array(1, -1, 10000, 'h',    'Wischbezug: Reststunden (-1 = nicht verfuegbar)'),
-        'DOCKFILTER'    => array(1, -1, 100, '%', 'Filter der Station: Restanteil (-1 = keine Station)'),
-        'DOCKBUERSTE'   => array(1, -1, 100, '%', 'Buerste der Station: Restanteil (-1 = keine Station)'),
-        'DOCKBEHAELTER' => array(1, -1, 100, '%', 'Staubbeutel der Station: Restanteil (-1 = keine Station)'),
-        'REINIGER' => array(1, -1, 100,  '%',    'Reinigungsmittel: Restanteil (-1 = nicht verfuegbar)'),
-        'MATWARN'  => array(0, 0, 1,     '',      '1 = mindestens ein Teil unter der Warnschwelle'),
-        'BEHAELTER'  => array(1, -1, 1,  '',      'Staubbehaelter eingesetzt (-1 = meldet das Geraet nicht)'),
-        'WASSERTANK' => array(1, -1, 1,  '',      'Wassertank eingesetzt (-1 = meldet das Geraet nicht)'),
-        'WISCHER'    => array(1, -1, 1,  '',      'Wischmodul angebaut (-1 = meldet das Geraet nicht)'),
-        'DOCK'     => array(1, -1, 9,    '',      'Station: -1 keine, 0 bereit, 1 Pause, 2 saugt ab, 3 reinigt, 4 trocknet, 9 Fehler'),
-        'SAUGST'   => array(1, -1, 7,    '',      'Saugstufe: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen'),
-        'WASSER'   => array(1, -1, 7,    '',      'Wischwasser: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen'),
-        'MODUS'    => array(1, -1, 4,    '',      'Betriebsart: -1 unbekannt, 1 saugen, 2 wischen, 3 saugen und wischen, 4 erst saugen, dann wischen'),
-        'EVENT'    => array(1, 0, 99,    '',      'Anzahl offener Valetudo-Ereignisse'),
-        'EVTYP'    => array(1, 0, 8,     '',      'Jueng(st)es Ereignis: 0 keins, 1 Staubbehaelter voll, 2 Verbrauchsteil leer, 3 Wischmodul pruefen, 4 Stoerung, 5 Karte geaendert, 6 Valetudo aktualisiert, 7 Valetudo-Fehler, 8 unbekannt'),
-        'EVMUELL'  => array(0, 0, 1,     '',      '1 = Staubbehaelter voll (Valetudo meldet es)'),
-        'ANN'      => array(0, 0, 1,     '',      'Meldefenster aktiv'),
-        'AUDIO'    => array(0, 0, 1,     '',      'Ansage freigegeben'),
-        'PUSH'     => array(0, 0, 1,     '',      'Push freigegeben'),
-        'PTEST'    => array(0, 0, 1,     '',      'Test-Push ausloesen'),
-        'ALTER'    => array(1, -1, 100000, 's',   'Alter des letzten Cron-Laufs in Sekunden (-1 = noch keiner). Gehoert auf eine Ueberwachung: ein festgefrorenes Ergebnis sieht sonst aus wie ein frisches.'),
-        'ZAEHLER'  => array(1, 0, 999,   '',      'Laufzaehler, laeuft 0...999 um - steht er still, laeuft der Cron nicht mehr'),
+        'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 1, 'Erreichbar'),
+        'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 faehrt zur Station, 5 faehrt, 8 unbekannt, 9 Fehler', 1, 'Status'),
+        'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent', 0, 'Batterie'),
+        'LAEDT'    => array(0, 0, 1,     '',      '1 = laedt gerade', 1, 'Laedt'),
+        'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)', 1, 'Fehlercode'),
+        'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer', 1, 'Fehlerschwere'),
+        'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station', 1, 'Fehler: Teil'),
+        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Flaeche', 1, 'Letzte Reinigung Flaeche'),
+        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer', 1, 'Letzte Reinigung Dauer'),
+        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Flaeche', 1, 'Gesamt Flaeche'),
+        'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden', 1, 'Gesamt Stunden'),
+        'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen', 1, 'Gesamt Reinigungen'),
+        'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfuegbar)', 1, 'Filter Rest'),
+        'FILTER2'  => array(1, -1, 10000, 'h',    'Zweitfilter: Reststunden (-1 = nicht verfuegbar)', 1, 'Zweitfilter Rest'),
+        'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Hauptbuerste Rest'),
+        'BSEITE'   => array(1, -1, 10000, 'h',    'Seitenbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Seitenbuerste Rest'),
+        'BSEITE2'  => array(1, -1, 10000, 'h',    'zweite Seitenbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Seitenbuerste 2 Rest'),
+        'SENSOR'   => array(1, -1, 10000, 'h',    'Sensoren: Reststunden bis zum Reinigen (-1 = nicht verfuegbar)', 1, 'Sensoren Rest'),
+        'RAEDER'   => array(1, -1, 10000, 'h',    'Raeder: Reststunden (-1 = nicht verfuegbar)', 1, 'Raeder Rest'),
+        'MOP'      => array(1, -1, 10000, 'h',    'Wischbezug: Reststunden (-1 = nicht verfuegbar)', 1, 'Wischbezug Rest'),
+        'DOCKFILTER'    => array(1, -1, 100, '%', 'Filter der Station: Restanteil (-1 = keine Station)', 1, 'Station Filter'),
+        'DOCKBUERSTE'   => array(1, -1, 100, '%', 'Buerste der Station: Restanteil (-1 = keine Station)', 1, 'Station Buerste'),
+        'DOCKBEHAELTER' => array(1, -1, 100, '%', 'Staubbeutel der Station: Restanteil (-1 = keine Station)', 1, 'Station Staubbeutel'),
+        'REINIGER' => array(1, -1, 100,  '%',    'Reinigungsmittel: Restanteil (-1 = nicht verfuegbar)', 1, 'Reinigungsmittel'),
+        'MATWARN'  => array(0, 0, 1,     '',      '1 = mindestens ein Teil unter der Warnschwelle', 1, 'Materialwarnung'),
+        'BEHAELTER'  => array(1, -1, 1,  '',      'Staubbehaelter eingesetzt (-1 = meldet das Geraet nicht)', 1, 'Staubbehaelter'),
+        'WASSERTANK' => array(1, -1, 1,  '',      'Wassertank eingesetzt (-1 = meldet das Geraet nicht)', 1, 'Wassertank'),
+        'WISCHER'    => array(1, -1, 1,  '',      'Wischmodul angebaut (-1 = meldet das Geraet nicht)', 1, 'Wischmodul'),
+        'DOCK'     => array(1, -1, 9,    '',      'Station: -1 keine, 0 bereit, 1 Pause, 2 saugt ab, 3 reinigt, 4 trocknet, 9 Fehler', 1, 'Station Zustand'),
+        'SAUGST'   => array(1, -1, 7,    '',      'Saugstufe: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Saugstufe'),
+        'WASSER'   => array(1, -1, 7,    '',      'Wischwasser: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Wischwasser'),
+        'MODUS'    => array(1, -1, 4,    '',      'Betriebsart: -1 unbekannt, 1 saugen, 2 wischen, 3 saugen und wischen, 4 erst saugen, dann wischen', 1, 'Betriebsart'),
+        'EVENT'    => array(1, 0, 99,    '',      'Anzahl offener Valetudo-Ereignisse', 1, 'Ereignisse offen'),
+        'EVTYP'    => array(1, 0, 8,     '',      'Jueng(st)es Ereignis: 0 keins, 1 Staubbehaelter voll, 2 Verbrauchsteil leer, 3 Wischmodul pruefen, 4 Stoerung, 5 Karte geaendert, 6 Valetudo aktualisiert, 7 Valetudo-Fehler, 8 unbekannt', 1, 'Ereignisart'),
+        'EVMUELL'  => array(0, 0, 1,     '',      '1 = Staubbehaelter voll (Valetudo meldet es)', 1, 'Behaelter voll'),
+        'ANN'      => array(0, 0, 1,     '',      'Meldefenster aktiv', 0, 'Meldefenster'),
+        'AUDIO'    => array(0, 0, 1,     '',      'Ansage freigegeben', 1, 'Ansage frei'),
+        'PUSH'     => array(0, 0, 1,     '',      'Push freigegeben', 1, 'Push frei'),
+        'PTEST'    => array(0, 0, 1,     '',      'Test-Push ausloesen', 0, 'Test-Push'),
+        'ALTER'    => array(1, -1, 100000, 's',   'Alter des letzten Cron-Laufs in Sekunden (-1 = noch keiner). Gehoert auf eine Ueberwachung: ein festgefrorenes Ergebnis sieht sonst aus wie ein frisches.', 0, 'Alter letzter Lauf'),
+        'ZAEHLER'  => array(1, 0, 999,   '',      'Laufzaehler, laeuft 0...999 um - steht er still, laeuft der Cron nicht mehr', 0, 'Laufzaehler'),
     );
 }
 
@@ -1693,10 +1991,13 @@ function ro_vorlage($dev = 1, $nur_belegte = false) {
     $cmds = array();
     foreach (ro_felder() as $name => $f) {
         list($analog, $min, $max, $einheit, $text) = $f;
+        $kachel = isset($f[6]) && $f[6] !== '' ? $f[6] : $name;
         if ($st !== null && $min < 0 && (int) ro_feldwert($name, $st) === -1) { continue; }
         $cmds[] = array(
             'title' => 'ROBO_' . $name . ($dev > 1 ? '_' . $dev : ''),
-            'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            /* Der Comment wird in Loxone Config zum ANZEIGENAMEN. Deshalb der
+             * kurze Kachelname aus der Feldtabelle, nicht die Erklaerspalte. */
+            'comment' => $kachel . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check' => ro_check($name),
             'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
             'analog' => $analog, 'min' => $min, 'max' => $max,
@@ -1803,9 +2104,32 @@ function ro_vo_vorlage($dev = 1) {
 function ro_config_speichern($cfg)
 {
     $p = ro_paths();
-    // Nichts schreiben, was keine Zeile tragen kann (fail closed).
+    /* ZWEI WACHEN, NICHT EINE.
+     *
+     * Bis 1.1.3 stand hier nur ro_wert_taugt() - die Formwache. Der Kopf von
+     * ro_wert_pruefen() versprach dagegen "gegen dieselbe Positivliste, die
+     * auch das Formular benutzt - eine zweite Wahrheit ueber zulaessige Werte
+     * gibt es nicht", und genau diese Funktion wurde hier nie gerufen.
+     * Gemessen am 04.09.2026: cache_sec="abc" und warn_hours=99999 wurden
+     * geschrieben, Rueckgabe true - und wanderten in die Zweitschrift, wo sie
+     * jedes Upgrade ueberlebten. Dieselbe Datei haette ro_sicherung_lesen()
+     * abgelehnt.
+     *
+     * Fail closed: bei einem Durchfall wird GAR NICHTS geschrieben, und der
+     * Grund steht im Protokoll - sonst sucht der Betreiber ihn in Loxone. */
     foreach ($cfg as $k => $v) {
-        if (!ro_wert_taugt($v)) { return false; }
+        if (!ro_wert_taugt($v)) {
+            ro_log('Nicht gespeichert: der Wert von "' . $k . '" traegt Steuerzeichen '
+                 . 'oder ist zu lang.');
+            return false;
+        }
+        if (array_key_exists($k, ro_vorgaben())) {
+            $grund = ro_wert_pruefen($k, $v);
+            if ($grund !== '') {
+                ro_log('Nicht gespeichert: unzulaessiger Wert bei "' . $k . '" - ' . $grund);
+                return false;
+            }
+        }
     }
     $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
                             | JSON_UNESCAPED_SLASHES);
@@ -1816,8 +2140,8 @@ function ro_config_speichern($cfg)
     // Erst fragen, dann anlegen: mkdir() warnt auch mit @, wenn der Ordner
     // schon da ist, und ein eigener Fehler-Aufnehmer sieht diese Warnung.
     if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
-    if (!ro_write_atomic($p['config'], $js, 0640)) { return false; }
-    ro_write_atomic($p['backup'], $js, 0640);
+    if (!ro_write_atomic($p['config'], $js, 0600)) { return false; }
+    ro_write_atomic($p['backup'], $js, 0600);
     ro_cache_leeren();
     return true;
 }
@@ -1881,6 +2205,16 @@ function ro_wert_pruefen($schluessel, $wert)
                 }
                 foreach (array('name', 'user', 'pass') as $k) {
                     if (isset($r[$k]) && !is_string($r[$k])) { return $k . ' muss Text sein'; }
+                }
+                // Die Geraetenummer ist eine Adresse (seit 1.1.4) und wird
+                // wie jeder andere Wert geprueft, nicht nur mitgenommen.
+                if (isset($r['nr']) && ((int) $r['nr'] < 1 || (int) $r['nr'] > 9)) {
+                    return 'Geraetenummer ausserhalb 1..9';
+                }
+                foreach (array_keys($r) as $k) {
+                    if (!in_array($k, array('nr', 'name', 'ip', 'port', 'user', 'pass'), true)) {
+                        return 'unbekanntes Feld ' . $k . ' in einer Roboterzeile';
+                    }
                 }
             }
             return '';
@@ -1968,20 +2302,34 @@ function ro_sicherung_lesen($roh)
     $neu = ro_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    /* DER SCHLUESSELNAME KOMMT AUS EINER FREMDEN DATEI UND WIRD MASKIERT.
+     *
+     * ro_wert_taugt() prueft WERTE, nie Schluessel. Die Meldungen unten gehen
+     * unverändert in die Admin-Seite (index.php gibt sie roh aus, weil die
+     * Texte selbst Auszeichnung tragen duerfen). Gemessen am 04.09.2026 am
+     * laufenden Server, mit gueltigem Formularmerkmal: eine Sicherungsdatei
+     * mit dem Schluessel <img src=x onerror=...> wurde richtig abgelehnt - und
+     * die Marke stand danach ROH in der Seite, auf der auch das Aktionstoken
+     * steht. Der Weg ist eng (jemand muss den Bediener zum Einspielen einer
+     * untergeschobenen Datei bringen), aber es ist genau der Weg, zu dem der
+     * Knopf "Einstellungen zurueckspielen" einlaedt. */
     foreach ($daten as $k => $w) {
         $k = (string) $k;
         if ($k !== '' && $k[0] === '_') { continue; }   // lesbarer Kopf
         if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(ro_t('TEXT.SICH_FREMD'), $k);
+            $mangel[] = sprintf(ro_t('TEXT.SICH_FREMD'), rb_e($k));
             continue;
         }
         if (!ro_wert_taugt($w)) {
-            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), $k, ro_t('TEXT.SICH_STEUERZEICHEN'));
+            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), ro_t('TEXT.SICH_STEUERZEICHEN'));
             continue;
         }
         $grund = ro_wert_pruefen($k, $w);
         if ($grund !== '') {
-            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), $k, $grund);
+            /* Auch der GRUND kann einen fremden Namen tragen:
+             * ro_wert_pruefen() setzt bei notify und tts den unbekannten
+             * Schalternamen in den Text ein. */
+            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), rb_e($grund));
             continue;
         }
         $neu[$k] = $w;
@@ -2027,13 +2375,51 @@ function ro_pluginversion()
     if (class_exists('LBSystem', false) && method_exists('LBSystem', 'pluginversion')) {
         $v = (string) LBSystem::pluginversion();
     }
+    /* DIE plugin.cfg WIRD GAR NICHT MITINSTALLIERT.
+     *
+     * Gemessen am 05.09.2026 an sbin/plugininstall.pl des LoxBerry-Kerns
+     * (Zweig master): die Datei wird ausschliesslich im Auspackordner gelesen
+     * (Zeilen 427-450) und an keiner Stelle in den Installationsbaum kopiert.
+     * Die beiden frueheren Rueckfallpfade zeigten auf
+     * <home>/webfrontend/plugin.cfg und <home>/webfrontend/html/plugin.cfg -
+     * beides gibt es installiert nicht; sie trafen nur den ausgepackten
+     * Archivbau. Gemessen am laufenden Server in der Installationslage
+     * antwortete ?selftest=1 deshalb mit "FASSUNG=" - leer.
+     *
+     * Die belegte Quelle ist die Plugin-Datenbank des Kerns. Der Endpunkt
+     * laedt das SDK nicht (das taete nur die Oberflaeche), liest die Datei
+     * also selbst. */
     if ($v === '') {
-        foreach (array(dirname(dirname(dirname(__DIR__))) . '/plugin.cfg',
-                       dirname(dirname(__DIR__)) . '/plugin.cfg') as $f) {
-            if (!is_file($f)) { continue; }
+        $p = ro_paths();
+        if ($p['lbhome'] !== '') {
+            /* Der Ort und die Gestalt sind am SDK des Kerns abgelesen, nicht
+             * geraten: LBSDATADIR = LBHOMEDIR . "/data/system" und
+             * PLUGINDATABASE = "$lbsdatadir/plugindatabase.json"
+             * (libs/phplib/loxberry_system.php, Zeilen 73 und 111). Verglichen
+             * wird "folder" gegen den Plugin-Ordner, genau wie LBSystem::
+             * plugindata() es tut (ebenda, Zeile 637). */
+            $db = @json_decode((string) @file_get_contents(
+                $p['lbhome'] . '/data/system/plugindatabase.json'), true);
+            $ordner = ro_plugin_ordner();
+            $liste = isset($db['plugins']) && is_array($db['plugins']) ? $db['plugins'] : array();
+            foreach ($liste as $eintrag) {
+                if (!is_array($eintrag)) { continue; }
+                if (isset($eintrag['folder']) && (string) $eintrag['folder'] === $ordner
+                    && isset($eintrag['version']) && (string) $eintrag['version'] !== '') {
+                    $v = (string) $eintrag['version'];
+                    break;
+                }
+            }
+        }
+    }
+    /* Rueckfall fuer den ausgepackten Archivbau (Entwicklung, Pruefstand):
+     * dort liegt die plugin.cfg zwei Ebenen ueber dieser Datei. */
+    if ($v === '') {
+        $f = dirname(dirname(__DIR__)) . '/plugin.cfg';
+        if (is_file($f)) {
             foreach (ro_log_tail($f, 200) as $z) {
                 if (preg_match('/^VERSION\s*=\s*([0-9][0-9A-Za-z\.\-]*)/', trim($z), $m)) {
-                    $v = $m[1]; break 2;
+                    $v = $m[1]; break;
                 }
             }
         }
@@ -2071,6 +2457,72 @@ function ro_cfg_lage()
  * ok = 1 Haken, 0 Kreuz, 2 Strich ("nicht feststellbar"). Ein Strich ist
  * ausdruecklich KEIN Haken: was nicht gemessen werden konnte, sagt das.
  * ================================================================== */
+/**
+ * Passen Reiterleiste, Bereiche und Positivliste zusammen?
+ *
+ * DER KOMMENTAR IN index.php VERSPRACH DAS BIS 1.1.3, UND ES GAB DIE PRUEFUNG
+ * NICHT. Nachgewiesen am 04.09.2026 durch Rueckbau an einer Kopie: 'tab-log'
+ * aus der Positivliste entfernt - der Reiter blieb in der Leiste stehen,
+ * fuehrte aber auf die Einstellungen, und die ganze Prueflette blieb gruen
+ * (hausstandard_pruefen.py gab byteweise dieselbe Ausgabe aus, Spalte tab
+ * weiterhin ein Strich, Freigabetor "offene Spalten: keine").
+ *
+ * Zwei zu vergleichen genuegt nicht - eine Gegenprobe, die einen Namen aus
+ * der Quelle entfernt, laesst den Reiter unerreichbar und die Pruefung gruen.
+ * Deshalb ALLE DREI Stellen aus der gerenderten Datei selbst:
+ *
+ *   1. die Leiste       data-pane="tab-..."
+ *   2. die Bereiche     id="tab-..."
+ *   3. die Positivliste $rb_reiterliste = array('tab-...', ...)
+ *
+ * Rueckgabe: array(gefunden je Stelle, fehlend, ueberzaehlig). Ist die Datei
+ * nicht lesbar, wird das GESAGT und nicht als "in Ordnung" gewertet.
+ */
+/** Wo liegt die Oberflaechendatei? EINE Stelle fuer alle Pruefzeilen,
+ *  die an ihr messen. */
+function ro_oberflaeche_datei()
+{
+    $p = ro_paths();
+    $kandidaten = array();
+    if ($p['lbhome'] !== '') {
+        $kandidaten[] = $p['lbhome'] . '/webfrontend/htmlauth/plugins/' . $p['plugin'] . '/index.php';
+    }
+    $kandidaten[] = dirname(dirname(__DIR__)) . '/webfrontend/htmlauth/index.php';
+    foreach ($kandidaten as $k) { if (is_file($k)) { return $k; } }
+    return '';
+}
+
+function ro_reiterlage()
+{
+    $datei = ro_oberflaeche_datei();
+    if ($datei === '') {
+        return array('lesbar' => false, 'leiste' => array(), 'bereiche' => array(),
+                     'liste' => array(), 'fehlend' => array(), 'ueberzaehlig' => array());
+    }
+    $t = (string) @file_get_contents($datei);
+    preg_match_all('/data-pane="(tab-[a-z0-9]+)"/', $t, $m1);
+    preg_match_all('/id="(tab-[a-z0-9]+)"/', $t, $m2);
+    $liste = array();
+    if (preg_match('/\$rb_reiterliste\s*=\s*array\(([^)]*)\)/', $t, $m3)) {
+        preg_match_all("/'(tab-[a-z0-9]+)'/", $m3[1], $m4);
+        $liste = $m4[1];
+    }
+    $leiste = array_values(array_unique($m1[1]));
+    $bereiche = array_values(array_unique($m2[1]));
+    $liste = array_values(array_unique($liste));
+    sort($leiste); sort($bereiche); sort($liste);
+    return array(
+        'lesbar' => true,
+        'leiste' => $leiste, 'bereiche' => $bereiche, 'liste' => $liste,
+        // Was in der Leiste steht, muss einen Bereich UND einen Listeneintrag haben.
+        'fehlend' => array_values(array_unique(array_merge(
+            array_diff($leiste, $bereiche), array_diff($leiste, $liste)))),
+        // Und umgekehrt: kein Bereich und kein Listeneintrag ohne Reiter.
+        'ueberzaehlig' => array_values(array_unique(array_merge(
+            array_diff($bereiche, $leiste), array_diff($liste, $leiste)))),
+    );
+}
+
 function ro_selbsttest()
 {
     $cfg = ro_config();
@@ -2109,13 +2561,30 @@ function ro_selbsttest()
         $add($schl, $kann === null ? 2 : ($kann ? 1 : 0), '');
     }
 
-    // Verbrauchsteile, die dieses Plugin nicht kennt - nennen, nicht verschlucken.
-    $add('PRUEF.MATFREMD', $unbekannt ? 0 : 1, implode(', ', array_keys($unbekannt)));
+    /* Verbrauchsteile, die dieses Plugin nicht kennt - nennen, nicht
+     * verschlucken. UND NICHT UEBER EINE LEERE MENGE URTEILEN: ohne
+     * eingerichteten Roboter laeuft die Schleife oben gar nicht, $unbekannt
+     * bleibt leer, und bis 1.1.3 meldete die Zeile dann einen Haken - genau
+     * beim Neueinrichten, wenn man auf die Selbstpruefung angewiesen ist. */
+    if (!$robots || $erreicht === 0) {
+        $add('PRUEF.MATFREMD', 2, ro_t('PRUEF.NICHTS_GEMESSEN'));
+    } else {
+        $add('PRUEF.MATFREMD', $unbekannt ? 0 : 1, implode(', ', array_keys($unbekannt)));
+    }
 
-    // Laeuft der Cron?
+    /* Laeuft der Cron?
+     *
+     * Drei Ausgaenge, und der mittlere ist neu: bis 1.1.3 bekam ein Alter ueber
+     * 180 Sekunden den Ausgang 2 = Strich, und die Legende sagt "Strich = nicht
+     * feststellbar". 19227 Sekunden sind aber gemessen, nicht unfeststellbar -
+     * ein stehender Cron sah damit aus wie ein Messproblem. Strich bleibt nur
+     * fuer den Fall, dass noch nie ein Lauf stattfand. */
     $alter = ro_lauf_alter();
-    $add('PRUEF.CRON', ($alter >= 0 && $alter <= 180) ? 1 : ($alter < 0 ? 0 : 2),
-        $alter >= 0 ? ($alter . ' s') : '');
+    if ($alter < 0) {
+        $add('PRUEF.CRON', 2, ro_t('PRUEF.CRON_NIE'));
+    } else {
+        $add('PRUEF.CRON', $alter <= 180 ? 1 : 0, $alter . ' s');
+    }
 
     // MQTT
     $g = ro_mqtt_gateway_info();
@@ -2160,6 +2629,52 @@ function ro_selbsttest()
     }
     $add('PRUEF.SUCHTEXT', $doppelt ? 0 : 1,
         $doppelt ? implode(', ', $doppelt) : (string) count(ro_felder()));
+
+    /* Passen Leiste, Bereiche und Positivliste zusammen? (siehe ro_reiterlage) */
+    $rl = ro_reiterlage();
+    if (!$rl['lesbar']) {
+        $add('PRUEF.REITER', 2, ro_t('PRUEF.REITER_UNLESBAR'));
+    } elseif ($rl['fehlend'] || $rl['ueberzaehlig']) {
+        $add('PRUEF.REITER', 0, sprintf(ro_t('PRUEF.REITER_FEHLT'),
+            implode(', ', array_merge($rl['fehlend'], $rl['ueberzaehlig']))));
+    } else {
+        $add('PRUEF.REITER', 1, sprintf(ro_t('PRUEF.REITER_OK'),
+            count($rl['leiste']), count($rl['bereiche']), count($rl['liste'])));
+    }
+
+    /* Nennt die Themenliste genau das, was der Sender bildet?
+     *
+     * Gemessen wird die WIRKUNG: ro_mqtt_werte() wird wirklich gebildet und
+     * gegen ro_mqtt_themen() gehalten. Bis 1.1.3 lief die Tabelle ueber die
+     * volle Feldliste und nannte zwei Themen, die nie hinausgingen. */
+    $themen = array_keys(ro_mqtt_themen(null, 1));
+    $wurzel_t = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
+    $gesendet = array($wurzel_t . '/status/ok', $wurzel_t . '/status/ts',
+                      $wurzel_t . '/status/zaehler');
+    foreach (array_keys(ro_mqtt_werte(ro_state(1), 1)) as $k) {
+        $gesendet[] = $wurzel_t . '/' . $k;
+    }
+    sort($themen); sort($gesendet);
+    $nur_liste = array_values(array_diff($themen, $gesendet));
+    $nur_sender = array_values(array_diff($gesendet, $themen));
+    /* UND: rendert die Tabelle ueberhaupt noch aus dieser Liste?
+     *
+     * Ohne diese Frage misst die Zeile zu wenig. Aufgefallen bei der Eichung
+     * durch Rueckbau: wird ro_mqtt_ausgenommen() geaendert, aendern sich Liste
+     * UND Sender gleichermassen, und die Zeile bleibt gruen. Der Fehler, um den
+     * es geht, war aber ein anderer - die Tabelle fuhr eine EIGENE Schleife
+     * ueber ro_felder(). Genau das wird hier gemessen. */
+    $ob = ro_oberflaeche_datei();
+    $tabelle_aus_liste = ($ob !== '')
+        && strpos((string) @file_get_contents($ob), 'ro_mqtt_themen(') !== false;
+    if (!$tabelle_aus_liste) {
+        $add('PRUEF.THEMEN', 0, ro_t('PRUEF.THEMEN_TABELLE'));
+    } elseif ($nur_liste || $nur_sender) {
+        $add('PRUEF.THEMEN', 0, sprintf(ro_t('PRUEF.THEMEN_AB'),
+            implode(', ', array_merge($nur_liste, $nur_sender))));
+    } else {
+        $add('PRUEF.THEMEN', 1, sprintf(ro_t('PRUEF.THEMEN_OK'), count($themen)));
+    }
 
     // Nicht-stoeren-Zeit in Valetudo - sie kann einem Loxone-Programm in die
     // Quere fahren, ohne dass jemand daran denkt.

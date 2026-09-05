@@ -38,16 +38,28 @@ fi
 if [ ! -f "$CF" ]; then
     echo '{}' > "$CF" || { echo "<FAIL> $CF liess sich nicht schreiben."; exit 1; }
 fi
-# In robo.json steht das Aktionstoken, das ?cmd=start freischaltet - und
-# gegebenenfalls die Anmeldung an Valetudo. Die Datei geht niemanden ausser
-# loxberry etwas an. Das Plugin selbst schreibt sie mit denselben Rechten
-# (ro_write_atomic), sonst hoebe der naechste Speichervorgang das hier auf.
-chmod 640 "$CF" 2>/dev/null
-chmod 640 "$BK" 2>/dev/null
+# RECHTE 0600, NICHT 0640 - UND DAS IST GEMESSEN, NICHT GERATEN.
+#
+# In robo.json stehen das Aktionstoken und, falls eingerichtet, die Anmeldung
+# an Valetudo. Der Hausstandard vom 03.09.2026 verlangt 0600, sobald ein Dienst
+# die Datei braucht. 640 sagte "auch die Gruppe" - waehrend der Kommentar
+# daneben behauptete, die Datei gehe niemanden ausser loxberry etwas an.
+#
+# Dass 0600 hier traegt, ist am Quelltext des LoxBerry-Kerns nachgemessen
+# (Zweig master, 05.09.2026): der Konfigordner gehoert loxberry:loxberry
+# (sbin/plugininstall.pl, make_path(... owner=>'loxberry', group=>'loxberry')),
+# der Minutencron laeuft als loxberry (system/cron/cron.d/lbdefaults:
+# "* * * * * loxberry cd / && for f in .../cron.01min/*") und Apache ebenfalls
+# (system/apache2/envvars: APACHE_RUN_USER=loxberry). Es liest und schreibt
+# also derselbe Benutzer - die Gruppenrechte wurden nie gebraucht.
+# Das Plugin selbst schreibt sie mit denselben Rechten (ro_write_atomic),
+# sonst hoebe der naechste Speichervorgang das hier auf.
+chmod 600 "$CF" 2>/dev/null
+chmod 600 "$BK" 2>/dev/null
 
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF" && chmod 640 "$CF" 2>/dev/null
+        cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
         echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
     fi
 fi

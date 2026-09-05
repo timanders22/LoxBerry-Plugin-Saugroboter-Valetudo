@@ -41,11 +41,46 @@
  *     Bis 1.0.14 kostete jeder dieser Aufrufe 2,1 s gegen einen stummen
  *     Roboter, ohne Token und ohne Ende wiederholbar - genug, um alle
  *     PHP-Arbeiter des LoxBerry zu belegen.
+ *
+ *   - ?refresh=1 uebergeht den Zwischenspeicher und ist deshalb seit 1.1.4
+ *     TOKENPFLICHTIG. Ohne Token wird die Anfrage nicht abgewiesen, sie
+ *     bekommt nur den zwischengespeicherten Stand - Abfragen bleiben offen,
+ *     das Abschalten des Schutzes nicht.
  * ==================================================================
  */
 
 require_once __DIR__ . '/robo_lib.php';
+
+/* DIESER ENDPUNKT LEGT NICHTS AN - UND ZWAR AUF JEDEM WEG.
+ *
+ * Bis 1.1.3 war das ein Parameter (ro_config(false)), und der stand nur in
+ * ro_token_lage(). Gemessen am 04.09.2026 in einer nachgebauten
+ * Installationslage: ?cmd=start ohne Token legte richtig nichts an - ein
+ * Aufruf von robo.php OHNE Parameter, also der Weg, den Loxone bei jeder
+ * Abfrage geht, stellte config/plugins/<ordner>/robo.json aus der
+ * Zweitschrift wieder her. Ein Schalter fuer den ganzen Prozess kann man
+ * beim naechsten Ausbau nicht an einer Aufrufstelle vergessen. */
+ro_config_erzeugen_erlauben(false);
+
 $dev = isset($_GET['dev']) ? max(1, min(9, (int) $_GET['dev'])) : 1;
+
+/**
+ * Darf dieser Aufruf den Zwischenspeicher uebergehen?
+ *
+ * ?refresh=1 zwingt ro_state() und ro_segments() zu einer vollstaendigen
+ * Abfragerunde beim Roboter. cache_sec heisst in den Vorgaben "Status-Cache
+ * (schuetzt den Roboter)" - bis 1.1.3 liess sich genau dieser Schutz von
+ * jedem Geraet im Netz OHNE TOKEN beliebig oft abschalten. Gemessen am
+ * 04.09.2026 gegen eine zaehlende Gegenstelle: drei Leseaufrufe ohne
+ * refresh = 0 Abrufe beim Roboter, drei mit refresh = 15 Abrufe, und jede
+ * Anfrage bindet dabei einen PHP-Arbeiter des LoxBerry.
+ *
+ * Abfragen bleiben offen, das Uebergehen des Schutzes nicht. Der Knopf im
+ * Reiter Test hat den Token ohnehin zur Hand.
+ */
+function ro_refresh_erlaubt() {
+    return isset($_GET['refresh']) && ro_token_ok();
+}
 
 /**
  * Tokenpruefung fuer alles, was etwas AUSLOEST.
@@ -77,7 +112,7 @@ function ro_param() {
 
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
-    $st = ro_state($dev, isset($_GET['refresh']));
+    $st = ro_state($dev, ro_refresh_erlaubt());
     /* Dieselbe Quelle wie die Zeile und wie MQTT. Bis 1.0.14 standen hier
      * ro_ann_active() und ro_ptest_active() einzeln - audio und push fehlten
      * in der JSON-Ansicht ersatzlos. Genau die Auseinanderentwicklung, die
@@ -87,7 +122,7 @@ if (isset($_GET['json'])) {
     $st['alter'] = ro_lauf_alter();
     $st['zaehler'] = ro_lauf_lesen()['zaehler'];
     $st['meldung'] = ro_meldung_lesen($dev);
-    $st['raeume'] = ro_segments($dev, isset($_GET['refresh']));
+    $st['raeume'] = ro_segments($dev, ro_refresh_erlaubt());
     echo json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
     exit;
 }
@@ -173,7 +208,7 @@ if (isset($_GET['ptest'])) {
     exit;
 }
 
-$st = ro_state($dev, isset($_GET['refresh']));
+$st = ro_state($dev, ro_refresh_erlaubt());
 
 if (isset($_GET['debug'])) {
     $r = ro_robot($dev);

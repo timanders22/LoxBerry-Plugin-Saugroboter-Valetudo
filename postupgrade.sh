@@ -34,7 +34,7 @@ mkdir -p "$CDIR" "$LDIR" "$DDIR" 2>/dev/null
 # aus der Sicherung neben dem Ordner wiederhergestellt.
 if [ -f "$TMPDIR/robo.json" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$TMPDIR/robo.json" "$CF" && chmod 640 "$CF" 2>/dev/null
+        cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
         echo "<OK> Konfiguration aus dem Upgrade uebernommen."
     fi
 fi
@@ -43,12 +43,40 @@ if [ -f "$TMPDIR/robo.log" ] && [ ! -s "$LDIR/robo.log" ]; then
     echo "<OK> Protokoll aus dem Upgrade uebernommen."
 fi
 
-if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF" && chmod 640 "$CF" 2>/dev/null
+# Was preupgrade weggelegt hat, muss postupgrade WIEDERFINDEN.
+# Der Zeitpunkt der letzten Reinigung je Roboter (siehe preupgrade.sh).
+if [ -d "$TMPDIR/data" ]; then
+    ANZ=0
+    for F in "$TMPDIR/data"/last_*.json; do
+        [ -f "$F" ] || continue
+        cp -p "$F" "$DDIR/" 2>/dev/null && ANZ=$((ANZ + 1))
+    done
+    if [ "$ANZ" -gt 0 ]; then
+        echo "<OK> Zeitpunkt der letzten Reinigung uebernommen ($ANZ Datei(en))."
     fi
 fi
-chmod 640 "$CF" 2>/dev/null
+
+if [ -f "$BK" ]; then
+    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
+        cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
+    fi
+fi
+# RECHTE 0600, NICHT 0640 - UND DAS IST GEMESSEN, NICHT GERATEN.
+#
+# In robo.json stehen das Aktionstoken und, falls eingerichtet, die Anmeldung
+# an Valetudo. Der Hausstandard vom 03.09.2026 verlangt 0600, sobald ein Dienst
+# die Datei braucht. 640 sagte "auch die Gruppe" - waehrend der Kommentar
+# daneben behauptete, die Datei gehe niemanden ausser loxberry etwas an.
+#
+# Dass 0600 hier traegt, ist am Quelltext des LoxBerry-Kerns nachgemessen
+# (Zweig master, 05.09.2026): der Konfigordner gehoert loxberry:loxberry
+# (sbin/plugininstall.pl, make_path(... owner=>'loxberry', group=>'loxberry')),
+# der Minutencron laeuft als loxberry (system/cron/cron.d/lbdefaults:
+# "* * * * * loxberry cd / && for f in .../cron.01min/*") und Apache ebenfalls
+# (system/apache2/envvars: APACHE_RUN_USER=loxberry). Es liest und schreibt
+# also derselbe Benutzer - die Gruppenrechte wurden nie gebraucht.
+chmod 600 "$CF" 2>/dev/null
+chmod 600 "$BK" 2>/dev/null
 
 # Altlast bis 1.0.3: cron.php lag im UNANGEMELDETEN Webordner und war damit
 # fuer jeden erreichbar, der die LoxBerry-Oberflaeche im Netz sieht. Ein
@@ -76,8 +104,14 @@ fi
 rm -f "/tmp/$PFOLDER"/state_*.json "/tmp/$PFOLDER"/caps_*.json \
       "/tmp/$PFOLDER"/segments_*.json "/tmp/$PFOLDER"/info_*.json 2>/dev/null
 
-echo "<INFO> Neu in 1.1.0: die Verbrauchsmaterialien werden jetzt in der"
-echo "<INFO> richtigen Einheit gelesen, und es sind Felder dazugekommen."
-echo "<INFO> Die Loxone-Vorlage gehoert deshalb NEU erzeugt und eingelesen -"
+# Der Hinweis gehoert zu DIESER Fassung, nicht zu einer von vor drei
+# Schritten. Bis 1.1.3 stand hier unveraendert der Text von 1.1.0 und
+# forderte bei jedem Update zum Neuerzeugen der Vorlage auf.
+echo "<INFO> Neu in 1.1.4: die Zustandsthemen gehen jetzt RETAINED ueber MQTT"
+echo "<INFO> hinaus - nach einem Neustart des Miniservers stehen die Werte"
+echo "<INFO> sofort wieder da. Das Lebenszeichen bleibt bewusst ohne Retain."
+echo "<INFO> Die Loxone-Vorlage traegt jetzt kurze Kachelnamen statt ganzer"
+echo "<INFO> Saetze. Wer sie neu einliest, bekommt LESBARE Bausteinnamen -"
+echo "<INFO> noetig ist es nicht, die Werte kommen unveraendert an."
 echo "<INFO> Reiter 'Einbindung in Loxone'."
 exit 0

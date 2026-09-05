@@ -1,9 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-> **Hinweis zu 1.0.4:** Zwischen der veröffentlichten 1.0.2 und dieser Fassung
-> liegen zwei Entwicklungsschritte. 1.0.3 ist nie einzeln veröffentlicht
-> worden — die Änderungen beider Schritte stecken in 1.0.4 und sind unten
-> getrennt beschrieben.
+Version 1.1.4 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -12,6 +9,107 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.4
+
+Ein Durchgang aus dreizehn nachgemessenen Befunden. Vier davon wogen schwer,
+und alle vier betrafen Dinge, die das Plugin von sich behauptete, ohne sie zu
+tun.
+
+**Eine beschädigte `robo.json` riss bis 1.1.3 die Sicherungskopie mit.**
+`json_decode(…) ?: array()` machte aus einer abgeschnittenen Datei
+stillschweigend eine leere; die Oberfläche sah ein leeres Aktionstoken, erzeugte
+ein neues und schrieb Werkseinstellungen in die Konfiguration **und in die
+Zweitschrift**. Ein einziger Seitenaufruf genügte, und weder eine
+Protokollzeile noch eine Meldung sagte etwas. Jetzt werden vier Lagen
+auseinandergehalten — Datei fehlt, Datei leer, Datei `{}`, **ungültiges JSON**;
+die beschädigte Datei wird als `robo.json.kaputt` beiseitegelegt, die
+Zweitschrift wird nach ihrem **Inhalt** beurteilt (trägt sie ein Aktionstoken?)
+statt nach der Form, und der Reiter Test meldet den **zuerst** gesehenen
+Zustand, nicht den geheilten.
+
+**Der unangemeldete Endpunkt legte die Konfiguration doch an.** `?cmd=` ohne
+Token tat richtig nichts — der Leseweg, also der Weg, den Loxone bei jeder
+Abfrage geht, stellte `robo.json` aus der Zweitschrift wieder her. Statt eines
+Parameters, den man an einer Aufrufstelle vergessen kann, gibt es jetzt einen
+Schalter für den ganzen Prozess.
+
+**Ein Schlüsselname aus einer eingespielten Sicherungsdatei landete roh in der
+Admin-Seite.** Die Datei wurde korrekt abgelehnt, die Auszeichnung darin wirkte
+trotzdem — auf derselben Seite, auf der das Aktionstoken steht. Fremde
+Schlüssel werden jetzt maskiert, bevor sie in eine Meldung geraten.
+
+**Kein einziges MQTT-Thema war retained.** Nach einem Neustart des Miniservers
+oder des Gateways stand in Loxone nichts, bis sich die Signatur änderte — im
+Grenzfall eine halbe Stunde. Jetzt gehen die Zustandsthemen retained hinaus,
+der Batteriestand und die Zeitfenster `ann`/`ptest` bewusst nicht, das
+Lebenszeichen nie. Die Themenliste im Reiter MQTT nennt je Thema, ob es
+retained ist.
+
+Dazu:
+
+* **`?refresh=1` ist tokenpflichtig.** Es übergeht den Zwischenspeicher, den
+  die Vorgaben „Status-Cache (schützt den Roboter)" nennen; bis 1.1.3 konnte
+  jedes Gerät im Netz diesen Schutz ohne Token beliebig oft abschalten.
+  Abfragen bleiben offen — ohne Token gibt es den zwischengespeicherten Stand.
+* **`ro_config_speichern()` prüft jetzt die Werte**, nicht nur ihre Form. Bis
+  1.1.3 rutschten `cache_sec="abc"` und `warn_hours=99999` durch, wanderten in
+  die Zweitschrift und überlebten jedes Upgrade — während dieselbe Datei beim
+  Zurückspielen abgelehnt worden wäre.
+* **Die Nicht-stören-Zeit wird abgewiesen statt zurechtgebogen.**
+  `?cmd=ruhezeit&p=29:30-07:00` meldete `OK=1` und stellte am Gerät 23:30 ein.
+* **Eine ungültige Roboteradresse verwirft nicht mehr das ganze Formular.** Sie
+  wurde gemeldet mit „der bisherige Eintrag bleibt stehen" — gespeichert wurde
+  in Wahrheit gar nichts, auch nicht die übrigen Änderungen.
+* **Die Gerätenummer ist jetzt eine Adresse** und steht in der Konfiguration.
+  Wer die erste Adresse leerte, bekam bis 1.1.3 für `&dev=1` den zweiten
+  Roboter; stand die erste Zeile schon leer da, ging beim nächsten Speichern
+  dessen Valetudo-Kennwort still verloren. Fehlt die Nummer, gilt die bisherige
+  Zählung — bestehende Anlagen behalten ihre Zuordnung.
+* **Über MQTT trug Roboter 2 die Meldeflags von Roboter 1** (`ann`, `audio`,
+  `push`, `ptest`). Der HTTP-Weg war richtig.
+* **Die Themenliste nannte zwei Themen, die es nie gab** (`…/alter`,
+  `…/zaehler`). Liste und Sender lesen jetzt dieselbe Stelle, und der Reiter
+  Test hält sie gegeneinander.
+* **Die Reiterleiste steht ausgeschrieben**, und der Reiter Test prüft die
+  Übereinstimmung von Leiste, Bereichen und Positivliste wirklich nach — der
+  Kommentar behauptete das bis 1.1.3, die Prüfung gab es nicht.
+* **`?selftest=1` nennt wieder eine Fassung.** Die beiden Rückfallpfade zeigten
+  auf eine `plugin.cfg`, die es installiert gar nicht gibt; gelesen wird jetzt
+  die Plugin-Datenbank des Kerns.
+* **Der Zeitpunkt der letzten Reinigung überlebt ein Update.**
+  `data/plugins/<ordner>/last_*.json` wird mitgesichert.
+* **Die Loxone-Vorlage trägt kurze Kachelnamen** statt ganzer Sätze. Der
+  `Comment` wird in Loxone Config zum Anzeigenamen; `ROBO_CODE` hieß bisher
+  „Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, …".
+* **`robo.json` und die Zweitschrift stehen auf 0600** statt 0640. Am Kern
+  nachgemessen: Konfigordner, Cron und Apache laufen alle als `loxberry`.
+* Zwei Prüfzeilen urteilten falsch: „Alle Verbrauchsteile bekannt" meldete
+  einen Haken über eine leere Menge, und ein seit Stunden stehender Cron bekam
+  einen Strich („nicht feststellbar") statt eines Kreuzes.
+* Die Fehlerausgabe der Schale steht in einer eigenen `cron.log` neben dem
+  Plugin-Protokoll; `postupgrade.sh` meldet die Neuerungen dieser Fassung statt
+  derer von 1.1.0; die Deinstallation räumt die Rückfall-Protokolldatei mit ab.
+
+**Am Gerät ist weiterhin nichts gemessen.** Die Valetudo-Schnittstelle ist am
+Quelltext von `Hypfer/Valetudo` belegt und gegen eine Attrappe gefahren; die
+Aussagen zum MQTT-Gateway, zum Installer, zum Cron-Benutzer und zu den Rechten
+sind am Quelltext des LoxBerry-Kerns nachgemessen (Zweig `master`, 05.09.2026).
+
+## Neu in 1.1.3
+
+Die Tabelle mit dem einzutragenden Abo steht jetzt **immer** — die Bedingung
+`if ($rb_gwf < 2)` ist entfallen, die Themengruppe ist also auch unter
+Gateway V2 ablesbar. Dazu in beiden Sprachdateien: HTML-Entitäten durch die
+Zeichen selbst ersetzt, `H_ABO` und `EINZUTRAGEN` klarer benannt.
+
+## Neu in 1.1.2
+
+Ein Escape-Fehler in der Oberfläche.
+
+## Neu in 1.1.1
+
+Sammeldurchgang ohne eigene Neuerung an dieser Linie.
 
 ## Neu in 1.1.0
 

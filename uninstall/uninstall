@@ -41,6 +41,12 @@ fi
 if [ -d "$TMP" ]; then
     rm -rf "$TMP" && echo "<OK> Zwischenspeicher $TMP entfernt."
 fi
+# Die Rueckfall-Protokolldatei des Crons liegt NEBEN dem Ordner, nicht darin
+# (cron/cron.01min legt sie an, wenn log/plugins/<ordner> fehlt) - rm -rf auf
+# den Ordner trifft sie deshalb nicht. Bis 1.1.3 blieb sie liegen.
+if [ -f "/tmp/$PDIR-cron.log" ]; then
+    rm -f "/tmp/$PDIR-cron.log" && echo "<OK> Cron-Protokoll /tmp/$PDIR-cron.log entfernt."
+fi
 # Bis 1.0.14 lag er unabhaengig vom Ordnernamen fest unter /tmp/saugrobo.
 if [ "$PDIR" != "saugrobo" ] && [ -d "/tmp/saugrobo" ]; then
     rm -rf "/tmp/saugrobo" && echo "<OK> Alter Zwischenspeicher /tmp/saugrobo entfernt."

@@ -38,4 +38,16 @@ mkdir -p "$TMPDIR" 2>/dev/null
 cp -p "$BASE/config/plugins/$PFOLDER/robo.json" "$TMPDIR/robo.json" 2>/dev/null
 cp -p "$BASE/log/plugins/$PFOLDER/robo.log"     "$TMPDIR/robo.log"  2>/dev/null
 
+# Der Zeitpunkt der letzten Reinigung, je Roboter.
+#
+# Was gesichert wird, richtet sich nach dem, was der CODE schreibt, nicht nach
+# dem Archivinhalt. ro_state() legt data/plugins/<ordner>/last_<n>.json an
+# (robo_lib.php), und data/plugins/<ordner>/ raeumt der Installer beim Upgrade
+# ab - genau wie config/plugins/<ordner>/. Bis 1.1.3 wurde die Datei nicht
+# mitgesichert: nach jedem Update stand "letzte" wieder auf 0, der Zeitpunkt
+# der letzten Reinigung war in Loxone weg, und der erste Zustandswechsel
+# danach wurde anders bewertet als vorher.
+mkdir -p "$TMPDIR/data" 2>/dev/null
+cp -p "$BASE/data/plugins/$PFOLDER"/last_*.json "$TMPDIR/data/" 2>/dev/null
+
 exit 0

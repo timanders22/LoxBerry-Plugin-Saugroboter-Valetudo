@@ -126,8 +126,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 /* ---------- 4. Reiterwahl ----------
- * Diese Liste, die Positivliste und die id der Flaechen muessen
- * deckungsgleich bleiben - alle drei. Der Reiter Test prueft es nach.
+ * Diese Liste, die Leiste weiter unten und die id der Flaechen muessen
+ * deckungsgleich bleiben - alle drei. Der Reiter Test prueft es nach:
+ * ro_reiterlage() liest diese Datei und vergleicht die drei Stellen
+ * miteinander. Bis 1.1.3 stand derselbe Satz hier, und die Pruefung gab es
+ * nicht - nachgewiesen durch Rueckbau am 04.09.2026.
  */
 $rb_reiterliste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
 $rb_tab = 'tab-settings';
@@ -302,28 +305,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_u2 = isset($_POST['r_user']) ? (array) $_POST['r_user'] : array();
     $rb_w2 = isset($_POST['r_pass']) ? (array) $_POST['r_pass'] : array();
     $rb_alt = ro_robots();
+    $rb_nr_feld = isset($_POST['r_nr']) ? (array) $_POST['r_nr'] : array();
+    $rb_zeilenfehler = array();
+    $rb_vergeben = array();
     for ($rb_i = 0; $rb_i < 2; $rb_i++) {
+        /* DIE GERAETENUMMER REIST MIT DER ZEILE, NICHT MIT DER POSITION.
+         *
+         * An ihr haengen virtueller Eingang, MQTT-Thema und Endpunktadresse.
+         * Bis 1.1.3 war sie eine Aufzaehlung ueber die nicht leeren Zeilen:
+         * wer die erste Adresse loeschte, bekam fuer &dev=1 den zweiten
+         * Roboter. Und das Kennwort wurde ueber $rb_alt[$rb_i + 1] geholt,
+         * also ebenfalls ueber die Position - gemessen am 04.09.2026 ging es
+         * dabei still verloren, sobald die erste Zeile schon ohne Adresse
+         * dastand. Beides haengt jetzt am versteckten Feld r_nr[]. */
+        $rb_nr = isset($rb_nr_feld[$rb_i]) ? (int) $rb_nr_feld[$rb_i] : 0;
+        // Kam die Nummer wirklich aus dem Formular? Nur dann darf ueber sie
+        // ein Kennwort geerbt werden (siehe weiter unten).
+        $rb_nr_echt = ($rb_nr >= 1 && $rb_nr <= 9 && !in_array($rb_nr, $rb_vergeben, true));
+        if (!$rb_nr_echt) {
+            $rb_nr = 1;
+            while (in_array($rb_nr, $rb_vergeben, true)) { $rb_nr++; }
+        }
         $rb_ip = trim((string) (isset($rb_i2[$rb_i]) ? $rb_i2[$rb_i] : ''));
         if ($rb_ip === '') { continue; }
+        $rb_vergeben[] = $rb_nr;
         if (!preg_match('/^[\w\.\-]{1,253}$/', $rb_ip)) {
             /* Beanstanden - aber die uebrigen Zeilen NICHT verwerfen.
-             * Bis 1.0.14 verhinderte eine falsche Adresse beim zweiten
-             * Roboter das Speichern der GANZEN Seite, ohne das zu sagen. */
-            $rb_fehler[] = sprintf(ro_t('TEXT.ROBOTER_ADRESSE_UNGUELTIG'), $rb_i + 1);
+             *
+             * DAS STAND SO SCHON IN 1.1.3 UND STIMMTE NICHT. Die Beanstandung
+             * landete in $rb_fehler, und die Sperre weiter unten
+             * (if (!array_filter($rb_fehler))) verhinderte damit das Speichern
+             * der GANZEN Seite - waehrend der Text daneben sagte "der bisherige
+             * Eintrag bleibt stehen", also das Gegenteil. Gemessen am
+             * 04.09.2026: cache_sec 20 -> 77 und warn_hours 10 -> 55 kamen
+             * NICHT an, gemeldet wurde nur die Adresse.
+             *
+             * Adressbeanstandungen kommen deshalb in eine EIGENE Liste. Sie
+             * werden angezeigt, sperren aber nicht - genau das verlangt die
+             * Hausregel "Beanstandungen melden, nicht das ganze Speichern
+             * verhindern". Was das Speichern technisch unmoeglich macht,
+             * sperrt weiterhin. */
+            $rb_zeilenfehler[] = sprintf(ro_t('TEXT.ROBOTER_ADRESSE_UNGUELTIG'), $rb_nr);
             // Den bisherigen Eintrag behalten, damit nichts verlorengeht.
-            if (isset($rb_alt[$rb_i + 1])) { $rb_neu['robots'][] = $rb_alt[$rb_i + 1]; }
+            if (isset($rb_alt[$rb_nr])) { $rb_neu['robots'][] = $rb_alt[$rb_nr]; }
             continue;
         }
         /* Ein leeres Kennwortfeld LOESCHT nicht. Der Browser fuellt
          * type=password nicht vor; wer nur den Namen aendert, verlaere sonst
          * die Anmeldung. Geloescht wird ueber den Haken daneben. */
+        /* Ein leeres Kennwortfeld LOESCHT nicht - der Browser fuellt
+         * type=password nicht vor. Geerbt wird aber NUR ueber eine Nummer, die
+         * wirklich aus dem Formular kam.
+         *
+         * Ohne diese Bedingung haette der Umbau den alten Fehler nur
+         * verschoben: gemessen an einem POST ohne r_nr[] (alte Formularseite,
+         * von Hand gebauter Aufruf) bekam Roboter 2 das Kennwort von
+         * Roboter 1, weil die Nummer auf "naechste freie" zurueckfiel.
+         * Fail closed: lieber ein sichtbarer Verlust als ein stiller Griff in
+         * die falsche Zeile. */
         $rb_pw = (string) (isset($rb_w2[$rb_i]) ? $rb_w2[$rb_i] : '');
-        if ($rb_pw === '' && empty($_POST['r_pass_loeschen'][$rb_i])
-            && isset($rb_alt[$rb_i + 1]['pass'])) {
-            $rb_pw = (string) $rb_alt[$rb_i + 1]['pass'];
+        if ($rb_pw === '' && $rb_nr_echt && empty($_POST['r_pass_loeschen'][$rb_i])
+            && isset($rb_alt[$rb_nr]['pass'])) {
+            $rb_pw = (string) $rb_alt[$rb_nr]['pass'];
         }
         if (!empty($_POST['r_pass_loeschen'][$rb_i])) { $rb_pw = ''; }
         $rb_neu['robots'][] = array(
+            'nr' => $rb_nr,
             'name' => trim((string) (isset($rb_n1[$rb_i]) ? $rb_n1[$rb_i] : '')),
             'ip' => $rb_ip,
             'port' => max(1, min(65535, (int) (isset($rb_p2[$rb_i]) ? $rb_p2[$rb_i] : 80))),
@@ -356,8 +403,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     foreach ($rb_neu as $rb_k => $rb_v) {
         if (!array_key_exists($rb_k, ro_vorgaben())) { continue; }
         $rb_grund = ro_wert_pruefen($rb_k, $rb_v);
-        if ($rb_grund !== '') { $rb_fehler[] = sprintf(ro_t('TEXT.SICH_WERT'), $rb_k, $rb_grund); }
+        if ($rb_grund !== '') { $rb_fehler[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($rb_k), rb_e($rb_grund)); }
     }
+    /* Gesperrt wird nur durch $rb_fehler - also durch das, was das Speichern
+     * wirklich unmoeglich macht (ein unzulaessiger Wert, ein Schreibfehler).
+     * Eine ungueltige Roboteradresse ist das NICHT: sie betrifft eine Zeile,
+     * und die behaelt ihren alten Stand. */
     if (!array_filter($rb_fehler)) {
         if (ro_config_speichern($rb_neu)) {
             $rb_saved = true;
@@ -367,6 +418,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             $rb_fehler[] = ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile;
         }
     }
+    /* ERST JETZT dazu - angezeigt, aber nicht sperrend. */
+    foreach ($rb_zeilenfehler as $rb_zf) { $rb_fehler[] = $rb_zf; }
     $rb_tab = 'tab-settings';
 }
 
@@ -378,12 +431,9 @@ $rb_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' =>
 $rb_robots = ro_robots();
 $rb_states = array();
 foreach ($rb_robots as $rb_k => $rb_r) { $rb_states[$rb_k] = ro_state($rb_k); }
-$rb_loglines = array();
-if (is_file($rb_logfile)) {
-    // ro_log_tail() liest nur das Ende der Datei - siehe die Messwerte
-    // im Kommentar in robo_lib.php.
-    $rb_loglines = array_reverse(ro_log_tail($rb_logfile, 300));
-}
+// ro_log_lesen() liest BEIDE Protokolldateien (Plugin und Schale) und
+// nur deren Ende - siehe die Messwerte im Kommentar in robo_lib.php.
+$rb_loglines = array_reverse(ro_log_lesen(300));
 $rb_host = ro_host();
 
 /** Restlaufzeit anzeigen: Strich, wenn das Geraet den Wert nicht liefert. */
@@ -475,8 +525,22 @@ if ($rb_frame) {
 <div class="sm-wrap">
 
 <?php if ($rb_saved) { ?><div class="sm-alert sm-ok"><b><?= rb_e(ro_t('TEXT.KONFIGURATION_GESPEICHERT')) ?></b> <?= rb_e(ro_t('TEXT.INKL_SICHERUNGSKOPIE')) ?></div><?php } ?>
-<?php foreach ($rb_meldungen as $rb_m) { ?><div class="sm-hinweis"><?= $rb_m ?></div><?php } ?>
-<?php foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT.FEHLER')) ?></b> <?= $rb_f ?></div><?php } ?>
+<?php
+/* MELDUNGEN AUSGEBEN - UND WAS DABEI MASKIERT GEHOERT.
+ *
+ * Die Texte selbst duerfen Auszeichnung tragen (TEXT.SICH_ABGELEHNT enthaelt
+ * absichtlich <b>). Was NICHT roh durchgehen darf, ist alles, was aus einer
+ * hochgeladenen Datei stammt: ro_sicherung_lesen() setzt fremde SCHLUESSEL in
+ * die Beanstandung ein, und ro_wert_taugt() prueft nur Werte, nie Schluessel.
+ *
+ * Gemessen am 04.09.2026 am laufenden Server, mit gueltigem Formularmerkmal:
+ * eine Sicherungsdatei mit dem Schluessel <img src=x onerror=...> wurde
+ * richtig abgelehnt - die Marke stand danach ROH in der Admin-Seite, auf der
+ * auch das Aktionstoken steht. Maskiert wird deshalb jetzt an der Quelle
+ * (ro_sicherung_lesen, ro_wert_pruefen), und diese Ausgabe bleibt so, wie sie
+ * ist; die Wache dagegen steht in der Bibliothek. */
+foreach ($rb_meldungen as $rb_m) { ?><div class="sm-hinweis"><?= $rb_m ?></div><?php }
+foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT.FEHLER')) ?></b> <?= $rb_f ?></div><?php } ?>
 
 <?php if (!$rb_robots) { ?>
 <div class="sm-alert sm-info"><b><?= rb_e(ro_t('TEXT.NOCH_KEIN_ROBOTER')) ?></b> <?= rb_e(ro_t('TEXT.BITTE_ADRESSE_EINTRAGEN')) ?></div>
@@ -510,20 +574,36 @@ if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEU
  * Bis 1.0.2 standen hier <div class="sm-tab"> ohne Verweis, und sm-active
  * vergab allein das JavaScript am Seitenende. Da .sm-pane auf display:none
  * steht, war die Seite ohne JavaScript vollstaendig leer.
+ *
+ * BIS 1.1.3 WAR DIE LEISTE EINE foreach-SCHLEIFE - UND DAMIT WAR DIE PRUEFUNG
+ * BLIND. hausstandard_pruefen.py sucht data-ziel/data-pane="tab-..." als
+ * LITERAL; bei einer Schleife findet es null Reiter und setzt die Spalte auf
+ * "-", also "trifft nicht zu", und ein Strich sammelt sich beim Ueberfliegen
+ * wie ein Haken ein. Nachgewiesen am 04.09.2026 durch Rueckbau an einer
+ * Kopie: 'tab-log' aus der Positivliste entfernt, der Reiter fuehrte auf die
+ * Einstellungen - und die ganze Prueflette blieb gruen, byteweise dieselbe
+ * Ausgabe.
+ *
+ * Die Leiste steht deshalb ausgeschrieben (Hausstandard, CLAUDE.md
+ * Abschnitt 9), UND der Reiter Test misst die Kongruenz aller drei Stellen
+ * selbst nach (ro_reiterlage). Zwei zu vergleichen genuegt nicht.
+ *
+ * WER HIER EINEN REITER AENDERT, aendert drei Stellen: diese Leiste, die id
+ * des Bereichs weiter unten und $rb_reiterliste ganz oben. Die Pruefzeile im
+ * Reiter Test sagt sofort, wenn eine davon fehlt.
  */
-$rb_reiter = array(
-    'tab-settings' => ro_t('REITER.EINSTELLUNGEN'),
-    'tab-mqtt'     => ro_t('REITER.MQTT'),
-    'tab-loxone'   => ro_t('REITER.LOXONE'),
-    'tab-test'     => ro_t('REITER.TEST'),
-    'tab-log'      => ro_t('REITER.LOG'),
-);
 ?>
 <div class="sm-tabs">
-<?php foreach ($rb_reiter as $rb_id => $rb_bez) { ?>
-    <a data-role="none" class="sm-tab<?= $rb_tab === $rb_id ? ' sm-active' : '' ?>" data-pane="<?= rb_e($rb_id) ?>"
-       href="index.php?form=<?= rb_e(substr($rb_id, 4)) ?>"><?= rb_e($rb_bez) ?></a>
-<?php } ?>
+    <a data-role="none" class="sm-tab<?= $rb_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-pane="tab-settings"
+       href="index.php?form=settings"><?= rb_e(ro_t('REITER.EINSTELLUNGEN')) ?></a>
+    <a data-role="none" class="sm-tab<?= $rb_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-pane="tab-mqtt"
+       href="index.php?form=mqtt"><?= rb_e(ro_t('REITER.MQTT')) ?></a>
+    <a data-role="none" class="sm-tab<?= $rb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-pane="tab-loxone"
+       href="index.php?form=loxone"><?= rb_e(ro_t('REITER.LOXONE')) ?></a>
+    <a data-role="none" class="sm-tab<?= $rb_tab === 'tab-test' ? ' sm-active' : '' ?>" data-pane="tab-test"
+       href="index.php?form=test"><?= rb_e(ro_t('REITER.TEST')) ?></a>
+    <a data-role="none" class="sm-tab<?= $rb_tab === 'tab-log' ? ' sm-active' : '' ?>" data-pane="tab-log"
+       href="index.php?form=log"><?= rb_e(ro_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Einstellungen ================= -->
@@ -537,11 +617,33 @@ $rb_reiter = array(
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th style="width:22%;"><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th style="width:90px;"><?= rb_e(ro_t('EINST.PORT')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.BENUTZER')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.KENNWORT')) ?></th></tr>
-<?php for ($rb_i = 0; $rb_i < 2; $rb_i++) {
-    $rb_r = isset($rb_cfg['robots'][$rb_i]) ? (array) $rb_cfg['robots'][$rb_i] : array();
-    $rb_r += array('name' => '', 'ip' => '', 'port' => 80, 'user' => '', 'pass' => ''); ?>
+<?php
+/* DIE GERAETENUMMER REIST ALS VERSTECKTES FELD MIT DER ZEILE.
+ *
+ * Sie ist eine Adresse: an ihr haengen der virtuelle Eingang, das MQTT-Thema
+ * und die Endpunktadresse (&dev=N). Bis 1.1.3 wurde sie beim Speichern aus der
+ * Position gerechnet - wer die erste Adresse leerte, bekam fuer &dev=1 den
+ * zweiten Roboter, und dessen Kennwort ging dabei still verloren (beides am
+ * 04.09.2026 gemessen). Die angezeigte Nummer ist die WIRKLICHE, aus
+ * ro_robots(); eine noch leere Zeile bekommt die naechste freie.
+ */
+$rb_zeilen = array();
+$rb_belegt = array();
+foreach (ro_robots() as $rb_nrv => $rb_rv) {
+    $rb_zeilen[] = $rb_rv;
+    $rb_belegt[] = $rb_nrv;
+}
+for ($rb_i = count($rb_zeilen); $rb_i < 2; $rb_i++) {
+    $rb_frei = 1;
+    while (in_array($rb_frei, $rb_belegt, true)) { $rb_frei++; }
+    $rb_belegt[] = $rb_frei;
+    $rb_zeilen[] = array('nr' => $rb_frei);
+}
+for ($rb_i = 0; $rb_i < 2; $rb_i++) {
+    $rb_r = (array) $rb_zeilen[$rb_i];
+    $rb_r += array('nr' => $rb_i + 1, 'name' => '', 'ip' => '', 'port' => 80, 'user' => '', 'pass' => ''); ?>
 <tr>
-<td><?= $rb_i + 1 ?></td>
+<td><?= (int) $rb_r['nr'] ?><input data-role="none" type="hidden" name="r_nr[<?= $rb_i ?>]" value="<?= (int) $rb_r['nr'] ?>"></td>
 <td><input data-role="none" type="text" name="r_name[<?= $rb_i ?>]" value="<?= rb_e($rb_r['name']) ?>" placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.NAME_BEISPIEL') : ro_t('EINST.LEER_UNGENUTZT')) ?>"></td>
 <td><input data-role="none" type="text" name="r_ip[<?= $rb_i ?>]" value="<?= rb_e($rb_r['ip']) ?>" placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.IP_BEISPIEL') : '') ?>"></td>
 <td><input data-role="none" type="number" name="r_port[<?= $rb_i ?>]" value="<?= (int) $rb_r['port'] ?>" min="1" max="65535"></td>
@@ -724,17 +826,18 @@ $rb_gwf = ($rb_gw === null) ? 0 : (int) $rb_gw['fassung'];
 <div class="sm-hinweis"><?= ro_t('MQTT.LEBENSZEICHEN_HINWEIS') ?></div>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= rb_e(ro_t('WORT.THEMA')) ?></th><th><?= rb_e(ro_t('WORT.BEDEUTUNG')) ?></th></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/ok</span></td><td><?= rb_e(ro_t('MQTT.T_OK')) ?></td></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/ts</span></td><td><?= rb_e(ro_t('MQTT.T_TS')) ?></td></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status/zaehler</span></td><td><?= rb_e(ro_t('MQTT.T_ZAEHLER')) ?></td></tr>
-<?php foreach (ro_felder() as $rb_name => $rb_f) { ?>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/<?= rb_e(strtolower($rb_name)) ?></span></td><td><?= rb_e($rb_f[4]) ?><?= $rb_f[3] !== '' ? ' [' . rb_e($rb_f[3]) . ']' : '' ?></td></tr>
+<tr><th><?= rb_e(ro_t('WORT.THEMA')) ?></th><th><?= rb_e(ro_t('WORT.BEDEUTUNG')) ?></th><th style="width:96px;"><?= rb_e(ro_t('WORT.RETAIN')) ?></th></tr>
+<?php
+/* EINE Liste fuer Tabelle und Sender (ro_mqtt_themen).
+ *
+ * Bis 1.1.3 lief diese Tabelle ueber die volle Feldliste, waehrend der Sender
+ * ALTER und ZAEHLER ausnahm. Gemessen an der gerenderten Seite: 48 Themen
+ * gelistet, 46 gesendet - wer die Tabelle abarbeitete, legte zwei virtuelle
+ * Eingaenge an, die nie einen Wert bekamen. Die Pruefzeile im Reiter Test
+ * haelt die Liste jetzt gegen das, was der Sender wirklich bildet. */
+foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
+<tr><td><span class="sm-mono"><?= rb_e($rb_thema) ?></span></td><td><?= rb_e($rb_tf['bedeutung']) ?></td><td><?= rb_e($rb_tf['retain'] ? ro_t('WORT.JA') : ro_t('WORT.NEIN')) ?></td></tr>
 <?php } ?>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/status</span></td><td><?= rb_e(ro_t('MQTT.T_STATUSTEXT')) ?></td></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/fehlertext</span></td><td><?= rb_e(ro_t('MQTT.T_FEHLERTEXT')) ?></td></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/ereignistext</span></td><td><?= rb_e(ro_t('MQTT.T_EREIGNISTEXT')) ?></td></tr>
-<tr><td><span class="sm-mono"><?= rb_e($rb_cfg['mqtt_topic']) ?>/meldung</span></td><td><?= rb_e(ro_t('MQTT.T_MELDUNG')) ?></td></tr>
 </table>
 </div>
 </div>
@@ -962,6 +1065,9 @@ while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
 
 <!-- ================= Protokoll ================= -->
 <div class="sm-pane<?= $rb_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
+<?php /* Seit 1.1.4 zwei Dateien statt einer - der Bediener muss wissen, wo die
+       * Fehlerausgabe der Schale steht. */ ?>
+<div class="sm-hinweis"><?= ro_t('LOG.CRON_DATEI') ?></div>
 <h2><?= rb_e(ro_t('REITER.LOG')) ?></h2>
 <div class="sm-small" style="margin-bottom:8px;"><?= rb_e(ro_t('LOG.HINWEIS')) ?><br><?= rb_e(ro_t('LOG.DATEI')) ?> <span class="sm-mono"><?= rb_e($rb_logfile) ?></span></div>
 <?php if ($rb_loglines) { ?>
