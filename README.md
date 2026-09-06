@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.4 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.5 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,46 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.5
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.1.4 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`).
+
+- **Die Vorlagen tragen jetzt Anzeigenamen, keine Erklärungen.** Was in einer
+  Importvorlage als `Comment` steht, wird in Loxone Config zum **Anzeigenamen**
+  des Bausteins — nicht zur Dokumentation. In 1.1.4 war das für die
+  Eingangsvorlage schon berichtigt, für die Vorlage der **Steuerbefehle**
+  nicht: die Linie hat zwei Vorlagen, und nur eine war umgebaut. Dort standen
+  ganze Sätze als Bausteinname, der längste mit **98 Zeichen**
+  („Verbrauchsteil zuruecksetzen (filter/main, brush/main, …)"). Jetzt trägt
+  jeder Befehl einen kurzen Namen — längster **25 Zeichen**, in der
+  Eingangsvorlage 34. Die ausführliche Erklärung bleibt, wo sie hingehört:
+  in der Tabelle im Reiter *Einbindung in Loxone*. Eine Quelle, zwei Spalten.
+
+- **Ein Vorsatz vor jedem Anzeigenamen** (`Robo:` bzw. `Robo 2:` beim zweiten
+  Gerät). In der Bausteinsuche von Loxone fehlt der Geräteknoten; ohne Vorsatz
+  hieß der Baustein für die Statuszahl schlicht „Status" — und so heißt in
+  dieser Anlage bereits ein anderer Baustein (gemessen am 06.09.2026 gegen die
+  Strukturdatei des Miniservers: 629 Anzeigenamen, ein Treffer, nach dem Umbau
+  keiner).
+
+- **Umlaute in beiden Vorlagen.** 18 ASCII-Umschriften waren in Loxone
+  sichtbar geworden („Hauptbuerste Rest", „Saugstaerke", „Staubbehaelter").
+  Sie standen nicht in den Sprachdateien, sondern in der Feld- und
+  Befehlstabelle des Plugins — `umschrift_pruefen.py` sieht nur die
+  Sprachdateien und war deshalb still; gefunden hat sie `vorlagen_pruefen.py`
+  an der fertigen Vorlage. ASCII bleiben
+  ausdrücklich die **Titel** (`ROBO_BHAUPT`, `ROBO_RAEDER`) — das sind Namen
+  in der Anlage, keine Texte.
+
+**Titel und Adressen sind byteweise unverändert geblieben** (52 + 165 harte
+Felder nachgemessen). Wer die Vorlage erneut einliest, bekommt deshalb keine
+doppelten Bausteine; geändert hat sich nur, wie sie heißen.
 
 ## Neu in 1.1.4
 

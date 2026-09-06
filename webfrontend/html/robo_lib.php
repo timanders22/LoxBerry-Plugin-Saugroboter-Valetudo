@@ -1103,23 +1103,23 @@ function ro_command($cmd, $dev = 1, $param = '') {
 function ro_befehle()
 {
     return array(
-        'start'         => array('', 'Reinigung starten'),
-        'stop'          => array('', 'Stoppen'),
-        'pause'         => array('', 'Pausieren'),
-        'home'          => array('', 'Zur Ladestation'),
-        'locate'        => array('', 'Roboter piepsen lassen'),
-        'segments'      => array('1,4', 'Nur bestimmte Raeume reinigen (IDs im Reiter Test; "1,4x2" = zwei Durchgaenge)'),
-        'zone'          => array('2000,2000,3000,3000', 'Zone reinigen, X1,Y1,X2,Y2 in Kartenkoordinaten'),
-        'goto'          => array('2500,1800', 'Position anfahren, X,Y in Kartenkoordinaten'),
-        'fan'           => array('max', 'Saugstaerke: off, min, low, medium, high, max, turbo'),
-        'wasser'        => array('low', 'Wischwassermenge: off, min, low, medium, high, max'),
-        'modus'         => array('vacuum', 'Betriebsart: vacuum, mop, vacuum_and_mop, vacuum_then_mop'),
-        'absaugen'      => array('', 'Absaugstation von Hand ausloesen'),
-        'wischwaschen'  => array('', 'Wischmodul in der Station waschen'),
-        'wischtrocknen' => array('', 'Wischmodul in der Station trocknen'),
-        'reset'         => array('filter/main', 'Verbrauchsteil zuruecksetzen (filter/main, brush/main, brush/side_right, cleaning/sensor, mop/all)'),
-        'ruhezeit'      => array('22:00-07:00', 'Nicht-stoeren-Zeit setzen; "aus" schaltet sie ab'),
-        'evquittieren'  => array('', 'Offenes Valetudo-Ereignis wegdruecken'),
+        'start'         => array('', 'Reinigung starten', 'starten'),
+        'stop'          => array('', 'Stoppen', 'stoppen'),
+        'pause'         => array('', 'Pausieren', 'pausieren'),
+        'home'          => array('', 'Zur Ladestation', 'zur Ladestation'),
+        'locate'        => array('', 'Roboter piepsen lassen', 'piepsen lassen'),
+        'segments'      => array('1,4', 'Nur bestimmte Räume reinigen (IDs im Reiter Test; "1,4x2" = zwei Durchgänge)', 'Räume reinigen'),
+        'zone'          => array('2000,2000,3000,3000', 'Zone reinigen, X1,Y1,X2,Y2 in Kartenkoordinaten', 'Zone reinigen'),
+        'goto'          => array('2500,1800', 'Position anfahren, X,Y in Kartenkoordinaten', 'Position anfahren'),
+        'fan'           => array('max', 'Saugstärke: off, min, low, medium, high, max, turbo', 'Saugstärke setzen'),
+        'wasser'        => array('low', 'Wischwassermenge: off, min, low, medium, high, max', 'Wischwasser setzen'),
+        'modus'         => array('vacuum', 'Betriebsart: vacuum, mop, vacuum_and_mop, vacuum_then_mop', 'Betriebsart setzen'),
+        'absaugen'      => array('', 'Absaugstation von Hand auslösen', 'absaugen'),
+        'wischwaschen'  => array('', 'Wischmodul in der Station waschen', 'Wischmodul waschen'),
+        'wischtrocknen' => array('', 'Wischmodul in der Station trocknen', 'Wischmodul trocknen'),
+        'reset'         => array('filter/main', 'Verbrauchsteil zurücksetzen (filter/main, brush/main, brush/side_right, cleaning/sensor, mop/all)', 'Teil zurücksetzen'),
+        'ruhezeit'      => array('22:00-07:00', 'Nicht-stören-Zeit setzen; "aus" schaltet sie ab', 'Ruhezeit setzen'),
+        'evquittieren'  => array('', 'Offenes Valetudo-Ereignis wegdrücken', 'Ereignis quittieren'),
     );
 }
 
@@ -1814,46 +1814,46 @@ function ro_check($feld) { return '\i;' . $feld . '=\i\v'; }
 function ro_felder() {
     return array(
         'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 1, 'Erreichbar'),
-        'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 faehrt zur Station, 5 faehrt, 8 unbekannt, 9 Fehler', 1, 'Status'),
+        'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 8 unbekannt, 9 Fehler', 1, 'Status'),
         'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent', 0, 'Batterie'),
-        'LAEDT'    => array(0, 0, 1,     '',      '1 = laedt gerade', 1, 'Laedt'),
+        'LAEDT'    => array(0, 0, 1,     '',      '1 = lädt gerade', 1, 'Lädt'),
         'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)', 1, 'Fehlercode'),
         'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer', 1, 'Fehlerschwere'),
         'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station', 1, 'Fehler: Teil'),
-        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Flaeche', 1, 'Letzte Reinigung Flaeche'),
+        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Fläche', 1, 'Letzte Reinigung Fläche'),
         'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer', 1, 'Letzte Reinigung Dauer'),
-        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Flaeche', 1, 'Gesamt Flaeche'),
+        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Fläche', 1, 'Gesamt Fläche'),
         'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden', 1, 'Gesamt Stunden'),
         'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen', 1, 'Gesamt Reinigungen'),
-        'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfuegbar)', 1, 'Filter Rest'),
-        'FILTER2'  => array(1, -1, 10000, 'h',    'Zweitfilter: Reststunden (-1 = nicht verfuegbar)', 1, 'Zweitfilter Rest'),
-        'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Hauptbuerste Rest'),
-        'BSEITE'   => array(1, -1, 10000, 'h',    'Seitenbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Seitenbuerste Rest'),
-        'BSEITE2'  => array(1, -1, 10000, 'h',    'zweite Seitenbuerste: Reststunden (-1 = nicht verfuegbar)', 1, 'Seitenbuerste 2 Rest'),
-        'SENSOR'   => array(1, -1, 10000, 'h',    'Sensoren: Reststunden bis zum Reinigen (-1 = nicht verfuegbar)', 1, 'Sensoren Rest'),
-        'RAEDER'   => array(1, -1, 10000, 'h',    'Raeder: Reststunden (-1 = nicht verfuegbar)', 1, 'Raeder Rest'),
-        'MOP'      => array(1, -1, 10000, 'h',    'Wischbezug: Reststunden (-1 = nicht verfuegbar)', 1, 'Wischbezug Rest'),
+        'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfügbar)', 1, 'Filter Rest'),
+        'FILTER2'  => array(1, -1, 10000, 'h',    'Zweitfilter: Reststunden (-1 = nicht verfügbar)', 1, 'Zweitfilter Rest'),
+        'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbürste: Reststunden (-1 = nicht verfügbar)', 1, 'Hauptbürste Rest'),
+        'BSEITE'   => array(1, -1, 10000, 'h',    'Seitenbürste: Reststunden (-1 = nicht verfügbar)', 1, 'Seitenbürste Rest'),
+        'BSEITE2'  => array(1, -1, 10000, 'h',    'zweite Seitenbürste: Reststunden (-1 = nicht verfügbar)', 1, 'Seitenbürste 2 Rest'),
+        'SENSOR'   => array(1, -1, 10000, 'h',    'Sensoren: Reststunden bis zum Reinigen (-1 = nicht verfügbar)', 1, 'Sensoren Rest'),
+        'RAEDER'   => array(1, -1, 10000, 'h',    'Räder: Reststunden (-1 = nicht verfügbar)', 1, 'Räder Rest'),
+        'MOP'      => array(1, -1, 10000, 'h',    'Wischbezug: Reststunden (-1 = nicht verfügbar)', 1, 'Wischbezug Rest'),
         'DOCKFILTER'    => array(1, -1, 100, '%', 'Filter der Station: Restanteil (-1 = keine Station)', 1, 'Station Filter'),
-        'DOCKBUERSTE'   => array(1, -1, 100, '%', 'Buerste der Station: Restanteil (-1 = keine Station)', 1, 'Station Buerste'),
+        'DOCKBUERSTE'   => array(1, -1, 100, '%', 'Bürste der Station: Restanteil (-1 = keine Station)', 1, 'Station Bürste'),
         'DOCKBEHAELTER' => array(1, -1, 100, '%', 'Staubbeutel der Station: Restanteil (-1 = keine Station)', 1, 'Station Staubbeutel'),
-        'REINIGER' => array(1, -1, 100,  '%',    'Reinigungsmittel: Restanteil (-1 = nicht verfuegbar)', 1, 'Reinigungsmittel'),
+        'REINIGER' => array(1, -1, 100,  '%',    'Reinigungsmittel: Restanteil (-1 = nicht verfügbar)', 1, 'Reinigungsmittel'),
         'MATWARN'  => array(0, 0, 1,     '',      '1 = mindestens ein Teil unter der Warnschwelle', 1, 'Materialwarnung'),
-        'BEHAELTER'  => array(1, -1, 1,  '',      'Staubbehaelter eingesetzt (-1 = meldet das Geraet nicht)', 1, 'Staubbehaelter'),
-        'WASSERTANK' => array(1, -1, 1,  '',      'Wassertank eingesetzt (-1 = meldet das Geraet nicht)', 1, 'Wassertank'),
-        'WISCHER'    => array(1, -1, 1,  '',      'Wischmodul angebaut (-1 = meldet das Geraet nicht)', 1, 'Wischmodul'),
+        'BEHAELTER'  => array(1, -1, 1,  '',      'Staubbehälter eingesetzt (-1 = meldet das Gerät nicht)', 1, 'Staubbehälter'),
+        'WASSERTANK' => array(1, -1, 1,  '',      'Wassertank eingesetzt (-1 = meldet das Gerät nicht)', 1, 'Wassertank'),
+        'WISCHER'    => array(1, -1, 1,  '',      'Wischmodul angebaut (-1 = meldet das Gerät nicht)', 1, 'Wischmodul'),
         'DOCK'     => array(1, -1, 9,    '',      'Station: -1 keine, 0 bereit, 1 Pause, 2 saugt ab, 3 reinigt, 4 trocknet, 9 Fehler', 1, 'Station Zustand'),
         'SAUGST'   => array(1, -1, 7,    '',      'Saugstufe: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Saugstufe'),
         'WASSER'   => array(1, -1, 7,    '',      'Wischwasser: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Wischwasser'),
         'MODUS'    => array(1, -1, 4,    '',      'Betriebsart: -1 unbekannt, 1 saugen, 2 wischen, 3 saugen und wischen, 4 erst saugen, dann wischen', 1, 'Betriebsart'),
         'EVENT'    => array(1, 0, 99,    '',      'Anzahl offener Valetudo-Ereignisse', 1, 'Ereignisse offen'),
-        'EVTYP'    => array(1, 0, 8,     '',      'Jueng(st)es Ereignis: 0 keins, 1 Staubbehaelter voll, 2 Verbrauchsteil leer, 3 Wischmodul pruefen, 4 Stoerung, 5 Karte geaendert, 6 Valetudo aktualisiert, 7 Valetudo-Fehler, 8 unbekannt', 1, 'Ereignisart'),
-        'EVMUELL'  => array(0, 0, 1,     '',      '1 = Staubbehaelter voll (Valetudo meldet es)', 1, 'Behaelter voll'),
+        'EVTYP'    => array(1, 0, 8,     '',      'Jüngstes Ereignis: 0 keins, 1 Staubbehälter voll, 2 Verbrauchsteil leer, 3 Wischmodul prüfen, 4 Störung, 5 Karte geändert, 6 Valetudo aktualisiert, 7 Valetudo-Fehler, 8 unbekannt', 1, 'Ereignisart'),
+        'EVMUELL'  => array(0, 0, 1,     '',      '1 = Staubbehälter voll (Valetudo meldet es)', 1, 'Behälter voll'),
         'ANN'      => array(0, 0, 1,     '',      'Meldefenster aktiv', 0, 'Meldefenster'),
         'AUDIO'    => array(0, 0, 1,     '',      'Ansage freigegeben', 1, 'Ansage frei'),
         'PUSH'     => array(0, 0, 1,     '',      'Push freigegeben', 1, 'Push frei'),
-        'PTEST'    => array(0, 0, 1,     '',      'Test-Push ausloesen', 0, 'Test-Push'),
-        'ALTER'    => array(1, -1, 100000, 's',   'Alter des letzten Cron-Laufs in Sekunden (-1 = noch keiner). Gehoert auf eine Ueberwachung: ein festgefrorenes Ergebnis sieht sonst aus wie ein frisches.', 0, 'Alter letzter Lauf'),
-        'ZAEHLER'  => array(1, 0, 999,   '',      'Laufzaehler, laeuft 0...999 um - steht er still, laeuft der Cron nicht mehr', 0, 'Laufzaehler'),
+        'PTEST'    => array(0, 0, 1,     '',      'Test-Push auslösen', 0, 'Test-Push'),
+        'ALTER'    => array(1, -1, 100000, 's',   'Alter des letzten Cron-Laufs in Sekunden (-1 = noch keiner). Gehört auf eine Überwachung: ein festgefrorenes Ergebnis sieht sonst aus wie ein frisches.', 0, 'Alter letzter Lauf'),
+        'ZAEHLER'  => array(1, 0, 999,   '',      'Laufzähler, läuft 0...999 um - steht er still, läuft der Cron nicht mehr', 0, 'Laufzähler'),
     );
 }
 
@@ -1991,7 +1991,11 @@ function ro_vorlage($dev = 1, $nur_belegte = false) {
     $cmds = array();
     foreach (ro_felder() as $name => $f) {
         list($analog, $min, $max, $einheit, $text) = $f;
-        $kachel = isset($f[6]) && $f[6] !== '' ? $f[6] : $name;
+        /* Derselbe Vorsatz wie in der Ausgangsvorlage. Ohne ihn heisst der
+         * Baustein in der Anlage schlicht "Status" - und so heisst dort
+         * bereits ein TextState (gemessen 06.09.2026). */
+        $kachel = 'Robo' . ($dev > 1 ? ' ' . $dev : '') . ': '
+                . (isset($f[6]) && $f[6] !== '' ? $f[6] : $name);
         if ($st !== null && $min < 0 && (int) ro_feldwert($name, $st) === -1) { continue; }
         $cmds[] = array(
             'title' => 'ROBO_' . $name . ($dev > 1 ? '_' . $dev : ''),
@@ -2008,7 +2012,7 @@ function ro_vorlage($dev = 1, $nur_belegte = false) {
         'address' => 'http://' . ro_host() . ro_endpunkt_pfad($dev > 1 ? array('dev' => $dev) : array()),
         'polling' => '30',
         'comment' => 'Erzeugt vom LoxBerry-Plugin Saugroboter (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'Loxone Config legt beim Import neu an und überschreibt nichts - '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
     ), $cmds));
 }
@@ -2063,21 +2067,29 @@ function ro_vo_vorlage($dev = 1) {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut HintText="" Title="Saugroboter steuern' . ($dev > 1 ? ' ' . $dev : '')
-        . ' (LoxBerry-Plugin)" Comment="Steuerbefehle ueber das Plugin '
-        . ro_x(ro_plugin_ordner()) . ' - enthaelt das Aktionstoken." Address="http://'
+        . ' (LoxBerry-Plugin)" Comment="Steuerbefehle über das Plugin '
+        . ro_x(ro_plugin_ordner()) . ' - enthält das Aktionstoken." Address="http://'
         . ro_x(ro_host()) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     /* Aus ro_befehle() erzeugt, nicht von Hand aufgezaehlt. Bis 1.0.14 standen
      * hier fuenf feste Zeilen, waehrend der Endpunkt acht Befehle kannte -
      * segments, fan und goto fehlten in der Vorlage vollstaendig. */
+    /* Der Comment wird in Loxone Config zum ANZEIGENAMEN, nicht zur
+     * Dokumentation. Deshalb steht hier der kurze dritte Eintrag aus
+     * ro_befehle() und nicht die Erklaerspalte: die trug bis 1.1.4 bis zu
+     * 98 Zeichen, und genau die standen danach als Bausteinname da.
+     * Der Vorsatz macht den Namen in der Bausteinsuche eindeutig - dort
+     * fehlt der Geraeteknoten (Regeln/07). */
+    $vorsatz = 'Robo' . ($dev > 1 ? ' ' . $dev : '') . ': ';
     foreach (ro_befehle() as $name => $b) {
         list($beispiel, $zweck) = $b;
+        $anzeige = $vorsatz . (isset($b[2]) && $b[2] !== '' ? $b[2] : $zweck);
         $werte = array('cmd' => $name);
         if ($beispiel !== '') { $werte['p'] = $beispiel; }
         $werte['token'] = $tok;
         if ($dev > 1) { $werte['dev'] = $dev; }
         $o .= "\t" . '<VirtualOutCmd Title="' . ro_x(ucfirst($name) . ($dev > 1 ? ' ' . $dev : ''))
-            . '" Comment="' . ro_x($zweck) . '" CmdOnMethod="GET" CmdOffMethod="GET" ';
+            . '" Comment="' . ro_x($anzeige) . '" CmdOnMethod="GET" CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . ro_x(ro_endpunkt_pfad($werte)) . '" ';
         $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
         $o .= 'Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
