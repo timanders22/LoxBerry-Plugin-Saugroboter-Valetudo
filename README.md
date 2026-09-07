@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.5 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.6 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,43 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.6
+
+- **Die Ereignisliste wurde nie gelesen.** Das Plugin fragte sie unter
+  `/api/v2/valetudo/events` ab. Am 07.09.2026 an einem echten Gerät gemessen
+  (Roborock S5, Valetudo 2026.05.0): dieser Pfad antwortet **HTTP 404**; die
+  Liste liegt unter `/api/v2/events`. Sichtbar wurde davon nichts — der
+  Fehlerrumpf kam als Text zurück, `json_decode` machte `null` daraus, die
+  Schleife lief nicht, und `EVENT` ging als **0** nach Loxone. Aus „ich kann
+  die Liste nicht lesen" wurde lautlos „es gibt keine Ereignisse". Zur
+  Messstunde stand im Gerät eine offene Meldung
+  (`ConsumableDepletedValetudoEvent`, Sensoren fällig). Beide Pfade werden
+  jetzt versucht, der gemessene zuerst; welcher trägt, merkt sich der Lauf.
+  In beide Richtungen geeicht — gegen das echte Gerät (`/api/v2/events`, ein
+  Ereignis) und gegen ein nachgestelltes älteres Valetudo, das nur den alten
+  Pfad kennt (Rückfall greift, `dust_bin_full` wird gelesen). **Die Abfragen
+  je Seitenaufbau bleiben gleich: neun vorher, neun nachher**, an einer
+  zählenden Gegenstelle gemessen.
+
+- **`EVENT=0` heißt jetzt auch, was es sagt.** Der Reiter *Test* führt eine
+  neue Zeile „Ereignisliste lesbar". Ohne sie ist die Null eine Behauptung:
+  „nichts los" und „nicht gelesen" sahen ein Jahr lang gleich aus. Die Zeile
+  kostet keine zusätzliche Abfrage — sie liest den Zustand, der ohnehin schon
+  geholt ist.
+
+- **Ein Ereignis ließ sich gar nicht quittieren.** Die Wache in `?cmd=evquittieren`
+  ließ nur `[A-Za-z0-9-]` durch. Eine echte Kennung heißt
+  `consumable_depleted_cleaning_sensor` — mit Unterstrichen. Der Befehl hätte
+  genau die Ereignisse abgewiesen, um die es geht.
+
+- **Der Vorsatz der Anzeigenamen heißt wieder `Saugroboter:`.** 1.1.5 hatte
+  `Robo:` eingeführt, aus einer Längenrechnung heraus. In der Anlage gemessen:
+  dort heißen **31 von 31** Bausteinen dieser Linie „Saugroboter …", keiner
+  „Robo …". Damit die Namen unter 40 Zeichen bleiben, heißen zwei Felder jetzt
+  „Reinigung Fläche" und „Reinigung Dauer"; längster Anzeigename 36 Zeichen.
+  **Titel und Adressen sind wieder byteweise unverändert** (52 + 165 harte
+  Felder gegen 1.1.5) — ein erneuter Import legt keine doppelten Bausteine an.
 
 ## Neu in 1.1.5
 

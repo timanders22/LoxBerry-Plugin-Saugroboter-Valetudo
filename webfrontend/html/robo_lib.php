@@ -670,6 +670,70 @@ function ro_event_code($klasse) {
                'ValetudoRuntimeErrorValetudoEvent' => 7);
     return isset($m[(string) $klasse]) ? $m[(string) $klasse] : 8;
 }
+/**
+ * Unter welchem Pfad fuehrt DIESES Geraet seine Ereignisliste?
+ *
+ * Bis 1.1.5 stand '/api/v2/valetudo/events' fest im Quelltext, mit dem
+ * Kommentar "sie liegt NICHT unter /robot, sondern unter /valetudo". Am
+ * 07.09.2026 am Geraet nachgemessen (Roborock S5, Valetudo 2026.05.0):
+ *
+ *     /api/v2/valetudo/events   -> HTTP 404
+ *     /api/v2/events            -> HTTP 200, eine offene Meldung
+ *
+ * Der Rueckgabewert ist der Teil HINTER /api/v2/ - beide Aufrufstellen
+ * (Liste lesen, Ereignis quittieren) setzen ihn an dieselbe Wurzel an.
+ * Gemerkt wird, welcher Pfad getragen hat, damit nicht jeder Seitenaufbau
+ * zweimal fragt.
+ */
+function ro_ereignis_pfad($dev = 1, $setzen = null)
+{
+    static $pfad = array();
+    $dev = (int) $dev;
+    if ($setzen !== null) { $pfad[$dev] = (string) $setzen; }
+    return isset($pfad[$dev]) ? $pfad[$dev] : '';
+}
+
+/**
+ * Die Ereignisliste holen - oder null.
+ *
+ * null heisst NICHT "keine Ereignisse", sondern "nicht gelesen". Genau
+ * dieser Unterschied ist bis 1.1.5 verlorengegangen: der Aufrufer sah eine
+ * leere Schleife und schrieb EVENT=0 nach Loxone. Wer die Liste nicht lesen
+ * kann, sagt es - im Reiter Test steht die Zeile dazu.
+ */
+function ro_ereignisse($dev = 1)
+{
+    $r = ro_robot($dev);
+    if ($r === null) { return null; }
+    $wurzel = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/';
+    $pfade = array('events', 'valetudo/events');
+    $gemerkt = ro_ereignis_pfad($dev);
+    if ($gemerkt !== '' && $gemerkt !== $pfade[0]) { array_unshift($pfade, $gemerkt); }
+    foreach ($pfade as $p) {
+        $j = @json_decode((string) ro_get($wurzel . $p, 2, $dev), true);
+        /* is_array() REICHT HIER NICHT, und das ist bei der Eichung
+         * aufgefallen: der 404-Rumpf eines Valetudo ohne diesen Pfad ist
+         * gueltiges JSON ({"error":"Not Found"}), json_decode macht daraus
+         * ein Feld, und der Rueckfall waere nie gelaufen - die Fehlermeldung
+         * selbst haette als Ereignisliste gegolten. Verlangt wird eine
+         * LISTE: fortlaufende Zahlenschluessel. Eine leere Liste ist eine
+         * gueltige Antwort und heisst "keine Ereignisse". */
+        if (ro_ist_liste($j)) {
+            ro_ereignis_pfad($dev, $p);
+            return $j;
+        }
+    }
+    return null;
+}
+
+/** Eine JSON-LISTE (fortlaufende Zahlenschluessel) - kein Objekt. */
+function ro_ist_liste($j)
+{
+    if (!is_array($j)) { return false; }
+    if ($j === array()) { return true; }
+    return array_keys($j) === range(0, count($j) - 1);
+}
+
 function ro_event_text($code) {
     $t = array(0 => '', 1 => 'Staubbehaelter voll', 2 => 'Verbrauchsteil aufgebraucht',
                3 => 'Wischmodul pruefen', 4 => 'Stoerung', 5 => 'Karte hat sich geaendert',
@@ -790,6 +854,7 @@ function ro_state($dev = 1, $force = false) {
                 'behaelter' => -1, 'wassertank' => -1, 'wischer' => -1, 'dock' => -1,
                 'saugstufe' => -1, 'wasserstufe' => -1, 'modus' => -1,
                 'event' => 0, 'evtyp' => 0, 'evtext' => '', 'evmuell' => 0, 'evid' => '',
+                'evlesbar' => 0,
                 'ts' => time());
     if ($r === null) {
         return $st;
@@ -906,10 +971,11 @@ function ro_state($dev = 1, $force = false) {
         $grenze = in_array($k, $prozent, true) ? $warn_p : $warn_h;
         if ($st[$k] >= 0 && $st[$k] <= $grenze) { $st['material_warn'] = 1; }
     }
-    // 5) Valetudos Ereignisliste. Sie liegt NICHT unter /robot, sondern unter
-    //    /valetudo - deshalb der eigene Aufbau der Adresse.
-    $ev = @json_decode((string) ro_get('http://' . $r['ip'] . ':' . $r['port']
-                                       . '/api/v2/valetudo/events', 2, $dev), true);
+    // 5) Valetudos Ereignisliste. WELCHER Pfad gilt, entscheidet das Geraet -
+    //    siehe ro_ereignisse(). evlesbar trennt "keine Ereignisse" von
+    //    "nicht gelesen"; bis 1.1.5 war das dasselbe, und zwar stumm.
+    $ev = ro_ereignisse($dev);
+    $st['evlesbar'] = is_array($ev) ? 1 : 0;
     if (is_array($ev)) {
         foreach ($ev as $e) {
             if (!is_array($e) || !empty($e['processed'])) { continue; }
@@ -1079,10 +1145,24 @@ function ro_command($cmd, $dev = 1, $param = '') {
         case 'evquittieren': // offenes Ereignis wegdruecken
             $st = ro_state($dev);
             $id = $param !== '' ? $param : (string) $st['evid'];
-            if ($id === '' || !preg_match('/^[A-Za-z0-9\-]{1,64}$/', $id)) {
+            /* UNTERSTRICH GEHOERT DAZU. Die Wache liess bis 1.1.5 nur
+             * [A-Za-z0-9-] durch; am 07.09.2026 am Geraet gelesen heisst eine
+             * echte Kennung "consumable_depleted_cleaning_sensor". Der Befehl
+             * haette sie mit "kein quittierbares Ereignis" abgewiesen - und
+             * zwar genau die Ereignisse, um die es geht. */
+            if ($id === '' || !preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $id)) {
                 return array(0, 'kein quittierbares Ereignis');
             }
-            list($code, $body) = ro_put($wurzel . 'valetudo/events/' . rawurlencode($id) . '/interact',
+            /* Derselbe Pfad wie beim Lesen. Steht er noch nicht fest, wird
+             * die Liste einmal geholt - sonst ginge der PUT an eine Adresse,
+             * die dieses Geraet gar nicht kennt. */
+            $evpfad = ro_ereignis_pfad($dev);
+            if ($evpfad === '') {
+                ro_ereignisse($dev);
+                $evpfad = ro_ereignis_pfad($dev);
+            }
+            if ($evpfad === '') { $evpfad = 'events'; }
+            list($code, $body) = ro_put($wurzel . $evpfad . '/' . rawurlencode($id) . '/interact',
                 array('interaction' => 'ok'), 4, $r);
             break;
         default:
@@ -1820,8 +1900,8 @@ function ro_felder() {
         'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)', 1, 'Fehlercode'),
         'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer', 1, 'Fehlerschwere'),
         'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station', 1, 'Fehler: Teil'),
-        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Fläche', 1, 'Letzte Reinigung Fläche'),
-        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer', 1, 'Letzte Reinigung Dauer'),
+        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Fläche', 1, 'Reinigung Fläche'),
+        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer', 1, 'Reinigung Dauer'),
         'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Fläche', 1, 'Gesamt Fläche'),
         'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden', 1, 'Gesamt Stunden'),
         'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen', 1, 'Gesamt Reinigungen'),
@@ -1994,7 +2074,7 @@ function ro_vorlage($dev = 1, $nur_belegte = false) {
         /* Derselbe Vorsatz wie in der Ausgangsvorlage. Ohne ihn heisst der
          * Baustein in der Anlage schlicht "Status" - und so heisst dort
          * bereits ein TextState (gemessen 06.09.2026). */
-        $kachel = 'Robo' . ($dev > 1 ? ' ' . $dev : '') . ': '
+        $kachel = 'Saugroboter' . ($dev > 1 ? ' ' . $dev : '') . ': '
                 . (isset($f[6]) && $f[6] !== '' ? $f[6] : $name);
         if ($st !== null && $min < 0 && (int) ro_feldwert($name, $st) === -1) { continue; }
         $cmds[] = array(
@@ -2080,7 +2160,7 @@ function ro_vo_vorlage($dev = 1) {
      * 98 Zeichen, und genau die standen danach als Bausteinname da.
      * Der Vorsatz macht den Namen in der Bausteinsuche eindeutig - dort
      * fehlt der Geraeteknoten (Regeln/07). */
-    $vorsatz = 'Robo' . ($dev > 1 ? ' ' . $dev : '') . ': ';
+    $vorsatz = 'Saugroboter' . ($dev > 1 ? ' ' . $dev : '') . ': ';
     foreach (ro_befehle() as $name => $b) {
         list($beispiel, $zweck) = $b;
         $anzeige = $vorsatz . (isset($b[2]) && $b[2] !== '' ? $b[2] : $zweck);
@@ -2350,6 +2430,33 @@ function ro_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = ro_t('TEXT.SICH_LEER');
     }
+    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
+     *
+     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
+     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
+     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
+     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
+     * zurueck - quittiert mit "1 Wert uebernommen".
+     *
+     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
+     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
+     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
+     * Bestand ausgerollt (30 Linien).
+     *
+     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
+     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
+     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
+     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    $fehlend = array();
+    foreach (array_keys(ro_vorgaben()) as $fk) {
+        if (!array_key_exists($fk, $daten)) {
+            $fehlend[] = $fk;
+        }
+    }
+    if ($fehlend) {
+        $mangel[] = sprintf(ro_t('TEXT.SICH_FEHLEND'), count($fehlend),
+            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+    }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
 
@@ -2548,9 +2655,16 @@ function ro_selbsttest()
     $add('PRUEF.TOKEN', trim((string) $cfg['aktionstoken']) !== '' ? 1 : 0, '');
 
     $erreicht = 0; $modelle = array(); $unbekannt = array();
+    $evlesbar = 0; $evzahl = 0; $evgeprueft = 0;
     foreach (array_keys($robots) as $n) {
         $st = ro_state($n);
         if ($st['ok']) { $erreicht++; }
+        /* Aus dem schon geholten Zustand, nicht aus einer neuen Abfrage:
+         * der Reiter Test wird bei JEDEM Seitenaufbau mitgerendert. */
+        if (array_key_exists('evlesbar', $st)) {
+            $evgeprueft++;
+            if ($st['evlesbar']) { $evlesbar++; $evzahl += (int) $st['event']; }
+        }
         $i = ro_robotinfo($n);
         if (!empty($i['modell'])) {
             $modelle[] = trim($i['hersteller'] . ' ' . $i['modell'])
@@ -2641,6 +2755,18 @@ function ro_selbsttest()
     }
     $add('PRUEF.SUCHTEXT', $doppelt ? 0 : 1,
         $doppelt ? implode(', ', $doppelt) : (string) count(ro_felder()));
+
+    /* Kann die Ereignisliste ueberhaupt gelesen werden? Ohne diese Zeile ist
+     * EVENT=0 eine Behauptung: bis 1.1.5 sah "nicht gelesen" genauso aus wie
+     * "nichts los", und der Fehler lag ein Jahr unbemerkt. */
+    if (!$robots || $evgeprueft === 0 || $erreicht === 0) {
+        $add('PRUEF.EREIGNISSE', 2, ro_t('PRUEF.NICHTS_GEMESSEN'));
+    } elseif ($evlesbar > 0) {
+        $add('PRUEF.EREIGNISSE', 1, sprintf(ro_t('PRUEF.EREIGNISSE_OK'), $evzahl,
+            '/api/v2/' . (ro_ereignis_pfad(1) !== '' ? ro_ereignis_pfad(1) : 'events')));
+    } else {
+        $add('PRUEF.EREIGNISSE', 0, ro_t('PRUEF.EREIGNISSE_NEIN'));
+    }
 
     /* Passen Leiste, Bereiche und Positivliste zusammen? (siehe ro_reiterlage) */
     $rl = ro_reiterlage();
