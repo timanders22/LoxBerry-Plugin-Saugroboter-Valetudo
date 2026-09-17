@@ -2492,7 +2492,12 @@ function ro_pluginversion()
     if ($v !== null) { return $v; }
     $v = '';
     if (class_exists('LBSystem', false) && method_exists('LBSystem', 'pluginversion')) {
-        $v = (string) LBSystem::pluginversion();
+        /* Ueber den Ordnernamen fragen (Regeln/03): ohne Argument haengt die
+         * Antwort am ersten eingebundenen Skript - am Geraet gemessen
+         * 17.09.2026: aus einem fremden Einstieg (php -r) NULL, mit dem
+         * Ordnernamen die installierte Fassung. Installiert liegt diese Datei
+         * unter webfrontend/html(auth)/plugins/<ordner>/. */
+        $v = (string) LBSystem::pluginversion(basename(__DIR__));
     }
     /* DIE plugin.cfg WIRD GAR NICHT MITINSTALLIERT.
      *

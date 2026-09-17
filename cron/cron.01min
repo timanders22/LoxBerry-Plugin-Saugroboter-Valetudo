@@ -1,10 +1,10 @@
 #!/bin/sh
 # Saugroboter (Valetudo) - minutlicher Cron (Status, Meldungen, MQTT)
-# REPLACELBPBINDIR wird bei der Installation durch den Plugin-bin-Pfad ersetzt.
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
 # Seit 1.0.4 liegt cron.php dort und nicht mehr im unangemeldeten HTML-Ordner.
 #
 # Bis 1.0.14 lautete die Zeile
-#     php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+#     php "<bin-Ordner des Plugins>/cron.php" >/dev/null 2>&1
 # und verschluckte damit BEIDE Abbruchmeldungen von cron.php - auch die,
 # die sagt, dass die Bibliothek nicht gefunden wurde. Ein Cron, der jede
 # Minute ins Leere laeuft, sah genauso aus wie einer, der arbeitet.
