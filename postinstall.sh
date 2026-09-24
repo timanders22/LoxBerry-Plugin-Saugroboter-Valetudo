@@ -64,11 +64,44 @@ if [ -f "$BK" ]; then
     fi
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen und im Reiter Einstellungen"
-echo "<INFO> die Adresse der Valetudo-Oberflaeche eintragen. Der Reiter Test"
-echo "<INFO> beantwortet danach mit Haken und Kreuzen, ob die Einrichtung traegt."
-echo "<INFO> Wer MQTT benutzt: unter Gateway V1 muss das Abo von Hand"
-echo "<INFO> eingetragen werden - der Reiter MQTT nennt den Wert und misst,"
-echo "<INFO> welche Gateway-Fassung installiert ist."
+# SCHLUSSZEILE NACH INHALT.
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade
+# (Kopf dieser Datei). Bis 1.1.8 stand danach jedes Mal "Adresse der
+# Valetudo-Oberflaeche eintragen" - auch ueber einer eben zurueckgespielten
+# Konfiguration mit eingetragenem Roboter. Wer das liest, haelt die
+# Einstellungen fuer verloren, und der Fall, in dem sie es wirklich sind,
+# sieht genauso aus.
+# Entschieden wird nach dem, wozu die Anleitung auffordert: mindestens ein
+# Roboter mit Adresse in robo.json (robots[].ip, oder das Einzelfeld ip
+# aelterer Fassungen - ro_config() in robo_lib.php migriert es; ro_robots()
+# ueberspringt jede Zeile ohne ip). Das Aktionstoken, nach dem ro_config()
+# die Zweitschrift beurteilt, entsteht schon beim ersten Oeffnen der
+# Oberflaeche und sagt nichts ueber einen Roboter. Ohne php ist das nicht
+# pruefbar; dann steht die Anleitung.
+# Gemessen am 24.09.2026: Pruefung-Saugroboter-Valetudo-1.1.9/postinstall_hinweis.md.
+RO_EINGERICHTET=0
+if command -v php >/dev/null 2>&1 && php -r '
+    $d = json_decode((string) @file_get_contents($argv[1]), true);
+    if (!is_array($d)) { exit(1); }
+    if (isset($d["ip"]) && is_string($d["ip"]) && trim($d["ip"]) !== "") { exit(0); }
+    $liste = (isset($d["robots"]) && is_array($d["robots"])) ? $d["robots"] : array();
+    foreach ($liste as $r) {
+        if (is_array($r) && isset($r["ip"]) && is_scalar($r["ip"]) && trim((string) $r["ip"]) !== "") { exit(0); }
+    }
+    exit(1);
+' -- "$CF" 2>/dev/null; then
+    RO_EINGERICHTET=1
+fi
+
+if [ "$RO_EINGERICHTET" = "1" ]; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen (Roboteradresse eingetragen)."
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen und im Reiter Einstellungen"
+    echo "<INFO> die Adresse der Valetudo-Oberflaeche eintragen. Der Reiter Test"
+    echo "<INFO> beantwortet danach mit Haken und Kreuzen, ob die Einrichtung traegt."
+    echo "<INFO> Wer MQTT benutzt: unter Gateway V1 muss das Abo von Hand"
+    echo "<INFO> eingetragen werden - der Reiter MQTT nennt den Wert und misst,"
+    echo "<INFO> welche Gateway-Fassung installiert ist."
+fi
 exit 0
