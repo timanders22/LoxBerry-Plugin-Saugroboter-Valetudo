@@ -50,6 +50,22 @@ if (!is_file($ro_htmldir . '/robo_lib.php')) {
 }
 require_once $ro_htmldir . '/robo_lib.php';
 
+/* Nur aus der Installation - oder mit LBHOMEDIR UND LBPPLUGINDIR, wie die
+ * Pruefwerkzeuge und die Deinstallation es tun. Bis 1.1.9 lief diese Datei
+ * aus einem ausgepackten Archiv mit Konfiguration, Zwischenspeicher und
+ * Protokoll der Anlage (siehe ro_keine_wurzel_abbruch()). Die Pruefung steht
+ * VOR der Sperre, denn schon die legt eine Datei an. */
+$ro_argv = (isset($argv) && is_array($argv)) ? array_slice($argv, 1) : array();
+if (in_array('--mqtt-leeren', $ro_argv, true)) {
+    /* Aus uninstall/uninstall: die zurueckbehaltenen Themen der Linie
+     * leeren (ro_mqtt_leeren()). Keine Abfrage, keine Sperre, keine Datei,
+     * keine Selbstheilung der Konfiguration. */
+    ro_keine_wurzel_abbruch('cron.php');
+    ro_config_erzeugen_erlauben(false);
+    exit(ro_mqtt_leeren());
+}
+ro_keine_wurzel_abbruch('cron.php');
+
 /* ==================================================================
  * Nur ein Durchgang zur Zeit
  * ==================================================================
@@ -122,7 +138,11 @@ foreach ($ro_robots as $ro_n => $ro_r) {
     $ro_sigf = ro_tmpdir() . '/mqtt_sig_' . $ro_n . '.txt';
     $ro_beat = ro_tmpdir() . '/mqtt_beat_' . $ro_n;
     $ro_old = is_file($ro_sigf) ? (string) @file_get_contents($ro_sigf) : '';
-    if ($ro_sig !== $ro_old || !is_file($ro_beat) || time() - filemtime($ro_beat) > 1800) {
+    /* Meldet der Broker unter dem Praefix dieses Roboters noch einen Altwert
+     * einer Vorfassung, geht der Satz VOLL hinaus - die leere retain-Nutzlast
+     * steht dann unmittelbar vor dem gueltigen Wert (ro_mqtt_altlast()). */
+    if ($ro_sig !== $ro_old || !is_file($ro_beat) || time() - filemtime($ro_beat) > 1800
+            || ro_mqtt_altlast_offen($ro_n)) {
         ro_mqtt_publish($ro_st, $ro_n);
         @file_put_contents($ro_sigf, $ro_sig);
         @touch($ro_beat);

@@ -39,28 +39,31 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
 /* ---------- 1. Bibliothek ----------
  *
- * Installiert sind html/ und htmlauth/ ZWEI GETRENNTE Baeume. Von
- * htmlauth/plugins/<ordner>/ sind es DREI dirname bis webfrontend/.
- * Findet keiner der Kandidaten etwas, bricht die Seite mit lesbarem Text
+ * Installiert sind html/ und htmlauth/ ZWEI GETRENNTE Baeume. Welche Lage
+ * gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge der
+ * Versuche: liegt diese Datei unter <Wurzel>/webfrontend/htmlauth/plugins/
+ * <ordner>, ist sie installiert, und die Bibliothek liegt im html-Zweig
+ * unter demselben Ordnernamen; sonst liegt sie in einem ausgepackten Archiv
+ * gleich daneben. Bis 1.1.9 wurden Kandidaten der Reihe nach probiert, der
+ * installierte VOR der eigenen Bibliothek - aus einem Archiv unter /plugin
+ * war das //html/plugins/htmlauth/robo_lib.php ab der Laufwerkswurzel, und
+ * was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-Saugroboter-Valetudo-1.1.10, Fall C6; Bauart AWM-Abfuhr 1.4.13).
+ * Wurzel und Ordnername kommen danach aus ro_paths() - EINE Stelle fuer die
+ * Wurzelregel (general.json, Archivmodus).
+ *
+ * Findet sich die Bibliothek nicht, bricht die Seite mit lesbarem Text
  * ab - bis 1.0.14 lief sie weiter und starb mitten im <style>-Block an
  * einem "Call to undefined function ro_t()".
  */
-$rb_kandidaten = array();
-$rb_home = getenv('LBHOMEDIR');
-$rb_pdir = getenv('LBPPLUGINDIR');
-if ($rb_home && $rb_pdir) {
-    $rb_kandidaten[] = $rb_home . '/webfrontend/html/plugins/' . $rb_pdir . '/robo_lib.php';
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $rb_gefunden = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/robo_lib.php';
+} else {
+    $rb_gefunden = dirname(__DIR__) . '/html/robo_lib.php';   // ausgepacktes Archiv
 }
-$rb_kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/robo_lib.php';
-$rb_kandidaten[] = dirname(__DIR__) . '/html/robo_lib.php';   // ausgepacktes Archiv
-$rb_gefunden = '';
-foreach ($rb_kandidaten as $rb_cand) {
-    if (is_file($rb_cand)) { $rb_gefunden = $rb_cand; break; }
-}
-if ($rb_gefunden === '') {
+if (!is_file($rb_gefunden)) {
     header('Content-Type: text/plain; charset=utf-8');
-    echo "Saugroboter: robo_lib.php nicht gefunden.\nGesucht in:\n  "
-       . implode("\n  ", $rb_kandidaten) . "\n";
+    echo "Saugroboter: robo_lib.php nicht gefunden.\nGesucht in:\n  " . $rb_gefunden . "\n";
     exit;
 }
 require_once $rb_gefunden;

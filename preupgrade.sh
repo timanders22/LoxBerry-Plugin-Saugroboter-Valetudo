@@ -25,6 +25,43 @@ ARGV5=$5
 ARGV6=$6
 PFOLDER="${ARGV3:-saugrobo}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+# Bis 1.1.9 stand hier nur die Zeile darueber, ohne jede Pruefung: ohne
+# fuenftes Argument und ohne LBHOMEDIR wurde aus /config/plugins/... ab der
+# Laufwerkswurzel gelesen und "//data" angelegt, Rueckgabe 0 (in WSL
+# gemessen, Pruefung-Saugroboter-Valetudo-1.1.10, Faelle H10 und C13).
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart AWM-Abfuhr 1.4.13; gemessen in WSL,
+# Pruefung-Saugroboter-Valetudo-1.1.10 (Faelle H und C).
+ro_wurzel_suchen() {
+    ro_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    ro_i=0
+    while [ -n "$ro_v" ] && [ "$ro_v" != "/" ] && [ "$ro_i" -lt 8 ]; do
+        if [ -d "$ro_v/config/plugins" ] && [ -d "$ro_v/data/plugins" ] \
+           && [ -f "$ro_v/config/system/general.json" ]; then
+            echo "$ro_v"
+            return 0
+        fi
+        ro_v=$(dirname "$ro_v")
+        ro_i=$((ro_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts gesichert."
+    exit 1
+fi
 
 # Erste Wahl: das sechste Argument. Rueckfall: der alte Weg, damit ein
 # aelterer Installer nichts verliert.

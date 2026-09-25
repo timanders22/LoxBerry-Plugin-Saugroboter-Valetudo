@@ -11,11 +11,60 @@ ARGV5=$5
 ARGV6=$6
 PFOLDER="${ARGV3:-saugrobo}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    echo "<WARNING> Das LoxBerry-Wurzelverzeichnis liess sich nicht bestimmen."
+# Bis 1.1.9 genuegte hier ein beliebiges Verzeichnis ([ -d "$BASE" ]): mit
+# einem fuenften Argument ohne config/plugins legte dieses Skript dort
+# config/, data/ und log/ an (in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Fall H12).
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart AWM-Abfuhr 1.4.13; gemessen in WSL,
+# Pruefung-Saugroboter-Valetudo-1.1.10 (Faelle H und C).
+ro_wurzel_suchen() {
+    ro_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    ro_i=0
+    while [ -n "$ro_v" ] && [ "$ro_v" != "/" ] && [ "$ro_i" -lt 8 ]; do
+        if [ -d "$ro_v/config/plugins" ] && [ -d "$ro_v/data/plugins" ] \
+           && [ -f "$ro_v/config/system/general.json" ]; then
+            echo "$ro_v"
+            return 0
+        fi
+        ro_v=$(dirname "$ro_v")
+        ro_i=$((ro_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts angelegt und nichts zurueckgespielt."
     exit 1
 fi
+
+# Traegt eine Konfigurationsdatei INHALT? Lesbares JSON-Objekt UND ein nicht
+# leeres Aktionstoken - dieselbe Frage, nach der ro_config() in
+# webfrontend/html/robo_lib.php seit 1.1.4 aus der Zweitschrift heilt (das
+# Token ist das Geheimnis, ohne das jede in Loxone eingetragene Adresse auf
+# 403 laeuft). Bis 1.1.9 wurde hier nach der FORM entschieden (leer oder genau
+# "{}") und eine kaputte oder leere Zweitschrift kopiert und als
+# "wiederhergestellt" gemeldet (in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Faelle N1a, N1b, N3). Ohne PHP gilt
+# eine Datei als ohne Inhalt.
+ro_hat_inhalt() {
+    [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
+}
 
 TMPDIR="$ARGV6"
 if [ -z "$TMPDIR" ] || [ ! -d "$TMPDIR" ]; then
@@ -32,10 +81,21 @@ mkdir -p "$CDIR" "$LDIR" "$DDIR" 2>/dev/null
 # Zurueckholen, was preupgrade weggelegt hat - aber nur, wenn nicht schon eine
 # brauchbare Konfiguration dasteht. postinstall hat sie moeglicherweise bereits
 # aus der Sicherung neben dem Ordner wiederhergestellt.
+# Die Ablage stammt aus preupgrade.sh DIESES Vorgangs und wird deshalb
+# zurueckgelegt, wie sie ist - auch eine beschaedigte: ro_config() legt sie
+# dann als .kaputt beiseite und heilt aus der Zweitschrift. Die Meldung sagt
+# aber, was darin war. Bis 1.1.9 hiess es "uebernommen" auch fuer eine
+# Ablage ohne jeden Inhalt (in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Fall N4).
 if [ -f "$TMPDIR/robo.json" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
         cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
-        echo "<OK> Konfiguration aus dem Upgrade uebernommen."
+        if ro_hat_inhalt "$CF"; then
+            echo "<OK> Konfiguration aus dem Upgrade uebernommen."
+        else
+            echo "<INFO> Die Konfiguration aus dem Upgrade trug keine eingerichteten Einstellungen"
+            echo "<INFO> (kein lesbares Objekt mit Aktionstoken); sie wurde unveraendert zurueckgelegt."
+        fi
     fi
 fi
 if [ -f "$TMPDIR/robo.log" ] && [ ! -s "$LDIR/robo.log" ]; then
@@ -58,7 +118,13 @@ fi
 
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
+        if ro_hat_inhalt "$BK"; then
+            cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
+            echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+        else
+            echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
+            echo "<WARNING> Objekt mit Aktionstoken) - sie wurde nicht uebernommen."
+        fi
     fi
 fi
 # RECHTE 0600, NICHT 0640 - UND DAS IST GEMESSEN, NICHT GERATEN.
@@ -93,7 +159,15 @@ fi
 # unabhaengig vom wirklichen Ordnernamen. Bei einer Zweitinstallation teilten
 # sich beide Installationen cron.lock und alle Merker. Seit 1.1.0 heisst der
 # Ordner wie das Plugin; der alte bleibt sonst mit veralteten Zustaenden liegen.
-if [ -d "/tmp/saugrobo" ] && [ "$PFOLDER" != "saugrobo" ]; then
+#
+# ABER NUR, WENN ES KEINE INSTALLATION "saugrobo" GIBT. Seit 1.1.0 ist
+# /tmp/saugrobo der laufende Zwischenspeicher der Installation dieses
+# Namens (Sperrdatei des Minutenlaufs, Zustaende, Meldefenster) - und eine
+# Zweitinstallation saugrobo_01 gibt es genau dann, wenn der Name schon
+# belegt ist. Bis 1.1.9 raeumte ihr Update den Zwischenspeicher der ersten
+# ab (in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10, Fall N6).
+if [ -d "/tmp/saugrobo" ] && [ "$PFOLDER" != "saugrobo" ] \
+   && [ ! -d "$BASE/webfrontend/html/plugins/saugrobo" ]; then
     rm -rf "/tmp/saugrobo"
     echo "<OK> Alter, gemeinsam benutzter Zwischenspeicher /tmp/saugrobo entfernt."
 fi
@@ -107,11 +181,10 @@ rm -f "/tmp/$PFOLDER"/state_*.json "/tmp/$PFOLDER"/caps_*.json \
 # Der Hinweis gehoert zu DIESER Fassung, nicht zu einer von vor drei
 # Schritten. Bis 1.1.3 stand hier unveraendert der Text von 1.1.0 und
 # forderte bei jedem Update zum Neuerzeugen der Vorlage auf.
-echo "<INFO> Neu in 1.1.4: die Zustandsthemen gehen jetzt RETAINED ueber MQTT"
-echo "<INFO> hinaus - nach einem Neustart des Miniservers stehen die Werte"
-echo "<INFO> sofort wieder da. Das Lebenszeichen bleibt bewusst ohne Retain."
-echo "<INFO> Die Loxone-Vorlage traegt jetzt kurze Kachelnamen statt ganzer"
-echo "<INFO> Saetze. Wer sie neu einliest, bekommt LESBARE Bausteinnamen -"
-echo "<INFO> noetig ist es nicht, die Werte kommen unveraendert an."
-echo "<INFO> Reiter 'Einbindung in Loxone'."
+echo "<INFO> Neu in 1.1.10: ok, fehlertext, ereignistext und meldung gehen nicht mehr"
+echo "<INFO> retained ueber MQTT hinaus. Ihre zurueckbehaltenen Werte aus frueheren"
+echo "<INFO> Fassungen raeumt der Minutenlauf aus dem Broker, bis der Broker es"
+echo "<INFO> bestaetigt. Ist der Roboter nicht erreichbar, gehen die Platzhalter"
+echo "<INFO> (Status 8, -1 ...) wie bisher, aber fluechtig hinaus; im Broker bleibt"
+echo "<INFO> der letzte gemessene Stand."
 exit 0

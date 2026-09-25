@@ -17,9 +17,41 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-saugrobo}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    echo "<FAIL> Das LoxBerry-Wurzelverzeichnis liess sich nicht bestimmen."
+# Bis 1.1.9 genuegte hier ein beliebiges Verzeichnis ([ -d "$BASE" ]): mit
+# einem fuenften Argument ohne config/plugins legte dieses Skript dort
+# config/, data/ und log/ an und meldete <OK> (in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Fall H8).
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart AWM-Abfuhr 1.4.13; gemessen in WSL,
+# Pruefung-Saugroboter-Valetudo-1.1.10 (Faelle H und C).
+ro_wurzel_suchen() {
+    ro_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    ro_i=0
+    while [ -n "$ro_v" ] && [ "$ro_v" != "/" ] && [ "$ro_i" -lt 8 ]; do
+        if [ -d "$ro_v/config/plugins" ] && [ -d "$ro_v/data/plugins" ] \
+           && [ -f "$ro_v/config/system/general.json" ]; then
+            echo "$ro_v"
+            return 0
+        fi
+        ro_v=$(dirname "$ro_v")
+        ro_i=$((ro_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts angelegt und nichts zurueckgespielt."
     exit 1
 fi
 
@@ -57,10 +89,31 @@ fi
 chmod 600 "$CF" 2>/dev/null
 chmod 600 "$BK" 2>/dev/null
 
+# Traegt eine Konfigurationsdatei INHALT? Lesbares JSON-Objekt UND ein nicht
+# leeres Aktionstoken - dieselbe Frage, nach der ro_config() in
+# webfrontend/html/robo_lib.php seit 1.1.4 aus der Zweitschrift heilt (das
+# Token ist das Geheimnis, ohne das jede in Loxone eingetragene Adresse auf
+# 403 laeuft). Bis 1.1.9 wurde hier nach der FORM entschieden (leer oder genau
+# "{}") und eine kaputte oder leere Zweitschrift kopiert und als
+# "wiederhergestellt" gemeldet (in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Faelle N1a, N1b, N3). Ohne PHP gilt
+# eine Datei als ohne Inhalt.
+ro_hat_inhalt() {
+    [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
+}
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
-        echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+        if ro_hat_inhalt "$BK"; then
+            cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
+            echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+        else
+            echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
+            echo "<WARNING> Objekt mit Aktionstoken) - sie wurde nicht uebernommen."
+        fi
     fi
 fi
 

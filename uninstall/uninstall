@@ -3,7 +3,7 @@
 # command <TEMPFILE> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
 #
 # LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag.
-# Zwei Dinge bleiben sonst liegen:
+# Drei Dinge bleiben sonst liegen:
 #
 #   1. config/plugins/<ordner>.backup.json
 #      Die Sicherung liegt bewusst NEBEN dem Konfigordner, damit sie Update
@@ -16,19 +16,75 @@
 #      Ansagen, MQTT-Signaturen, Lebenszeichen. /tmp ist auf dem LoxBerry
 #      eine Ramdisk, der Ordner verschwindet also spaetestens beim naechsten
 #      Neustart - bis dahin stuende er aber da.
+#   3. Die zurueckbehaltenen MQTT-Themen der Linie im Broker. Nach jedem
+#      Neustart von Broker oder Gateway bekaeme der Miniserver sie wieder -
+#      von einem Plugin, das es nicht mehr gibt.
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="saugrobo"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
 # Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
 # ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026).
+# Bis 1.1.9 fiel das Skript ohne beides fest drei Ebenen ueber seinem
+# Ablageort auf - ohne general.json: in einem fremden Baum loeschte es
+# dessen Zweitschrift, ohne jede Wurzel die Datei
+# /config/plugins/<ordner>.backup.json ab der Laufwerkswurzel, und es
+# meldete Vollzug (in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
+# Faelle H3, H5 und C12).
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart AWM-Abfuhr 1.4.13; gemessen in WSL,
+# Pruefung-Saugroboter-Valetudo-1.1.10 (Faelle H und C).
+ro_wurzel_suchen() {
+    ro_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    ro_i=0
+    while [ -n "$ro_v" ] && [ "$ro_v" != "/" ] && [ "$ro_i" -lt 8 ]; do
+        if [ -d "$ro_v/config/plugins" ] && [ -d "$ro_v/data/plugins" ] \
+           && [ -f "$ro_v/config/system/general.json" ]; then
+            echo "$ro_v"
+            return 0
+        fi
+        ro_v=$(dirname "$ro_v")
+        ro_i=$((ro_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS geloescht."
+    exit 1
+fi
+
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn
+# das Praefix steht in der Konfiguration. Bis 1.1.9 blieben sie nach dem
+# Deinstallieren im Broker stehen, und diese Datei sagte nur, man solle sie
+# von Hand aufraeumen (in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
+# Faelle U1 bis U8). Geleert wird ueber den Weg der Linie, den UDP-Eingang
+# des Gateways, und beim Broker nachgelesen (ro_mqtt_leeren() in
+# webfrontend/html/robo_lib.php; Bauart AWM-Abfuhr 1.4.13). Als loxberry,
+# nicht als root; stdin geschlossen, damit su nie auf eine Eingabe wartet.
+RO_CRON="$BASE/bin/plugins/$PDIR/cron.php"
+if command -v php >/dev/null 2>&1 && [ -f "$RO_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 120 php "$RO_CRON" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 120 php "$RO_CRON" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
 
 BK="$BASE/config/plugins/$PDIR.backup.json"
@@ -51,13 +107,14 @@ if [ -f "/tmp/$PDIR-cron.log" ]; then
     rm -f "/tmp/$PDIR-cron.log" && echo "<OK> Cron-Protokoll /tmp/$PDIR-cron.log entfernt."
 fi
 # Bis 1.0.14 lag er unabhaengig vom Ordnernamen fest unter /tmp/saugrobo.
-if [ "$PDIR" != "saugrobo" ] && [ -d "/tmp/saugrobo" ]; then
+# Seit 1.1.0 ist das aber der laufende Zwischenspeicher einer Installation
+# namens saugrobo - er bleibt, solange es sie gibt (bis 1.1.9 raeumte die
+# Deinstallation von saugrobo_01 ihn ab; in WSL gemessen,
+# Pruefung-Saugroboter-Valetudo-1.1.10, Fall N7).
+if [ "$PDIR" != "saugrobo" ] && [ -d "/tmp/saugrobo" ] \
+   && [ ! -d "$BASE/webfrontend/html/plugins/saugrobo" ]; then
     rm -rf "/tmp/saugrobo" && echo "<OK> Alter Zwischenspeicher /tmp/saugrobo entfernt."
 fi
 
 echo "<INFO> Valetudo laeuft auf dem Roboter selbst und bleibt unberuehrt."
-echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
-echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
-echo "<INFO> (Vorgabe: saugrobo/...). Zum Aufraeumen: LoxBerry -> System ->"
-echo "<INFO> MQTT Gateway."
 exit 0

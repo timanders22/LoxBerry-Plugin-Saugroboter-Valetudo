@@ -42,11 +42,18 @@ date_default_timezone_set('Europe/Berlin');
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung. Bis 1.1.9 genuegten
+ * config/plugins und webfrontend - genau diese Ordner hinterlaesst ein
+ * Pruefstand auf einem Arbeitsrechner (Regeln/06, Raumklima-Vorfall). In WSL
+ * gemessen (Pruefung-Saugroboter-Valetudo-1.1.10, Faelle H1 und H2): in einem
+ * fremden Baum ohne general.json nahm diese Bibliothek den Baum als Wurzel,
+ * und bin/cron.php schrieb dort hinein.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -56,7 +63,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -65,6 +73,23 @@ if (!function_exists('lb_wurzel_ermitteln')) {
         }
         return '';
     }
+}
+
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und danach nichts mehr.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter -
+ * general.json wird hier nicht verlangt, damit die Attrappen der
+ * Pruefwerkzeuge (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst "keine
+ * Wurzel"; jeder Aufrufer muss das abfangen. Bauart awm_lbhome() aus
+ * AWM-Abfuhr 1.4.13. */
+function ro_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
 }
 
 /**
@@ -96,16 +121,43 @@ function ro_plugin_ordner()
     return $pd;
 }
 
+/**
+ * Die Pfade - der Anlage, oder im Archivmodus die Ersatzpfade.
+ *
+ * Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+ * liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen)
+ * oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+ * $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe, und so
+ * ruft die Deinstallation bin/cron.php). Sonst ist das ein ausgepacktes
+ * Archiv oder ein Pruefordner, und es gelten die Ersatzpfade im Temp-Ordner.
+ *
+ * Bis 1.1.9 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel und
+ * den festen Namen 'saugrobo' - Konfiguration, Daten, Protokoll und
+ * Zwischenspeicher der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in
+ * /etc/environment steht, ebenso. Und ohne Wurzel lagen Konfiguration und
+ * Zweitschrift im Archiv selbst - aus /webfrontend/html also ab der
+ * Laufwerkswurzel, //config/robo.json (in WSL gemessen,
+ * Pruefung-Saugroboter-Valetudo-1.1.10, Faelle B1, B2, B6, B7, B11, C10).
+ * Bauart awm_paths() aus AWM-Abfuhr 1.4.13.
+ *
+ * Der Ordnername wird ERMITTELT, nicht geraten (ro_plugin_ordner()). Bis
+ * 1.0.3 stand hier ein Rueckfall auf "saugrobo", sobald config/plugins/
+ * <ordner> noch fehlte; eine Zweitinstallation (saugrobo_01) schrieb dann in
+ * die Konfiguration der ersten.
+ */
 function ro_paths() {
-    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    // Der Ordnername wird ERMITTELT, nicht geraten. Bis 1.0.3 stand hier ein
-    // Rueckfall auf "saugrobo", sobald config/plugins/<ordner> noch fehlte -
-    // etwa im Augenblick der Installation. Haengt LoxBerry bei einer
-    // Zweitinstallation einen Zaehler an (saugrobo_01, weil der Name schon
-    // belegt war), schrieb diese Zweitinstallation dann in die Konfiguration
-    // der ersten.
+    $lb = ro_lbhome();
     $pd = ro_plugin_ordner();
-    if ($lb) {
+    $gefunden = $lb;
+    if ($lb !== '') {
+        $soll = @realpath($lb . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $lbp = (string) getenv('LBPPLUGINDIR');
+        $ausdruecklich = ($lbp !== '' && $pd === $lbp && $lb === rtrim((string) getenv('LBHOMEDIR'), '/'));
+        if (!$installiert && !$ausdruecklich) { $lb = ''; }
+    }
+    if ($lb !== '') {
         return array('config' => $lb . '/config/plugins/' . $pd . '/robo.json',
                      'backup' => $lb . '/config/plugins/' . $pd . '.backup.json',
                      'log' => $lb . '/log/plugins/' . $pd . '/robo.log',
@@ -128,14 +180,53 @@ function ro_paths() {
                      // halbe Stunde. Die Vorlage warnt davor; ich bin beim
                      // Erklaeren der Falle prompt ein zweites Mal hineingelaufen.
                      'tmp' => '/tmp/' . $pd,
-                     'plugin' => $pd, 'lbhome' => $lb);
+                     'plugin' => $pd, 'lbhome' => $lb,
+                     'general' => $lb . '/config/system/general.json',
+                     'archiv' => '');
     }
-    return array('config' => dirname(dirname(__DIR__)) . '/config/robo.json',
-                 'backup' => dirname(dirname(__DIR__)) . '/config/robo.backup.json',
-                 'log' => sys_get_temp_dir() . '/' . $pd . '/robo.log',
-                 'datadir' => sys_get_temp_dir() . '/' . $pd . '/data',
-                 'tmp' => sys_get_temp_dir() . '/' . $pd,
-                 'plugin' => $pd, 'lbhome' => '');
+    /* Keine Wurzel (Entwicklung, Pruefstand, fremder Baum) oder Archivmodus:
+     * die Ersatzpfade unter dem Temp-Ordner, unter einem EIGENEN Namen - nie
+     * ein Pfad der Anlage, nie einer ab der Laufwerkswurzel und nie der
+     * Zwischenspeicher /tmp/<ordner> der Anlage. bin/cron.php steigt in
+     * beiden Faellen vorher aus (ro_keine_wurzel_abbruch()); MQTT verlangt
+     * eine Wurzel. */
+    $tmp = sys_get_temp_dir() . '/saugrobo-archiv';
+    return array('config' => $tmp . '/robo.json',
+                 'backup' => $tmp . '/robo.backup.json',
+                 'log' => $tmp . '/robo.log',
+                 'datadir' => $tmp . '/data',
+                 'tmp' => $tmp,
+                 'plugin' => $pd, 'lbhome' => '', 'general' => '',
+                 // Die gefundene Wurzel, wenn diese Datei NICHT darin
+                 // installiert liegt (Archivmodus) - fuer die Meldung.
+                 'archiv' => $gefunden);
+}
+
+/* Fuer bin/cron.php: ohne Wurzel (oder aus einem ausgepackten Archiv) nichts
+ * tun, eine Meldung auf stderr, Rueckgabewert 1. Steht dort VOR der Sperre,
+ * denn schon die legt eine Datei an. Bis 1.1.9 lief bin/cron.php aus einem
+ * Archiv unter einer echten Wurzel mit Konfiguration, Zwischenspeicher und
+ * Protokoll der Anlage, fragte den Roboter und sandte MQTT (in WSL gemessen,
+ * Pruefung-Saugroboter-Valetudo-1.1.10, Faelle B6, B7, H2). Bauart
+ * awm_keine_wurzel_abbruch() aus AWM-Abfuhr 1.4.13. */
+function ro_keine_wurzel_abbruch($programm)
+{
+    $p = ro_paths();
+    if ($p['lbhome'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts abgefragt, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner>' . "\n"
+            . 'aufrufen oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts abgefragt, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
 }
 
 function ro_vorgaben()
@@ -855,6 +946,9 @@ function ro_state($dev = 1, $force = false) {
                 'saugstufe' => -1, 'wasserstufe' => -1, 'modus' => -1,
                 'event' => 0, 'evtyp' => 0, 'evtext' => '', 'evmuell' => 0, 'evid' => '',
                 'evlesbar' => 0,
+                // Welche Nebenabfragen eine LISTE geliefert haben (siehe
+                // ro_mqtt_platzhalter()); 0 = Platzhalter.
+                'teil_ok' => array('statistik' => 0, 'gesamt' => 0, 'verbrauch' => 0),
                 'ts' => time());
     if ($r === null) {
         return $st;
@@ -927,6 +1021,7 @@ function ro_state($dev = 1, $force = false) {
 
     // 2) Statistik aktuell
     $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability', 2, $dev), true);
+    $st['teil_ok']['statistik'] = ro_ist_liste($j) ? 1 : 0;
     foreach ((array) $j as $e) {
         if (!isset($e['type']) || !isset($e['value'])) { continue; }
         if ($e['type'] === 'area') { $st['flaeche'] = round(((float) $e['value']) / 10000, 1); }   // cm2 -> m2
@@ -934,6 +1029,7 @@ function ro_state($dev = 1, $force = false) {
     }
     // 3) Statistik gesamt
     $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability', 2, $dev), true);
+    $st['teil_ok']['gesamt'] = ro_ist_liste($j) ? 1 : 0;
     foreach ((array) $j as $e) {
         if (!isset($e['type']) || !isset($e['value'])) { continue; }
         if ($e['type'] === 'area') { $st['flaeche_gesamt'] = round(((float) $e['value']) / 10000, 1); }
@@ -942,6 +1038,7 @@ function ro_state($dev = 1, $force = false) {
     }
     // 4) Verbrauchsmaterialien
     $j = @json_decode((string) ro_get($base . '/capabilities/ConsumableMonitoringCapability', 2, $dev), true);
+    $st['teil_ok']['verbrauch'] = ro_ist_liste($j) ? 1 : 0;
     foreach ((array) $j as $e) {
         $typ = isset($e['type']) ? $e['type'] : '';
         $sub = isset($e['subType']) ? $e['subType'] : '';
@@ -1390,23 +1487,85 @@ function ro_mqtt_thema_saeubern($t)
 }
 
 /**
- * Ein UDP-Paket an den Gateway-Eingang.
+ * Welche Themen gehen ZURUECKBEHALTEN (retained) hinaus? Eine POSITIVLISTE.
  *
- * Mit stream_socket_client() statt socket_create(): die Erweiterung "sockets"
- * ist auf einem LoxBerry nicht garantiert geladen, und ein fehlendes
- * socket_create() ist KEIN abfangbarer Fehler, sondern ein fataler. Gemessen
- * mit PHP 8.4 ohne die Erweiterung:
+ * EINE Stelle fuer die Entscheidung: Sender, Thementabelle im Reiter MQTT
+ * und die Deinstallation fragen dieselbe Funktion. Die Eintraege stehen in
+ * der Feldtabelle (ro_felder(), Spalte 5, nur der Wert 1 zaehlt) und hier
+ * fuer die Klartexte. Was in keiner der beiden Stellen steht, geht
+ * FLUECHTIG hinaus.
  *
- *   Fatal error: Call to undefined function socket_create()   Rueckgabewert 255
+ * Bis 1.1.9 war es umgekehrt: ro_mqtt_retain_feld() gab fuer jeden Namen,
+ * den die Feldtabelle nicht kannte, "retained" zurueck, und die vier
+ * Klartexte standen fest auf retained - ein neues Thema waere still
+ * zurueckbehalten worden (Bestandsliste Klasse E vom 19.09.2026). Am Sender
+ * der Archive 1.1.4 bis 1.1.9 gemessen: je Roboter 40 Themen retained
+ * (Pruefung-Saugroboter-Valetudo-1.1.10/themen_je_fassung.txt).
  *
- * Im Cron, der nach /dev/null schreibt, saehe das niemand. Datenstroeme
- * gehoeren zum Kern.
+ * Die Frage je Thema (Regeln/07, Entscheidungen vom 18. und 19.09.2026):
+ * Wer sagt das - das Geraet, oder das Plugin ueber sich selbst? Und wird
+ * der Wert allein durch den Lauf der Uhr falsch?
+ *   ok            "Roboter erreichbar" - das Ergebnis der EIGENEN Abfrage,
+ *                 also eine Aussage des Plugins ueber sich. Stirbt der
+ *                 Minutenlauf, stuende die 1 nach jedem Neustart von Broker
+ *                 oder Gateway wieder da. Nie retained.
+ *   fehlertext,   regelmaessig LEER. Ein leerer Wert geht nie retained
+ *   ereignistext  hinaus (er loeschte das Thema), also ersetzte nichts den
+ *                 zurueckbehaltenen Text: "Rad blockiert" stand nach dem
+ *                 Beheben weiter im Broker (in WSL gemessen,
+ *                 Pruefung-Saugroboter-Valetudo-1.1.10, Fall R7).
+ *   meldung       ebenso, und nach 24 Stunden allein durch die Uhr leer
+ *                 (ro_meldung_lesen()).
+ * Zurueckbehalten bleiben die Aussagen des GERAETS: Zustand, Fehlercode
+ * und -schwere, Verbrauchsteile, Gesamtwerte, Anbauteile, Station, Stufen,
+ * Ereigniszahl und -art, dazu die Freigaben aus der Konfiguration und der
+ * Zustand als Klartext (status, nie leer).
+ *
+ * Preis: nach einem Neustart von Broker oder Gateway fehlen die
+ * fluechtigen Themen, bis der naechste volle Satz hinausgeht (spaetestens
+ * nach 30 Minuten, bin/cron.php). Die Altwerte der Vorfassungen raeumt
+ * ro_mqtt_altlast() ab.
  */
+function ro_mqtt_retain_liste()
+{
+    static $liste = null;
+    if ($liste !== null) { return $liste; }
+    $liste = array();
+    foreach (ro_felder() as $name => $f) {
+        if (ro_mqtt_ausgenommen($name)) { continue; }
+        if (isset($f[5]) && $f[5] === 1) { $liste[strtolower($name)] = 1; }
+    }
+    // Von den vier Klartexten nur der Zustand - er ist nie leer.
+    $liste['status'] = 1;
+    return $liste;
+}
+
 /**
- * Geht dieses Thema RETAINED hinaus?
+ * Die LANGFORM von sechs Themen - zusaetzlich zur Kurzform, mit demselben
+ * Wert und derselben Retain-Regel.
  *
- * Hausstandard seit 03.09.2026: Zustaende retained, Messwerte mit Zeitbezug
- * nicht, das Lebenszeichen nie.
+ * In einer bestehenden Anlage (Projektdatei gelesen am 25.09.2026,
+ * Pruefung-Saugroboter-Valetudo-1.1.10/abnehmer_anlage.txt)
+ * abonnieren sechs virtuelle Eingaenge diese Namen - saugrobo_batterie,
+ * saugrobo_buerste_haupt, ... -, gesendet wurde aber seit mindestens 1.1.2
+ * nur die Kurzform (batt, bhaupt, ...; am Sender gemessen, themen_je_fassung.txt).
+ * An zwei der Eingaenge haengen Zustandsbausteine ("Wechsel Hauptbuerste in:",
+ * "Wechsel Seitenbuerste in:"). Bestehende Namen werden nicht umbenannt
+ * (Regeln/07); die Langform kommt DANEBEN und gilt fuer bestehende
+ * Loxone-Vorlagen. Die eigene Importvorlage des Plugins traegt keine
+ * MQTT-Namen (nur HTTP: ROBO_<FELD>, ;<FELD>=).
+ *
+ * Rueckgabe: langform => kurzform.
+ */
+function ro_mqtt_langform()
+{
+    return array('batterie' => 'batt', 'buerste_haupt' => 'bhaupt', 'buerste_seite' => 'bseite',
+                 'dauer_gesamt' => 'dauerg', 'flaeche_gesamt' => 'flaecheg',
+                 'material_warn' => 'matwarn');
+}
+
+/**
+ * Geht dieses Thema (ohne Praefix, etwa "code") zurueckbehalten hinaus?
  *
  * DASS DER WEG DAS KANN, IST GEMESSEN - am Quelltext der Gegenstelle, nicht
  * geraten. LoxBerry-Kern, sbin/mqttgateway.pl (Zweig master, abgerufen
@@ -1417,18 +1576,17 @@ function ro_mqtt_thema_saeubern($t)
  *   Zeile 354   } elsif($command eq 'retain') { ... $mqtt->retain(...) }
  *
  * UND EINE FALLE AUS DERSELBEN QUELLE, Zeile 360-364: ein retain mit LEEREM
- * Wert LOESCHT das Thema aus dem Gedaechtnis des Gateways. Ein retained Thema
- * darf deshalb nie mit leerem Wert hinausgehen - dafuer sorgt ro_mqtt_zeile().
- *
- * Bis 1.1.3 trug KEINE der 46 Zeilen ein retain; nach einem Neustart des
- * Miniservers oder des Gateways stand in Loxone bis zum naechsten
- * Signaturwechsel nichts, im Grenzfall eine halbe Stunde.
+ * Wert LOESCHT das Thema. $wert wird deshalb mitgegeben, wo er feststeht:
+ * ein leerer Wert geht immer als publish hinaus.
  */
-function ro_mqtt_retain_feld($name)
+function ro_mqtt_retain($thema, $wert = null)
 {
-    $f = ro_felder();
-    $k = strtoupper((string) $name);
-    return isset($f[$k][5]) ? (bool) $f[$k][5] : true;
+    if ($wert !== null && ro_mqtt_wert_saeubern($wert) === '') { return false; }
+    // Die Langform folgt der Regel ihrer Kurzform (ro_mqtt_langform()).
+    $lf = ro_mqtt_langform();
+    if (isset($lf[(string) $thema])) { $thema = $lf[(string) $thema]; }
+    $l = ro_mqtt_retain_liste();
+    return isset($l[(string) $thema]);
 }
 
 /**
@@ -1445,6 +1603,19 @@ function ro_mqtt_zeile($retain, $thema, $wert)
     return $befehl . ' ' . $thema . ' ' . $w;
 }
 
+/**
+ * Ein UDP-Paket an den Gateway-Eingang.
+ *
+ * Mit stream_socket_client() statt socket_create(): die Erweiterung "sockets"
+ * ist auf einem LoxBerry nicht garantiert geladen, und ein fehlendes
+ * socket_create() ist KEIN abfangbarer Fehler, sondern ein fataler. Gemessen
+ * mit PHP 8.4 ohne die Erweiterung:
+ *
+ *   Fatal error: Call to undefined function socket_create()   Rueckgabewert 255
+ *
+ * Im Cron, der nach /dev/null schreibt, saehe das niemand. Datenstroeme
+ * gehoeren zum Kern.
+ */
 function ro_udp_senden($port, $zeilen)
 {
     $fehler = 0; $text = '';
@@ -1458,24 +1629,461 @@ function ro_udp_senden($port, $zeilen)
     return $n;
 }
 
-function ro_mqtt_publish($st = null, $dev = 1) {
-    $cfg = ro_config();
-    if (empty($cfg['mqtt_enabled'])) { return 0; }
+/** Der UDP-Eingangsport des Gateways aus der general.json - 0, wenn keiner da ist. */
+function ro_mqtt_udpport()
+{
     $p = ro_paths();
     if ($p['lbhome'] === '') { return 0; }
-    if ($st === null) { $st = ro_state($dev); }
-    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+    $gen = @json_decode((string) @file_get_contents($p['general']), true);
     $udp = 0;
     if (isset($gen['Mqtt']['Udpinport'])) { $udp = (int) $gen['Mqtt']['Udpinport']; }
     if (!$udp && isset($gen['mqtt']['udpinport'])) { $udp = (int) $gen['mqtt']['udpinport']; }
+    return ($udp > 0 && $udp <= 65535) ? $udp : 0;
+}
+
+/** Das Praefix eines Roboters: Roboter 1 behaelt die kurzen Themen. */
+function ro_mqtt_praefix($wurzel, $dev = 1)
+{
+    return $wurzel . ((int) $dev > 1 ? '/' . (int) $dev : '');
+}
+
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht
+ * mehr tun. Die Liste ist die der Archive 1.1.4 bis 1.1.9, gemessen am
+ * 25.09.2026 am Sender (Pruefung-Saugroboter-Valetudo-1.1.10,
+ * themen_je_fassung.txt; 1.1.2 und 1.1.3 sandten nichts retained); abgezogen
+ * wird, was heute noch in ro_mqtt_retain_liste() steht. Ihre Altwerte stehen
+ * auf bestehenden Anlagen im Broker, bis jemand sie loescht - ein spaeteres
+ * publish ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function ro_mqtt_frueher_behalten()
+{
+    $frueher = array(
+        'ok', 'code', 'laedt', 'fehler', 'fstufe', 'fteil', 'flaeche', 'dauer',
+        'flaecheg', 'dauerg', 'anzahlg', 'filter', 'filter2', 'bhaupt', 'bseite',
+        'bseite2', 'sensor', 'raeder', 'mop', 'dockfilter', 'dockbuerste',
+        'dockbehaelter', 'reiniger', 'matwarn', 'behaelter', 'wassertank', 'wischer',
+        'dock', 'saugst', 'wasser', 'modus', 'event', 'evtyp', 'evmuell', 'audio',
+        'push', 'status', 'fehlertext', 'ereignistext', 'meldung',
+    );
+    return array_values(array_diff($frueher, array_keys(ro_mqtt_retain_liste())));
+}
+
+/**
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat - fuer die
+ * Deinstallation: die heutige Positivliste und die frueheren Eintraege.
+ */
+function ro_mqtt_leer_themen()
+{
+    $t = array();
+    foreach (ro_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(ro_mqtt_retain_liste()) as $k) { $t[$k] = true; }
+    // Die Langform (seit 1.1.10, retained wie ihre Kurzform ausser batterie).
+    foreach (array_keys(ro_mqtt_langform()) as $k) { $t[$k] = true; }
+    ksort($t);
+    return array_keys($t);
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat JEDES Abonnement bestaetigt; was dann nicht
+ * unter 'belegt' steht, ist leer. 'unbekannt': er war nicht zu fragen
+ * (keine Wurzel, keine Verbindung, Anmeldung abgewiesen, Abonnement
+ * abgelehnt, keine Antwort) - das heisst NIE "nichts belegt".
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet sendto() auch fuer ein verworfenes Datagramm Erfolg. Am
+ * Geraet gemessen (Regeln/07, "Ein Absender merkt nichts davon", Nachtraege
+ * vom 19.09.2026): Beschattungswaechter 0.9.19 und KODI-NG 1.2.7 setzten
+ * ihren Merker nach dem Senden, der Eingang verwarf, und der Altwert stand
+ * weiter im Broker. Belegt ist das Abraeumen erst, wenn der Broker selbst
+ * sagt, dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; Bauart awm_mqtt_behalten_liste() aus AWM-Abfuhr 1.4.14
+ * (dort aus Spotpreis-Tibber 0.9.19 und Beschattungswaechter 0.9.21). Die
+ * Filter gehen in Paketen zu hoechstens 50 hinaus (die Deinstallation fragt
+ * bis zu 360 Themen), und 'ok' verlangt fuer JEDES Paket ein SUBACK mit
+ * dessen Paketkennung, so vielen Rueckgabebytes wie Filtern und keinem ab
+ * 0x80. Die Anmeldung nimmt Brokeruser/Brokerpass aus der general.json
+ * (Regeln/07, Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in
+ * einem Protokoll und nie auf einer Kommandozeile.
+ */
+function ro_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = ro_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('saugrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        // CONNACK mit Rueckgabe 0 - alles andere (etwa 5: Anmeldung
+        // abgewiesen) heisst "nicht zu fragen".
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $pakete = array_chunk(array_keys($soll), 50);
+            $kennung = 0;
+            foreach ($pakete as $teil) {
+                $kennung++;
+                $sub = pack('n', $kennung);
+                foreach ($teil as $t) { $sub .= $zk($t) . chr(0); }
+                @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            }
+            $bestaetigt = 0;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Hinter der Paketkennung je Filter ein Rueckgabebyte, in der
+                       Reihenfolge des SUBSCRIBE mit dieser Kennung; ab 0x80 heisst
+                       abgelehnt (etwa durch eine ACL). Danach schickt der Broker
+                       nichts - ein abgelehntes oder unpassendes SUBACK waere sonst
+                       "nichts belegt", und der Merker laege auf einer Antwort, die
+                       keine war (in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
+                       Faelle S3, S4, S7, S9, S11). Es zaehlt nicht, die Rueckfrage
+                       endet "nicht zu fragen". */
+                    $rc = (string) substr($pk[1], 2);
+                    $nr = (strlen($pk[1]) >= 2) ? (int) unpack('n', substr($pk[1], 0, 2))[1] : 0;
+                    if (!isset($pakete[$nr - 1]) || strlen($rc) !== count($pakete[$nr - 1])) { break; }
+                    $abgelehnt = false;
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt++;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    if ($bestaetigt >= count($pakete)) {
+                        $ende = min($ende, microtime(true) + 1.0);
+                    }
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                    }
+                }
+            }
+            if ($bestaetigt >= count($pakete)) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt'|'aus',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus ro_mqtt_frueher_behalten() fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
+ *      Minutenlauf sendet dann VOLL (ro_mqtt_altlast_offen()), damit die
+ *      leere retain-Nutzlast unmittelbar vor dem gueltigen Wert steht;
+ *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
+ *      ohnehin hinausgeht ('unbekannt'), KEIN Merker.
+ * 'aus': MQTT ist ausgeschaltet oder es gibt keine Wurzel - dann wird nichts
+ * gesendet und nichts gefragt.
+ *
+ * Ueber den UDP-Eingang gibt es keinen Merker auf den Sendeerfolg (Regeln/07,
+ * Nachtrag 19.09.2026). Der Merker traegt die Kennung
+ * "leer-bestaetigt <praefix>: <Themenliste>" - ein anderer Inhalt, ein
+ * anderes Praefix, eine andere Liste gilt nicht, ebenso wenig ein Merker,
+ * den eine Vorfassung angelegt haette. Er liegt je Roboter im Datenordner;
+ * purge_installation raeumt ihn bei jedem Upgrade mit ab, dann wird genau
+ * einmal nachgefragt. Bauart awm_mqtt_altlast() aus AWM-Abfuhr 1.4.13.
+ */
+function ro_mqtt_altlast($praefix, $dev = 1)
+{
+    static $cache = array();
+    $praefix = (string) $praefix;
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $cfg = ro_config();
+    $p = ro_paths();
+    if (empty($cfg['mqtt_enabled']) || $p['lbhome'] === '') {
+        return $cache[$praefix] = array('lage' => 'aus', 'themen' => array());
+    }
+    $liste = ro_mqtt_frueher_behalten();
+    $merker = ro_datadir() . '/.mqtt_altlast_geraeumt_' . max(1, (int) $dev);
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = ro_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            ro_log_if_changed('mqtt_merker', 'Der Merker ' . $merker . ' liess sich nicht schreiben - '
+                . 'der Broker wird im naechsten Lauf wieder gefragt.');
+        } else {
+            ro_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
+        }
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    ro_log_if_changed('mqtt_rueckfrage_' . max(1, (int) $dev), 'Der Broker liess sich nicht befragen, ob unter '
+        . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden deshalb '
+        . 'unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Fuer den Minutenlauf: meldet der Broker unter dem Praefix dieses Roboters
+ * noch einen Altwert? Dann geht der Satz VOLL hinaus, auch wenn sich die
+ * Werte nicht geaendert haben - sonst stuende die Loeschung nie vor einem
+ * Wert, und der Altwert bliebe bis zum halbstuendlichen Vollsatz stehen (in
+ * WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10, Fall R10).
+ */
+function ro_mqtt_altlast_offen($dev = 1)
+{
+    $cfg = ro_config();
+    if (empty($cfg['mqtt_enabled'])) { return false; }
+    $a = ro_mqtt_altlast(ro_mqtt_praefix(ro_mqtt_thema_saeubern($cfg['mqtt_topic']), $dev), $dev);
+    return $a['lage'] === 'belegt';
+}
+
+/**
+ * Aus der Deinstallation (bin/cron.php --mqtt-leeren): die zurueckbehaltenen
+ * Themen der Linie leeren - unter dem eingestellten Praefix, Roboter 1 bis 9.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (ro_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Ist der Broker nicht zu fragen, gehen die
+ * Themen der EINGERICHTETEN Roboter in jeder Runde hinaus, und die Ausgabe
+ * sagt, dass nicht nachgelesen wurde - der Eingang verwirft unter Last
+ * Datagramme (Regeln/07), ein blosses Senden ist kein Beleg.
+ *
+ * Bis 1.1.9 raeumte die Deinstallation nichts ab und sagte nur, es koennten
+ * Werte stehen bleiben (in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
+ * Faelle U1 bis U8). Bauart awm_mqtt_leeren() aus AWM-Abfuhr 1.4.13.
+ *
+ * Der Aufrufer schaltet die Selbstheilung der Konfiguration ab; diese
+ * Funktion schreibt weder Protokoll noch Datei. Ausgabe im Format der
+ * Hakenskripte (<OK>/<INFO>/<WARNING>). Rueckgabe 0 geleert oder nicht
+ * nachpruefbar, 1 es steht noch etwas bzw. der Eingang war nicht
+ * erreichbar, 2 nicht moeglich.
+ */
+function ro_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $cfg = ro_config();
+    $basis = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
+    $udpport = ro_mqtt_udpport();
+    if (!$udpport) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $geraete = array_keys(ro_robots());
+    if (!$geraete) { $geraete = array(1); }
+    $alle = array();
+    $eingerichtet = array();
+    for ($k = 1; $k <= 9; $k++) {
+        $pr = ro_mqtt_praefix($basis, $k);
+        foreach (ro_mqtt_leer_themen() as $t) {
+            $alle[] = $pr . '/' . $t;
+            if (in_array($k, $geraete, true)) { $eingerichtet[] = $pr . '/' . $t; }
+        }
+    }
+    $n = count($alle);
+    $f = ro_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $eingerichtet;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $basis
+           . "/ (Roboter 1 bis 9) steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = ro_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $basis . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $udpport . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen. Geleert wurden nur die Themen "
+       . "der eingerichteten Roboter (" . implode(', ', $geraete) . ").\n";
+    return 0;
+}
+
+/**
+ * Den Zustand eines Roboters veroeffentlichen, samt Lebenszeichen.
+ *
+ * PLATZHALTER GEHEN FLUECHTIG HINAUS (ro_mqtt_platzhalter()). Ist der
+ * Roboter nicht erreichbar, traegt ro_state() Platzhalter (code 8, fehler 0,
+ * -1 ...), bei einer gescheiterten Nebenabfrage dort 0 bzw. -1. Bis 1.1.9
+ * gingen sie retained ueber den letzten gemessenen Stand - nach einem
+ * Neustart von Broker oder Gateway las Loxone "Status unbekannt, kein
+ * Fehler" statt des letzten Stands (Bestandsliste Klasse E vom 19.09.2026,
+ * "Platzhalter ueberschreiben den Geraetestand"). Weglassen waere aber
+ * ebenso falsch: an saugrobo_code haengen in der Anlage drei
+ * Schwellwertschalter ("Saugroboter bereit" u. a.), und ohne den
+ * Platzhalter 8 bliebe dort der letzte Status stehen. Jetzt gehen die Werte
+ * wie bisher hinaus, die Platzhalter aber mit publish: Loxone sieht sie
+ * live, der Broker behaelt den letzten Geraetestand (Bauart Robonect 1.1.12,
+ * KODI-NG 1.2.10; in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
+ * Faelle R16, R17, R19, R20).
+ *
+ * Die Altwerte frueher zurueckbehaltener Themen werden abgeraeumt, solange
+ * der Broker sie haelt (ro_mqtt_altlast()): die leere retain-Nutzlast geht
+ * UNMITTELBAR vor dem gueltigen Wert hinaus. Wer das Thema abonniert hat,
+ * bekommt die Loeschung als leere Nachricht und den Wert gleich dahinter.
+ */
+function ro_mqtt_publish($st = null, $dev = 1) {
+    $cfg = ro_config();
+    if (empty($cfg['mqtt_enabled'])) { return 0; }
+    $udp = ro_mqtt_udpport();
     if (!$udp) { return 0; }
+    if ($st === null) { $st = ro_state($dev); }
     $wurzel = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
-    $prefix = $wurzel;
-    if ((int) $dev > 1) { $prefix .= '/' . (int) $dev; }
+    $prefix = ro_mqtt_praefix($wurzel, $dev);
     $m = ro_mqtt_werte($st, $dev);
+    $platz = ro_mqtt_platzhalter($st);
+    $alt = ro_mqtt_altlast($prefix, $dev);
+    $raeumen = array_flip($alt['themen']);
     $zeilen = array();
     foreach ($m as $k => $v) {
-        $zeilen[] = ro_mqtt_zeile(ro_mqtt_retain_feld($k), $prefix . '/' . $k, $v);
+        if (isset($raeumen[$k])) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            $zeilen[] = 'retain ' . $prefix . '/' . $k . ' ';
+        }
+        $zeilen[] = ro_mqtt_zeile(ro_mqtt_retain($k, $v) && !isset($platz[$k]), $prefix . '/' . $k, $v);
     }
     /* Das Lebenszeichen haengt an der WURZEL, nicht am Geraet: es sagt etwas
      * ueber den Cron-Lauf, nicht ueber einen einzelnen Roboter. Und es ist
@@ -1485,6 +2093,57 @@ function ro_mqtt_publish($st = null, $dev = 1) {
     $zeilen[] = 'publish ' . $wurzel . '/status/ts ' . (int) $lauf['ts'];
     $zeilen[] = 'publish ' . $wurzel . '/status/zaehler ' . (int) $lauf['zaehler'];
     return ro_udp_senden($udp, $zeilen);
+}
+
+/**
+ * Welche Themen tragen in diesem Zustand PLATZHALTER statt Geraetewerten?
+ * Sie gehen fluechtig hinaus (ro_mqtt_publish()).
+ *
+ *   Roboter nicht erreichbar (ok != 1)  alle Geraetethemen der Positivliste;
+ *                                       audio und push sind Einstellungen und
+ *                                       bleiben retained
+ *   Statistik nicht als Liste lesbar    flaeche, dauer
+ *   Gesamtwerte nicht lesbar            flaecheg, dauerg, anzahlg
+ *   Verbrauchsteile nicht lesbar        die zwoelf Reststaende und matwarn
+ *   Ereignisliste nicht lesbar          event, evtyp, evmuell
+ *
+ * "Lesbar" heisst: die Antwort ist eine JSON-Liste (ro_ist_liste()), so wie
+ * Valetudo sie fuer diese Faehigkeiten liefert. Ein Zustand ohne die Angabe
+ * (aelterer Zwischenspeicher) gilt als nicht lesbar - lieber einmal
+ * fluechtig als einen Platzhalter zurueckbehalten. Ueber HTTP aendert sich
+ * nichts.
+ */
+function ro_mqtt_platzhalter($st)
+{
+    $aus = array();
+    if (!isset($st['ok']) || (int) $st['ok'] !== 1) {
+        // Die Langform (ro_mqtt_langform()) steht nicht in der Positivliste,
+        // traegt aber dieselben Platzhalter wie ihre Kurzform.
+        foreach (array_merge(array_keys(ro_mqtt_retain_liste()), array_keys(ro_mqtt_langform())) as $k) {
+            if ($k !== 'audio' && $k !== 'push') { $aus[$k] = true; }
+        }
+        return $aus;
+    }
+    $teil = (isset($st['teil_ok']) && is_array($st['teil_ok'])) ? $st['teil_ok'] : array();
+    $gruppen = array(
+        'statistik' => array('flaeche', 'dauer'),
+        'gesamt'    => array('flaecheg', 'dauerg', 'anzahlg'),
+        'verbrauch' => array('filter', 'filter2', 'bhaupt', 'bseite', 'bseite2', 'sensor', 'raeder', 'mop',
+                           'dockfilter', 'dockbuerste', 'dockbehaelter', 'reiniger', 'matwarn'),
+    );
+    foreach ($gruppen as $g => $themen) {
+        if (empty($teil[$g])) {
+            foreach ($themen as $t) { $aus[$t] = true; }
+        }
+    }
+    if (empty($st['evlesbar'])) {
+        foreach (array('event', 'evtyp', 'evmuell') as $t) { $aus[$t] = true; }
+    }
+    // Die Langform traegt denselben Platzhalter wie ihre Kurzform.
+    foreach (ro_mqtt_langform() as $lang => $kurz) {
+        if (isset($aus[$kurz])) { $aus[$lang] = true; }
+    }
+    return $aus;
 }
 
 /**
@@ -1499,12 +2158,7 @@ function ro_mqtt_lebenszeichen()
 {
     $cfg = ro_config();
     if (empty($cfg['mqtt_enabled'])) { return 0; }
-    $p = ro_paths();
-    if ($p['lbhome'] === '') { return 0; }
-    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
-    $udp = 0;
-    if (isset($gen['Mqtt']['Udpinport'])) { $udp = (int) $gen['Mqtt']['Udpinport']; }
-    if (!$udp && isset($gen['mqtt']['udpinport'])) { $udp = (int) $gen['mqtt']['udpinport']; }
+    $udp = ro_mqtt_udpport();
     if (!$udp) { return 0; }
     $wurzel = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
     $lauf = ro_lauf_lesen();
@@ -1522,14 +2176,15 @@ function ro_mqtt_lebenszeichen()
  * vollen Feldliste. Der Sender nahm ALTER und ZAEHLER aus. Die Tabelle nannte
  * deshalb zwei Themen, die es nie gab (gemessen: 48 gelistet, 46 gesendet).
  * Jetzt gibt es EINE Liste, und die Pruefzeile im Reiter Test haelt sie gegen
- * das, was der Sender wirklich bildet.
+ * das, was der Sender wirklich bildet. Die Spalte Retain fragt dieselbe
+ * Positivliste wie der Sender (ro_mqtt_retain()).
  *
  * Rueckgabe: thema => array('bedeutung' => ..., 'retain' => 0|1)
  */
 function ro_mqtt_themen($praefix = null, $dev = 1)
 {
     $wurzel = ro_mqtt_thema_saeubern($praefix === null ? ro_config()['mqtt_topic'] : $praefix);
-    $prefix = $wurzel . ((int) $dev > 1 ? '/' . (int) $dev : '');
+    $prefix = ro_mqtt_praefix($wurzel, $dev);
     $aus = array(
         // Das Lebenszeichen haengt an der WURZEL und ist nie retained.
         $wurzel . '/status/ok'      => array('bedeutung' => ro_t('MQTT.T_OK'), 'retain' => 0),
@@ -1538,14 +2193,23 @@ function ro_mqtt_themen($praefix = null, $dev = 1)
     );
     foreach (ro_felder() as $name => $f) {
         if (ro_mqtt_ausgenommen($name)) { continue; }
-        $aus[$prefix . '/' . strtolower($name)] = array(
+        $k = strtolower($name);
+        $aus[$prefix . '/' . $k] = array(
             'bedeutung' => $f[4] . ($f[3] !== '' ? ' [' . $f[3] . ']' : ''),
-            'retain' => isset($f[5]) ? (int) $f[5] : 1,
+            'retain' => ro_mqtt_retain($k) ? 1 : 0,
         );
     }
     foreach (array('status' => 'MQTT.T_STATUSTEXT', 'fehlertext' => 'MQTT.T_FEHLERTEXT',
                    'ereignistext' => 'MQTT.T_EREIGNISTEXT', 'meldung' => 'MQTT.T_MELDUNG') as $k => $s) {
-        $aus[$prefix . '/' . $k] = array('bedeutung' => ro_t($s), 'retain' => 1);
+        $aus[$prefix . '/' . $k] = array('bedeutung' => ro_t($s), 'retain' => ro_mqtt_retain($k) ? 1 : 0);
+    }
+    $felder = ro_felder();
+    foreach (ro_mqtt_langform() as $lang => $kurz) {
+        $f = $felder[strtoupper($kurz)];
+        $aus[$prefix . '/' . $lang] = array(
+            'bedeutung' => $f[4] . ($f[3] !== '' ? ' [' . $f[3] . ']' : '') . ' = ' . $prefix . '/' . $kurz,
+            'retain' => ro_mqtt_retain($lang) ? 1 : 0,
+        );
     }
     return $aus;
 }
@@ -1608,6 +2272,10 @@ function ro_mqtt_werte($st, $dev = 1)
     $m['fehlertext'] = $st['fehlertext'];
     $m['ereignistext'] = $st['evtext'];
     $m['meldung'] = ro_meldung_lesen($dev);
+    // Die Langform fuer bestehende Loxone-Vorlagen (ro_mqtt_langform()).
+    foreach (ro_mqtt_langform() as $lang => $kurz) {
+        if (array_key_exists($kurz, $m)) { $m[$lang] = $m[$kurz]; }
+    }
     return $m;
 }
 
@@ -1820,16 +2488,20 @@ function ro_t($schluessel)
     static $texte = null;
     if ($texte === null) {
         // Installiert liegen die Dateien unter
-        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
-        // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
+        // <Wurzel>/templates/plugins/<ordner>/lang/ - Wurzel und Ordner
+        // kommen aus ro_paths(), EINER Stelle fuer die Wurzelregel.
+        //
+        // Bis 1.1.9 stand hier eine eigene Suche mit dem fest verdrahteten
+        // Heimatverzeichnis des Benutzers loxberry als Rueckfall, und ohne
+        // Wurzel wurde der Pfad ab der Laufwerkswurzel gebildet - VOR den
+        // eigenen Sprachdateien. Was dort lag, lieferte die Texte (in WSL
+        // gemessen, Pruefung-Saugroboter-Valetudo-1.1.10, Faelle C1 und C4).
+        $wo = ro_paths();
+        $pfad = '';
+        if ($wo['lbhome'] !== '') {
+            $pfad = $wo['lbhome'] . '/templates/plugins/' . $wo['plugin'] . '/lang';
         }
-        $pfad = $home . '/templates/plugins/' . ro_plugin_ordner() . '/lang';
-        if (!is_dir($pfad)) {
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
@@ -1879,11 +2551,16 @@ function ro_check($feld) { return '\i;' . $feld . '=\i\v'; }
  *
  *   name => array(analog, min, max, einheit, beschreibung, retain, kachelname)
  *
- * [5] RETAIN - Hausstandard seit 03.09.2026: Zustaende retained, Messwerte mit
- *     Zeitbezug nicht. Nicht retained sind deshalb BATT (ein alter Ladestand
- *     saehe nach einem Ausfall aus wie ein frischer) sowie ANN und PTEST (das
- *     sind Zeitfenster von 10 bzw. 5 Minuten; retained stuende das Fenster fuer
- *     immer offen). ALTER und ZAEHLER gehen ueber MQTT ohnehin nicht hinaus.
+ * [5] RETAIN - die Positivliste des Senders (ro_mqtt_retain_liste()): NUR der
+ *     Wert 1 heisst zurueckbehalten, alles andere und ein fehlender Eintrag
+ *     fluechtig. Hausstandard seit 03.09.2026: Zustaende retained, Messwerte
+ *     mit Zeitbezug nicht. Nicht retained sind deshalb BATT (ein alter
+ *     Ladestand saehe nach einem Ausfall aus wie ein frischer) sowie ANN und
+ *     PTEST (das sind Zeitfenster von 10 bzw. 5 Minuten; retained stuende das
+ *     Fenster fuer immer offen). Seit 1.1.10 auch OK nicht: "Roboter
+ *     erreichbar" ist das Ergebnis der EIGENEN Abfrage, eine Aussage des
+ *     Plugins ueber sich (Regeln/07, Entscheidung vom 19.09.2026). ALTER und
+ *     ZAEHLER gehen ueber MQTT ohnehin nicht hinaus.
  *
  * [6] KACHELNAME - der Comment der Importvorlage wird in Loxone Config zum
  *     ANZEIGENAMEN des Bausteins, nicht zur Dokumentation. Bis 1.1.3 wanderte
@@ -1893,7 +2570,7 @@ function ro_check($feld) { return '\i;' . $feld . '=\i\v'; }
  */
 function ro_felder() {
     return array(
-        'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 1, 'Erreichbar'),
+        'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 0, 'Erreichbar'),
         'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 8 unbekannt, 9 Fehler', 1, 'Status'),
         'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent', 0, 'Batterie'),
         'LAEDT'    => array(0, 0, 1,     '',      '1 = lädt gerade', 1, 'Lädt'),

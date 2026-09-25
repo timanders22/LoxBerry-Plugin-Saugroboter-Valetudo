@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.9 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,57 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.10
+
+- **`ok` und die drei Meldetexte gehen nicht mehr retained hinaus.** `ok`
+  („Roboter erreichbar") ist das Ergebnis der eigenen Abfrage, also eine
+  Aussage des Plugins über sich selbst; zurückbehalten stand es nach einem
+  Neustart von Broker oder Gateway auch dann auf 1, wenn der Minutenlauf
+  längst nicht mehr lief. `fehlertext`, `ereignistext` und `meldung` sind
+  meistens leer, und ein leerer Wert ersetzt einen zurückbehaltenen nicht:
+  „Rad blockiert" stand nach dem Beheben weiter im Broker. Zurückbehalten
+  gehen jetzt nur noch die Themen, die ausdrücklich in der Liste stehen
+  (36 je Roboter); ein neues Thema geht flüchtig hinaus, bis jemand es
+  einträgt. Bis 1.1.9 war es umgekehrt, 40 je Roboter.
+- **Die Altwerte werden abgeräumt, und erst der Broker bestätigt es.** Der
+  Minutenlauf fragt den Broker (mit den Zugangsdaten aus der LoxBerry-
+  Einstellung), ob unter dem Präfix noch zurückbehaltene Werte früherer
+  Fassungen stehen, löscht sie unmittelbar vor dem gültigen Wert und merkt
+  sich das erst, wenn der Broker nichts mehr meldet. Ist der Broker nicht zu
+  fragen, wird in jedem Lauf vor dem Senden gelöscht, ohne Merker.
+- **Platzhalter gehen flüchtig hinaus.** Ist der Roboter nicht erreichbar,
+  kommen in Loxone wie bisher Status 8 „unbekannt", Fehler 0 und -1 bei den
+  Verbrauchsteilen an - Schwellwertschalter an `saugrobo/code` sehen den
+  Ausfall weiter -, aber der Broker behält den letzten gemessenen Stand.
+  Bis 1.1.9 gingen die Platzhalter retained über ihn hinweg. Dasselbe gilt,
+  wenn nur Statistik, Gesamtwerte, Verbrauchsteile oder die Ereignisliste
+  nicht zu lesen sind: dann gehen nur deren Themen flüchtig.
+- **Sechs Themen zusätzlich unter der Langform** (`batterie`,
+  `buerste_haupt`, `buerste_seite`, `dauer_gesamt`, `flaeche_gesamt`,
+  `material_warn`), mit gleichem Wert und gleicher Retain-Regel wie `batt`,
+  `bhaupt`, `bseite`, `dauerg`, `flaecheg`, `matwarn`. Bestehende
+  Loxone-Vorlagen haben diese Namen abonniert; gesendet wurde bisher nur die
+  Kurzform, dort kam also nichts an.
+- **Die Deinstallation leert die zurückbehaltenen Themen** (Roboter 1 bis 9)
+  und liest beim Broker nach. Bis 1.1.9 blieben sie stehen.
+- **Aus einem ausgepackten Archiv wirkt nichts mehr auf die Anlage.** Der
+  Minutenlauf, die Bibliothek und die Oberfläche nahmen bis 1.1.9 jede
+  gefundene LoxBerry-Wurzel als die eigene, auch ohne
+  `config/system/general.json`, und ohne Wurzel Pfade ab der
+  Laufwerkswurzel (Sprachdateien, Bibliothek, Konfiguration). Die
+  Installationsskripte warnen jetzt ohne Wurzel, statt zu handeln.
+- **Die Sicherung wird nach Inhalt zurückgespielt.** Eine Zweitschrift ohne
+  Aktionstoken (kaputt oder leer) wird nicht mehr kopiert und nicht mehr als
+  „wiederhergestellt" gemeldet.
+- **Das Update einer Zweitinstallation (`saugrobo_01`) räumt den
+  Zwischenspeicher der ersten nicht mehr ab.**
+
+Grenzen: nichts davon ist am Gerät gemessen. Nach einem Neustart von Broker
+oder Gateway fehlen die flüchtigen Themen bis zum nächsten vollen Satz
+(spätestens 30 Minuten). Ist der Broker nicht zu fragen, wiederholt sich die
+Rückfrage in jedem Minutenlauf. Die Deinstallation leert nur unter dem
+eingestellten Präfix; Themen unter einem früher eingestellten bleiben stehen.
 
 ## Neu in 1.1.9
 
@@ -639,6 +690,23 @@ Themenpräfix (Vorgabe `saugrobo`), ein zweiter Roboter unter `saugrobo/2/…`.
 Neben den 41 Feldern gehen vier Klartexte hinaus (`status`, `fehlertext`,
 `ereignistext`, `meldung`) und das Lebenszeichen unter `saugrobo/status/`.
 
+Sechs Werte gehen seit 1.1.10 unter **zwei Namen** hinaus, mit gleichem Wert
+und gleicher Retain-Regel: `batt` = `batterie`, `bhaupt` = `buerste_haupt`,
+`bseite` = `buerste_seite`, `dauerg` = `dauer_gesamt`, `flaecheg` =
+`flaeche_gesamt`, `matwarn` = `material_warn`. Die Langform gilt für
+bestehende Loxone-Vorlagen, die diese Namen abonniert haben; neue Eingänge
+nehmen die Kurzform. Die Deinstallation leert beide.
+
+Zurückbehalten (retained) gehen nur die Aussagen des Geräts: Zustand,
+Fehlercode, Verbrauchsteile, Gesamtwerte, Anbauteile, Station, Stufen,
+Ereignisse, dazu die Freigaben `audio`/`push` und `status`. Flüchtig gehen
+`ok` (Ergebnis der eigenen Abfrage), `batt`, die Zeitfenster `ann`/`ptest`,
+die Texte `fehlertext`, `ereignistext`, `meldung` und das Lebenszeichen. Ist
+der Roboter nicht erreichbar (oder eine Teilabfrage nicht lesbar), gehen die
+Platzhalter flüchtig hinaus. Die Themenliste im
+Reiter MQTT nennt je Thema, ob es retained ist. Die Deinstallation leert die
+zurückbehaltenen Themen und liest beim Broker nach.
+
 **Unter MQTT-Gateway V1 muss das Abo von Hand eingetragen werden**
 (System → MQTT Gateway → Subscriptions, Wert `saugrobo/#`). Ohne diesen
 Eintrag kommt am Miniserver nichts an. Unter V2 erscheint die Themengruppe von
@@ -656,7 +724,7 @@ gehören Benutzer und Kennwort in den Reiter Einstellungen.
 
 Es sind **keine persönlichen Daten** im Plugin enthalten. Adressen und
 Einstellungen liegen ausschließlich lokal
-(`config/plugins/saugrobo/robo.json`, Rechte `640`).
+(`config/plugins/saugrobo/robo.json`, Rechte `600`).
 
 Diese Datei trägt allerdings **das Aktionstoken** und — falls eingerichtet —
 die Anmeldung an Valetudo. Dasselbe gilt für die Sicherungsdatei, die der Knopf
