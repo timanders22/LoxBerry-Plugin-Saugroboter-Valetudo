@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -479,6 +479,34 @@ Drei Änderungen, damit das wirklich wirkt:
 HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
 nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
 
+## Was 1.1.11 behebt
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Saugroboter-Valetudo_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 8, 16, 19, 26 und 28).
+Gemessen mit Attrappen für Valetudo, Broker und Alexa-NG unter PHP 7.4, 8.3, 8.4 und 8.5; nicht am Roboter.
+
+* **Ausfall:** Antwortet der Roboter nicht, bleiben die letzten Messwerte stehen
+  (`OK=0`, `CODE=8`); bisher fielen Akku, Filter usw. auf 0 bzw. −1. Logik auf
+  diese Werte bitte mit `OK` verknüpfen. Eine einzelne langsame Nebenabfrage meldet
+  den Roboter nicht mehr als „nicht erreichbar“; die Meldung „fertig“ geht über eine
+  kurze Funkpause nicht mehr verloren.
+* **Befehlsbremse:** Gleiche Sollwerte (Saugkraft, Wasser, Modus, Ruhezeit) gehen
+  innerhalb von 60 s nur einmal hinaus (`UNVERAENDERT=1`); Start, Stopp, Pause,
+  Heim und Raumaufträge immer.
+* **Neue Ausgabeart „Alexa-NG“** für Ansagen (ab Werk nicht gewählt) mit Knopf
+  „Testansage“. Eine Ansage gilt nur bei Erfolg als gesprochen; im Protokoll steht
+  nur ihre Länge.
+* **Speichern:** Bei einer Beanstandung wird nichts gespeichert, die Eingaben kommen
+  markiert zurück, nichts wird still verbogen; F5 erzeugt kein zweites Token.
+  „Einstellungen sichern“ warnt; Sicherungen werden nach Typ geprüft, ein leeres
+  Token behält das geltende.
+* **Neuinstallation:** Eine alte Zweitschrift wird nach `.alt` gelegt statt
+  eingespielt; beim Update gewinnt die Sicherung dieses Laufs.
+* **MQTT:** nur Änderungen, voller Satz alle 30 Minuten, 5 ms Abstand; Abräumen nach
+  Präfixwechsel, „MQTT aus“ und ausgetragenem Roboter; die Abodatei wird mitgeliefert
+  und nachgeführt.
+* PHP 8.5: keine Verfallsmeldung mehr; Reiter Test mit Pflichtzeilen und vollen
+  Adressen; englische Oberfläche vollständig übersetzt.
+
 ## Was 1.0.5 behebt
 
 Nur eine Richtigstellung, kein Code. In 1.0.4 stand, der 404 beim Abruf der
@@ -643,7 +671,19 @@ liefern in beiden Sprachen zeichengleiche Ausgabe ohne eine Meldung.
 - **Meldungen**: Reinigung fertig (mit Fläche und Dauer), Störung, Wartung
   fällig, Valetudo-Ereignis — als Ansage (TTS) und/oder Push über Loxone
 - **Lebenszeichen**: `ALTER` und `ZAEHLER`, über MQTT `status/ok`, `status/ts`,
-  `status/zaehler`
+  `status/zaehler`. `ALTER` über 180 s heißt: Meldungen, `ANN` und die
+  MQTT-Werte kommen nicht mehr; `OK` und die übrigen Werte fragt der Endpunkt
+  selbst beim Roboter ab
+- **Antwortet der Roboter nicht**, steht `OK=0` und `CODE=8`; alle übrigen
+  Werte bleiben auf dem letzten Messwert, am Endpunkt wie über MQTT. In Loxone
+  gilt ein Wert deshalb nur zusammen mit `OK`
+- **Gleiche Sollwerte** (`fan`, `wasser`, `modus`, `ruhezeit`) gehen
+  innerhalb von 60 s nur einmal an Valetudo (`UNVERAENDERT=1`); Aufträge wie
+  `start`, `stop`, `home` und Raumreinigungen wirken immer
+- **Ansage** über Music Server, AudioServer4Home, eine eigene URL-Vorlage oder
+  das eigene Plugin **Alexa-NG** (ab Werk nicht gewählt,
+  https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG); gesprochen heißt:
+  die Gegenstelle hat sie mit HTTP 2xx angenommen
 - **Selbstprüfung** im Reiter Test, **Sicherung** der Einstellungen über zwei
   Knöpfe, **Anmeldung** an Valetudo (HTTP Basic Auth)
 - Bis zu **2 Roboter**, MQTT, JSON, Protokoll mit Rotation
@@ -662,7 +702,7 @@ HTTP 403.
 | `/plugins/saugrobo/robo.php?dev=2` | derselbe Abruf für den zweiten Roboter |
 | `/plugins/saugrobo/robo.php?json=1` | kompletter Zustand als JSON, inkl. Raumliste |
 | `/plugins/saugrobo/robo.php?debug=1` | Klartext inkl. Fähigkeiten und Raumliste |
-| `/plugins/saugrobo/robo.php?refresh=1` | Zwischenspeicher übergehen und wirklich messen |
+| `/plugins/saugrobo/robo.php?refresh=1&token=…` | Zwischenspeicher übergehen und wirklich messen (nur mit Token; ohne gilt der Zwischenspeicher) |
 | `/plugins/saugrobo/robo.php?selftest=1&token=…` | prüft das Token, löst nichts aus |
 | `/plugins/saugrobo/robo.php?ptest=1&token=…` | setzt `PTEST=1` für fünf Minuten |
 | `/plugins/saugrobo/robo.php?cmd=start&token=…` | Reinigung starten (auch `stop`, `pause`, `home`, `locate`) |
@@ -683,6 +723,11 @@ Die Antwortzeile trägt 41 Felder. Die vollständige Liste mit Einheit, Grenzen
 und Befehlserkennung steht im Reiter „Einbindung in Loxone“ — und lässt sich
 dort mit einem Knopf als fertige Datei für Loxone Config erzeugen.
 
+Derselbe Wert für `fan`, `wasser`, `modus` oder `ruhezeit` innerhalb von 60 s
+geht nicht noch einmal an Valetudo: der Endpunkt antwortet
+`CMD;OK=1;BEFEHL=…;UNVERAENDERT=1;SEIT_S=…`. Ein anderer Wert geht sofort
+hinaus.
+
 ## MQTT
 
 Optional, im eigenen Reiter. Veröffentlicht wird unter dem eingestellten
@@ -702,16 +747,29 @@ Fehlercode, Verbrauchsteile, Gesamtwerte, Anbauteile, Station, Stufen,
 Ereignisse, dazu die Freigaben `audio`/`push` und `status`. Flüchtig gehen
 `ok` (Ergebnis der eigenen Abfrage), `batt`, die Zeitfenster `ann`/`ptest`,
 die Texte `fehlertext`, `ereignistext`, `meldung` und das Lebenszeichen. Ist
-der Roboter nicht erreichbar (oder eine Teilabfrage nicht lesbar), gehen die
-Platzhalter flüchtig hinaus. Die Themenliste im
-Reiter MQTT nennt je Thema, ob es retained ist. Die Deinstallation leert die
-zurückbehaltenen Themen und liest beim Broker nach.
+der Roboter nicht erreichbar, gehen nur `ok 0`, `code 8` (flüchtig), die
+Werte, die das Plugin selbst bildet (`ann`, `audio`, `push`, `ptest`,
+`meldung`), und das Lebenszeichen hinaus; die Gerätewerte bleiben im Broker
+auf dem letzten gemessenen Stand. Ist nur eine Teilabfrage nicht lesbar, geht
+ihre Gruppe nicht hinaus. Die Themenliste im
+Reiter MQTT nennt je Thema, ob es retained ist.
 
-**Unter MQTT-Gateway V1 muss das Abo von Hand eingetragen werden**
-(System → MQTT Gateway → Subscriptions, Wert `saugrobo/#`). Ohne diesen
-Eintrag kommt am Miniserver nichts an. Unter V2 erscheint die Themengruppe von
-selbst. Das Plugin misst `Mqtt.Gatewayversion` und zeigt nur den Satz, der zur
-installierten Fassung passt.
+Gesendet werden nur geänderte Werte, alle 30 Minuten der volle Satz; `ok` und
+das Lebenszeichen gehen in jedem Lauf hinaus, mit 5 ms Abstand zwischen zwei
+Datagrammen. Nach jedem Speichern der Einstellungen geht der volle Satz hinaus.
+Nach einem Präfixwechsel, dem Ausschalten von MQTT oder dem Austragen eines
+Roboters räumt der Minutenlauf die zurückbehaltenen Themen unter dem
+bisherigen Präfix im Broker ab und liest dort nach. Die Deinstallation leert
+die zurückbehaltenen Themen — auch die noch vorgemerkten — und liest beim
+Broker nach.
+
+**Unter MQTT-Gateway V1 braucht der Miniserver das Abo** `<präfix>/#`. Das
+Plugin trägt es selbst in `config/plugins/saugrobo/mqtt_subscriptions.cfg`
+ein und führt es nach einem Präfixwechsel nach; das Gateway liest diese
+Datei. Fehlt dort etwas, hilft der Eintrag von Hand (System → MQTT Gateway →
+Subscriptions). Unter V2 erscheint die Themengruppe von selbst. Das Plugin
+misst `Mqtt.Gatewayversion` und zeigt nur den Satz, der zur installierten
+Fassung passt.
 
 ## Voraussetzung
 
@@ -731,7 +789,13 @@ die Anmeldung an Valetudo. Dasselbe gilt für die Sicherungsdatei, die der Knopf
 im Reiter Einstellungen erzeugt: ohne das Token stünden nach dem Zurückspielen
 alle Felder richtig, und das Plugin käme trotzdem nicht an die Anlage. Beide
 Dateien gehören behandelt wie ein Passwort — nicht in ein Forum hängen und
-nicht an einen Fehlerbericht heften.
+nicht an einen Fehlerbericht heften. Das Sprechtoken für Alexa-NG steht nie in
+der Sicherung.
+
+Eine **Neuinstallation** spielt keine Einstellungen einer früheren Installation
+ein: eine liegengebliebene Zweitschrift (`config/plugins/saugrobo.backup.json`)
+wird als `.alt` beiseitegelegt, und die Deinstallation räumt sie ab. Nur eine
+Aktualisierung übernimmt die Einstellungen.
 
 ## Lizenz
 

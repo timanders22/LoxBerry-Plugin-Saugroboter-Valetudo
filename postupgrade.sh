@@ -66,6 +66,25 @@ ro_hat_inhalt() {
         exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
 }
 
+# I1 (Durchgang 01.10.2026, Entscheidung 1): die Marke von preupgrade.sh
+# (data/plugins/<ordner>.upgrade_laeuft) raeumt dieses Skript ab - per trap,
+# also auch, wenn es vorzeitig endet. Der Rueckgabewert bleibt der des
+# Skripts. Bliebe sie liegen, hielte sich eine spaetere Neuinstallation fuer
+# eine Aktualisierung.
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER'."; exit 1 ;;
+esac
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+ro_marke_weg() {
+    ro_rc=$?
+    rm -f "$MARKE" 2>/dev/null
+    if [ -e "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - bitte von Hand loeschen, sonst haelt sich eine spaetere Neuinstallation fuer eine Aktualisierung."
+    fi
+    exit $ro_rc
+}
+trap ro_marke_weg EXIT
+
 TMPDIR="$ARGV6"
 if [ -z "$TMPDIR" ] || [ ! -d "$TMPDIR" ]; then
     TMPDIR="$PWD/$ARGV1"
@@ -87,15 +106,35 @@ mkdir -p "$CDIR" "$LDIR" "$DDIR" 2>/dev/null
 # aber, was darin war. Bis 1.1.9 hiess es "uebernommen" auch fuer eine
 # Ablage ohne jeden Inhalt (in WSL gemessen,
 # Pruefung-Saugroboter-Valetudo-1.1.10, Fall N4).
+#
+# I3 (Durchgang 01.10.2026): traegt die Sicherung DIESES Laufs Inhalt, gewinnt
+# sie - auch gegen eine Datei, die ein Minutentakt in der Luecke schon aus der
+# Zweitschrift geheilt hat. Sie ist der juengste Stand. Danach wird die
+# Zweitschrift angeglichen. Bis 1.1.11 stellte postinstall.sh vorher die
+# Zweitschrift her, und eine abweichende (aeltere) Zweitschrift gewann (in WSL
+# gemessen, Installer-Pruefer Fall C3: TOKNEU -> TOKSTALE).
 if [ -f "$TMPDIR/robo.json" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
-        if ro_hat_inhalt "$CF"; then
-            echo "<OK> Konfiguration aus dem Upgrade uebernommen."
-        else
-            echo "<INFO> Die Konfiguration aus dem Upgrade trug keine eingerichteten Einstellungen"
-            echo "<INFO> (kein lesbares Objekt mit Aktionstoken); sie wurde unveraendert zurueckgelegt."
+    if ro_hat_inhalt "$TMPDIR/robo.json"; then
+        if ! cmp -s "$TMPDIR/robo.json" "$CF"; then
+            cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
         fi
+        if cmp -s "$TMPDIR/robo.json" "$CF"; then
+            echo "<OK> Konfiguration aus dem Upgrade uebernommen."
+            if ! cmp -s "$CF" "$BK"; then
+                # umask 077: eine neu entstehende Zweitschrift hat 0600 VOR dem Inhalt.
+                if (umask 077; cp "$CF" "$BK") 2>/dev/null && chmod 600 "$BK" 2>/dev/null && cmp -s "$CF" "$BK"; then
+                    echo "<OK> Zweitschrift $PFOLDER.backup.json angeglichen."
+                else
+                    echo "<WARNING> Die Zweitschrift $BK liess sich nicht angleichen."
+                fi
+            fi
+        else
+            echo "<WARNING> Die Konfiguration aus dem Upgrade liess sich nicht nach $CF schreiben."
+        fi
+    elif [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
+        cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
+        echo "<INFO> Die Konfiguration aus dem Upgrade trug keine eingerichteten Einstellungen"
+        echo "<INFO> (kein lesbares Objekt mit Aktionstoken); sie wurde unveraendert zurueckgelegt."
     fi
 fi
 if [ -f "$TMPDIR/robo.log" ] && [ ! -s "$LDIR/robo.log" ]; then
@@ -113,6 +152,11 @@ if [ -d "$TMPDIR/data" ]; then
     done
     if [ "$ANZ" -gt 0 ]; then
         echo "<OK> Zeitpunkt der letzten Reinigung uebernommen ($ANZ Datei(en))."
+    fi
+    # M3: die Vormerkungen zum Abraeumen zurueckbehaltener MQTT-Themen.
+    if [ -f "$TMPDIR/data/mqtt_raeumen.json" ]; then
+        cp -p "$TMPDIR/data/mqtt_raeumen.json" "$DDIR/" 2>/dev/null \
+            && echo "<OK> Vorgemerkte MQTT-Altwerte zum Abraeumen uebernommen."
     fi
 fi
 
@@ -181,10 +225,11 @@ rm -f "/tmp/$PFOLDER"/state_*.json "/tmp/$PFOLDER"/caps_*.json \
 # Der Hinweis gehoert zu DIESER Fassung, nicht zu einer von vor drei
 # Schritten. Bis 1.1.3 stand hier unveraendert der Text von 1.1.0 und
 # forderte bei jedem Update zum Neuerzeugen der Vorlage auf.
-echo "<INFO> Neu in 1.1.10: ok, fehlertext, ereignistext und meldung gehen nicht mehr"
-echo "<INFO> retained ueber MQTT hinaus. Ihre zurueckbehaltenen Werte aus frueheren"
-echo "<INFO> Fassungen raeumt der Minutenlauf aus dem Broker, bis der Broker es"
-echo "<INFO> bestaetigt. Ist der Roboter nicht erreichbar, gehen die Platzhalter"
-echo "<INFO> (Status 8, -1 ...) wie bisher, aber fluechtig hinaus; im Broker bleibt"
-echo "<INFO> der letzte gemessene Stand."
+# Sachkorrektur (Durchgang 01.10.2026): der Satz zu den Platzhaltern stimmt
+# seit Entscheidung Nr. 28 nicht mehr.
+echo "<INFO> MQTT: ok, fehlertext, ereignistext und meldung gehen nicht retained hinaus;"
+echo "<INFO> ihre zurueckbehaltenen Werte aus Fassungen vor 1.1.10 raeumt der Minutenlauf"
+echo "<INFO> aus dem Broker, bis der Broker es bestaetigt. Ist der Roboter nicht erreichbar,"
+echo "<INFO> gehen nur ok 0 und code 8 (fluechtig) hinaus; die uebrigen Werte bleiben auf"
+echo "<INFO> dem letzten gemessenen Stand, ueber MQTT wie am Endpunkt."
 exit 0

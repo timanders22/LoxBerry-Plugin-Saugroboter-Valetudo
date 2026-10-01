@@ -17,7 +17,14 @@
  *   Ohne passendes Token aus dem Reiter "Einbindung in Loxone" antwortet
  *   ?cmd= mit HTTP 403.
  *
- * Weitere Aufrufe: ?debug=1  ?json=1  ?refresh=1
+ * Gleichwert-Unterdrueckung (X-7, Durchgang 01.10.2026, Entscheidungen Nr. 19
+ * und 28): derselbe Wert fuer fan, wasser, modus oder ruhezeit innerhalb von
+ * 60 s geht nicht noch einmal an Valetudo - HTTP 200,
+ * CMD;OK=1;BEFEHL=..;UNVERAENDERT=1;SEIT_S=n. Auftraege (start, stop, pause,
+ * home, segments, zone) und Ereignisse werden nie gebremst. Laesst sich der
+ * Merker nicht fuehren: HTTP 503, GRUND=BREMSE_MERKER.
+ *
+ * Weitere Aufrufe: ?debug=1  ?json=1  ?refresh=1&token=T
  *   ?ptest=1&token=T     Test-Pushnachricht anstossen
  *   ?selftest=1&token=T  Token pruefen, ohne etwas auszuloesen
  *
@@ -75,8 +82,10 @@ $dev = isset($_GET['dev']) ? max(1, min(9, (int) $_GET['dev'])) : 1;
  * refresh = 0 Abrufe beim Roboter, drei mit refresh = 15 Abrufe, und jede
  * Anfrage bindet dabei einen PHP-Arbeiter des LoxBerry.
  *
- * Abfragen bleiben offen, das Uebergehen des Schutzes nicht. Der Knopf im
- * Reiter Test hat den Token ohnehin zur Hand.
+ * Abfragen bleiben offen, das Uebergehen des Schutzes nicht. Der Knopf
+ * "Klartext-Auskunft" im Reiter Test traegt das Token seit dem Durchgang vom
+ * 01.10.2026 (U13) - bis 1.1.11 rief er ?debug=1&refresh=1 OHNE Token, und
+ * refresh wirkte nicht (Oberflaechen-Pruefer Fall 16).
  */
 function ro_refresh_erlaubt() {
     return isset($_GET['refresh']) && ro_token_ok();
@@ -171,7 +180,32 @@ if (isset($_GET['cmd'])) {
         echo 'CMD;OK=0;BEFEHL=' . $cmd . ";ERR=PARAMETER\n";
         exit;
     }
+    /* C4 (X-7): Gleichwert-Unterdrueckung fuer Sollwerte, siehe Kopf und
+     * robo_lib.php. Erst hier, hinter Token, Befehl und Parameterpruefung:
+     * ein abgewiesener Aufruf merkt nichts. */
+    $gw_wert = ro_gleichwert_wert($cmd, $p);
+    $gw_schl = $dev . '|' . $cmd;
+    $gw_marke = '';
+    if ($gw_wert !== null) {
+        list($gw_urteil, $gw_seit, $gw_marke) = ro_gleichwert_pruefen($gw_schl, $gw_wert);
+        if ($gw_urteil === 'MERKER') {
+            ro_log_if_changed('gleichwert', 'Endpunkt: der Merker der Gleichwert-Unterdrueckung ('
+                . ro_gleichwert_datei() . ') laesst sich nicht oeffnen, sperren oder schreiben - '
+                . 'Sollwert-Befehle werden mit 503 abgewiesen, bis das behoben ist.');
+            http_response_code(503);
+            echo 'CMD;OK=0;BEFEHL=' . $cmd . ";GRUND=BREMSE_MERKER\n";
+            exit;
+        }
+        if ($gw_urteil === 'UNVERAENDERT') {
+            echo 'CMD;OK=1;BEFEHL=' . $cmd . ';UNVERAENDERT=1;SEIT_S=' . (int) $gw_seit . "\n";
+            exit;
+        }
+    }
     list($ok, $info) = ro_command($cmd, $dev, $p);
+    if ($gw_marke !== '' && (int) $ok !== 1) {
+        // Nicht angekommen: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
+        ro_gleichwert_vergessen($gw_schl, $gw_marke);
+    }
     /* $info kommt aus ro_command() und ist entweder "HTTP <n>" oder einer
      * von wenigen festen Saetzen. Trotzdem wird es gesaeubert: eine
      * Antwortzeile, die ein Semikolon oder einen Zeilenumbruch aus einer

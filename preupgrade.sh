@@ -63,6 +63,29 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# ---------- I1: Marke "Aktualisierung laeuft" - als Erstes ----------
+# Entscheidung 1 (29.09.2026): preinstall.sh und postinstall.sh erkennen eine
+# Aktualisierung allein an dieser Marke, ohne Altersvergleich; postupgrade.sh
+# raeumt sie ab. Sie liegt NEBEN dem Datenordner, weil purge_installation den
+# Ordner selbst loescht. Laesst sie sich nicht anlegen, hielte preinstall.sh
+# das Update fuer eine Neuinstallation und legte die Zweitschrift beiseite -
+# deshalb Abbruch mit rc 2, VOR purge_installation (Bauform Abfahrtsassistent
+# 1.6.19).
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<FAIL> Unzulaessiger Ordnername '$PFOLDER'."; exit 2 ;;
+esac
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# In geschweiften Klammern: sonst schreibt die Schale ihre eigene Meldung
+# ("cannot create ...") am 2>/dev/null vorbei ins Protokoll.
+{ date +%s > "$MARKE"; } 2>/dev/null
+if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<FAIL> Ohne sie hielte die Installation dieses Update fuer eine Neuinstallation und legte"
+    echo "<FAIL> die Einstellungen beiseite. Die Aktualisierung wird abgebrochen; die bisherige"
+    echo "<FAIL> Fassung bleibt unveraendert installiert."
+    exit 2
+fi
+
 # Erste Wahl: das sechste Argument. Rueckfall: der alte Weg, damit ein
 # aelterer Installer nichts verliert.
 TMPDIR="$ARGV6"
@@ -86,5 +109,9 @@ cp -p "$BASE/log/plugins/$PFOLDER/robo.log"     "$TMPDIR/robo.log"  2>/dev/null
 # danach wurde anders bewertet als vorher.
 mkdir -p "$TMPDIR/data" 2>/dev/null
 cp -p "$BASE/data/plugins/$PFOLDER"/last_*.json "$TMPDIR/data/" 2>/dev/null
+# M3 (Durchgang 01.10.2026): die Vormerkungen zum Abraeumen zurueckbehaltener
+# MQTT-Themen (altes Praefix, ausgetragener Roboter, MQTT aus) - sonst stuenden
+# sie nach dem Update weiter im Broker, und die Deinstallation kennte sie nicht.
+cp -p "$BASE/data/plugins/$PFOLDER/mqtt_raeumen.json" "$TMPDIR/data/" 2>/dev/null
 
 exit 0

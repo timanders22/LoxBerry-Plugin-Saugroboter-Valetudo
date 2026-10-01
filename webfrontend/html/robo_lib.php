@@ -341,7 +341,15 @@ function ro_config($erzeugen = true) {
         /* Die beschaedigte Datei wird BEISEITEGELEGT, nicht ueberschrieben:
          * sie ist das Einzige, woraus sich hinterher noch etwas holen laesst. */
         $kaputt = $p['config'] . '.kaputt';
-        if (!is_file($kaputt)) { @copy($p['config'], $kaputt); }
+        /* I2 (Durchgang 01.10.2026): mit 0600 und den Rechten VOR dem Inhalt
+         * (ro_write_atomic), nicht mit copy(). copy() legte die Datei mit der
+         * umask an - in WSL gemessen 644 (Installer-Pruefer, Fall R1), und
+         * darin stehen Aktionstoken und Valetudo-Anmeldung. Beiseitegelegt
+         * wird der ungekuerzte Rohinhalt, nicht der getrimmte. */
+        if (!is_file($kaputt)) {
+            $ro_kroh = @file_get_contents($p['config']);
+            if (is_string($ro_kroh)) { ro_write_atomic($kaputt, $ro_kroh, 0600); }
+        }
         ro_log_if_changed('cfg_kaputt', 'Die Konfiguration ist beschaedigt (kein gueltiges JSON). '
             . 'Beiseitegelegt als ' . basename($kaputt) . '.');
     }
@@ -384,7 +392,11 @@ function ro_config($erzeugen = true) {
     $cfg['notify'] += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1,
                             'material' => 1, 'ereignis' => 1);
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
+                         // Ansage-2 (01.10.2026): Alexa-NG, ab Werk nicht gewaehlt.
+                         // Das Sprechtoken ist ein Geheimnis: nie in der Seite,
+                         // nicht in der Sicherung.
+                         'alexa_geraet' => '', 'alexa_laut' => -1, 'alexa_token' => '');
     return $cfg;
 }
 
@@ -404,8 +416,14 @@ function ro_config($erzeugen = true) {
  * Beim naechsten Speichern wird die Nummer festgeschrieben.
  */
 function ro_robots() {
-    $cfg = ro_config();
+    return ro_robots_aus(ro_config());
+}
+
+/** Dieselbe Liste aus einer gegebenen Konfiguration - M3 vergleicht damit
+ *  den Stand vor und nach dem Speichern. */
+function ro_robots_aus($cfg) {
     $out = array(); $n = 0;
+    if (!is_array($cfg) || !isset($cfg['robots']) || !is_array($cfg['robots'])) { return $out; }
     foreach ((array) $cfg['robots'] as $r) {
         $r = (array) $r;
         if (trim((string) (isset($r['ip']) ? $r['ip'] : '')) === '') { continue; }
@@ -655,18 +673,60 @@ function ro_kopfzeilen($r)
  * $dev ist fuer den Stumm-Merker UND fuer die Anmeldung da; wird es nicht
  * uebergeben, wird nichts gemerkt (etwa beim Verbindungstest in der
  * Oberflaeche, der bewusst jedes Mal wirklich fragen soll).
+ *
+ * C1 (Durchgang 01.10.2026): den Merker SETZT und LOESCHT nur noch der
+ * Abruf von /state ($merker = true). Bis 1.1.11 tat das jeder Abruf mit
+ * $dev - eine einzige langsame Nebenabfrage (Ereignisliste, Gesamtwerte)
+ * schaltete einen erreichbaren Roboter fuer 60 s auf "nicht erreichbar",
+ * ueber HTTP, Cron und MQTT (in WSL gemessen, Code-Pruefer Fall E6: zwei
+ * Aufrufe nach der Nebenabfrage meldeten OK=0;CODE=8 ohne einen einzigen
+ * Abruf). Steht der Merker, kehren alle Abrufe weiter sofort zurueck - das
+ * ist der Schutz aus 1.0.3 gegen 24 s Wartezeit.
  */
-function ro_get($url, $tmo = 2, $dev = 0) {
+function ro_get($url, $tmo = 2, $dev = 0, $merker = false) {
     if ($dev > 0 && ro_stumm($dev)) { return false; }
     $kopf = "Accept: application/json\r\n";
     if ($dev > 0) { $kopf = ro_kopfzeilen(ro_robot($dev)); }
     $ctx = stream_context_create(array('http' => array('timeout' => $tmo, 'user_agent' => 'LoxBerry Saugroboter',
         'header' => $kopf, 'ignore_errors' => true)));
     $r = @file_get_contents($url, false, $ctx);
-    if ($dev > 0) {
+    if ($dev > 0 && $merker) {
         if ($r === false) { ro_stumm_setzen($dev); } else { ro_stumm_loeschen($dev); }
     }
     return $r;
+}
+
+/**
+ * Ein HTTP-Abruf MIT Statuscode. Rueckgabe: array(Rumpf oder false, Code;
+ * 0 = keine Antwort).
+ *
+ * C5 (Durchgang 01.10.2026, Bauart A): ueber fopen() und
+ * stream_get_meta_data() statt ueber die Kopfzeilen-Variable von PHP. PHP 8.5
+ * meldet sie schon beim Uebersetzen als ueberholt - der Minutencron schrieb
+ * damit jede Minute eine Zeile nach cron.log -, und PHP 9 soll sie
+ * abschaffen; dann hiesse jeder Code 0 und jeder Befehl OK=0. Bauform
+ * ap_http_abruf() aus APC-UPS 1.2.17. Gezaehlt wird die LETZTE Statuszeile:
+ * folgt der Aufrufer einer Umleitung, ist das die des Ziels.
+ */
+function ro_http($url, array $http)
+{
+    $ctx = stream_context_create(array('http' => $http));
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) {
+        return array(false, 0);
+    }
+    $meta = @stream_get_meta_data($fp);
+    $t = @stream_get_contents($fp);
+    @fclose($fp);
+    $code = 0;
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    return array($t === false ? '' : (string) $t, $code);
 }
 /* Befehle duerfen etwas laenger dauern als eine Abfrage - der Roboter
    quittiert erst, wenn er den Auftrag angenommen hat. Vier Sekunden reichen
@@ -678,15 +738,15 @@ function ro_put($url, $payload, $tmo = 4, $r = null) {
     // und stream_context_create nimmt 'content' => false ohne Murren - der
     // PUT ginge mit leerem Rumpf und Content-Length: 0 hinaus.
     if ($body === false) { return array(0, 'ungueltige Zeichen im Parameter'); }
-    $ctx = stream_context_create(array('http' => array(
+    /* C5: ohne Kopfzeilen-Variable (ro_http()) und OHNE Umleitung. PHP folgt
+     * einer 302 sonst mit GET und ohne Rumpf - gemessen kam der Code des
+     * Ziels (204) als Erfolg zurueck, obwohl der Befehl nie ankam
+     * (Code-Pruefer, t3_put.php). Eine 3xx ist jetzt ehrlich ein Fehlschlag. */
+    list($antwort, $code) = ro_http($url, array(
         'method' => 'PUT', 'timeout' => $tmo, 'content' => $body, 'ignore_errors' => true,
+        'follow_location' => 0,
         'header' => "Content-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n"
-                  . ($r !== null ? ro_kopfzeilen($r) : ''))));
-    $antwort = @file_get_contents($url, false, $ctx);
-    $code = 0;
-    if (isset($http_response_header[0]) && preg_match('#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m)) {
-        $code = (int) $m[1];
-    }
+                  . ($r !== null ? ro_kopfzeilen($r) : '')));
     return array($code, $antwort === false ? '' : (string) $antwort);
 }
 
@@ -923,6 +983,86 @@ function ro_verbrauch_prozentfelder()
     return array('dock_buerste', 'dock_filter', 'dock_behaelter', 'reiniger');
 }
 
+/* ==================================================================
+ * Ausfall des Roboters: der letzte Messwert bleibt (C3, Entscheidung Nr. 28)
+ * ==================================================================
+ *
+ * Bis 1.1.11 trug ro_state() bei einem Ausfall Platzhalter: CODE=8, BATT=0,
+ * FILTER=-1 ... - eine Logik "Batterie < 20 %" loeste bei jedem Funkloch aus
+ * (Code-Pruefer Fall E7, MQTT-Pruefer Fall s07). Entscheidung Nr. 28 vom
+ * 01.10.2026: die Zustaende bleiben auf dem letzten Messwert, OK geht auf 0,
+ * und allein CODE 8 ("nicht erreichbar") geht als benannte Ausnahme hinaus -
+ * an ihm haengen in der Anlage drei Schwellwertschalter. Endpunkt und MQTT
+ * verhalten sich gleich: der Endpunkt nennt die letzten Werte, MQTT sendet die
+ * Geraetewerte gar nicht (der Broker behaelt den letzten Stand).
+ *
+ * Der letzte erfolgreiche Zustand liegt in /tmp/<ordner>/gemessen_N.json,
+ * zusammen mit der Adresse, unter der er gemessen wurde: nach einem Wechsel
+ * der Roboteradresse gilt er nicht mehr. Gab es noch keine Messung, bleiben
+ * die Platzhalter - es gibt dann keinen Wert, der stehen bleiben koennte.
+ *
+ * Teilausfall: liefert eine Nebenabfrage keine Liste, kommt ihre Gruppe aus
+ * derselben Datei (ro_teil_uebernehmen()); ueber MQTT geht sie nicht hinaus.
+ */
+function ro_teil_felder()
+{
+    return array(
+        'statistik' => array('flaeche', 'dauer'),
+        'gesamt'    => array('flaeche_gesamt', 'dauer_gesamt', 'anzahl_gesamt'),
+        'verbrauch' => array('buerste_haupt', 'buerste_seite', 'buerste_seite2', 'filter', 'filter2',
+                             'sensor', 'raeder', 'mop', 'dock_buerste', 'dock_filter', 'dock_behaelter',
+                             'reiniger', 'material_fremd'),
+        'ereignisse' => array('event', 'evtyp', 'evtext', 'evmuell', 'evid'),
+    );
+}
+
+/** Die Adresse, unter der ein Zustand gemessen wurde - fuer gemessen_N.json. */
+function ro_gemessen_adresse($r)
+{
+    return is_array($r) ? ((string) $r['ip'] . ':' . (int) $r['port']) : '';
+}
+
+/** Der letzte erfolgreich gemessene Zustand dieses Roboters, oder null. */
+function ro_gemessen_lesen($dev, $r)
+{
+    $f = ro_tmpdir() . '/gemessen_' . (int) $dev . '.json';
+    if ($r === null || !is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d) || !isset($d['adresse'], $d['st']) || !is_array($d['st'])
+        || (string) $d['adresse'] !== ro_gemessen_adresse($r) || !isset($d['st']['ts'])) {
+        return null;
+    }
+    return $d['st'];
+}
+
+/** Ausfall: die Werte des letzten erfolgreichen Abrufs, OK=0, CODE=8. */
+function ro_state_ausfall(array $platz, $vorher)
+{
+    if (!is_array($vorher)) { return $platz; }
+    $aus = $vorher;
+    foreach ($platz as $k => $w) {
+        if (!array_key_exists($k, $aus)) { $aus[$k] = $w; }
+    }
+    $aus['ok'] = 0;
+    $aus['code'] = 8;
+    $aus['text'] = ro_state_text(8);
+    $aus['name'] = $platz['name'];
+    $aus['messung_ts'] = (int) $vorher['ts'];
+    $aus['ts'] = $platz['ts'];
+    return $aus;
+}
+
+/** Teilausfall: die Felder einer Gruppe aus der letzten Messung uebernehmen. */
+function ro_teil_uebernehmen(array $st, $vorher, $gruppe)
+{
+    if (!is_array($vorher)) { return $st; }
+    $felder = ro_teil_felder();
+    foreach ($felder[$gruppe] as $k) {
+        if (array_key_exists($k, $vorher)) { $st[$k] = $vorher[$k]; }
+    }
+    return $st;
+}
+
 /** Kompletter Zustand eines Roboters (mit Cache). */
 function ro_state($dev = 1, $force = false) {
     $cfg = ro_config();
@@ -933,6 +1073,8 @@ function ro_state($dev = 1, $force = false) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c)) { return $c; }
     }
+    // C3: der letzte erfolgreich gemessene Zustand (fuer Ausfall und Teilausfall).
+    $vorher = ro_gemessen_lesen($dev, $r);
     $st = array('ok' => 0, 'name' => $r ? $r['name'] : '-', 'code' => 8, 'text' => 'unbekannt',
                 'batterie' => 0, 'laedt' => 0,
                 'fehler' => 0, 'fehlertext' => '', 'fstufe' => -1, 'fteil' => -1,
@@ -949,6 +1091,8 @@ function ro_state($dev = 1, $force = false) {
                 // Welche Nebenabfragen eine LISTE geliefert haben (siehe
                 // ro_mqtt_platzhalter()); 0 = Platzhalter.
                 'teil_ok' => array('statistik' => 0, 'gesamt' => 0, 'verbrauch' => 0),
+                // C3: wann die Werte gemessen wurden (bei Ausfall: die letzte Messung).
+                'messung_ts' => 0,
                 'ts' => time());
     if ($r === null) {
         return $st;
@@ -957,7 +1101,8 @@ function ro_state($dev = 1, $force = false) {
     // 1) Status - und mit ihm Anbauteile, Ladestation und die Stufen.
     //    Alle drei stecken in DERSELBEN Antwort und wurden bis 1.0.14
     //    weggeworfen; sie kosten keinen zusaetzlichen Abruf.
-    $j = @json_decode((string) ro_get($base . '/state', 2, $dev), true);
+    // C1: nur dieser Abruf setzt und loescht den Stumm-Merker.
+    $j = @json_decode((string) ro_get($base . '/state', 2, $dev, true), true);
     if (is_array($j) && isset($j['attributes'])) {
         $st['ok'] = 1;
         $s = ro_attr($j['attributes'], 'StatusStateAttribute');
@@ -1014,6 +1159,8 @@ function ro_state($dev = 1, $force = false) {
        trotzdem geschrieben, damit die naechste Abfrage nicht sofort wieder
        wartet. */
     if ($st['ok'] !== 1) {
+        // C3 (Nr. 28): die letzten Messwerte, OK=0, CODE=8.
+        $st = ro_state_ausfall($st, $vorher);
         ro_write_json($cache, $st);
         ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' (nicht erreichbar)');
         return $st;
@@ -1061,6 +1208,11 @@ function ro_state($dev = 1, $force = false) {
     }
     $warn_h = max(0, (int) $cfg['warn_hours']);
     $warn_p = max(0, (int) $cfg['warn_prozent']);
+    /* C3, Teilausfall: was nicht als Liste kam, kommt aus der letzten
+     * Messung - VOR der Warnschwelle, damit MATWARN zu den Werten passt. */
+    foreach (array('statistik', 'gesamt', 'verbrauch') as $g) {
+        if (empty($st['teil_ok'][$g])) { $st = ro_teil_uebernehmen($st, $vorher, $g); }
+    }
     $prozent = ro_verbrauch_prozentfelder();
     foreach (array('buerste_haupt', 'buerste_seite', 'buerste_seite2', 'filter', 'filter2',
                    'sensor', 'raeder', 'mop', 'dock_buerste', 'dock_filter',
@@ -1087,6 +1239,9 @@ function ro_state($dev = 1, $force = false) {
         }
     }
 
+    // C3, Teilausfall: die Ereignisse der letzten Messung, wenn die Liste nicht lesbar war.
+    if (empty($st['evlesbar'])) { $st = ro_teil_uebernehmen($st, $vorher, 'ereignisse'); }
+
     // Zeitpunkt der letzten Reinigung merken (Wechsel von "reinigt" auf etwas anderes)
     $lastf = ro_datadir() . '/last_' . $dev . '.json';
     $prev = is_file($lastf) ? (json_decode((string) @file_get_contents($lastf), true) ?: array()) : array();
@@ -1104,6 +1259,10 @@ function ro_state($dev = 1, $force = false) {
     } elseif ($prevcode !== $st['code']) {
         ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte']));
     }
+    // C3: der letzte erfolgreiche Zustand, mit der Adresse, unter der er gemessen wurde.
+    $st['messung_ts'] = $st['ts'];
+    ro_write_json(ro_tmpdir() . '/gemessen_' . $dev . '.json',
+        array('adresse' => ro_gemessen_adresse($r), 'st' => $st));
     ro_write_json($cache, $st);
     ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' Batterie=' . $st['batterie']
         . '% Fehler=' . $st['fehler'] . ' Material-Warnung=' . $st['material_warn']
@@ -1276,10 +1435,115 @@ function ro_command($cmd, $dev = 1, $param = '') {
     return array($ok, 'HTTP ' . $code);
 }
 
+/* ---------------- Gleichwert-Unterdrueckung fuer Sollwerte (X-7) ----------------
+ *
+ * C4 (Durchgang 01.10.2026, Entscheidungen Nr. 19 und 28): derselbe Sollwert
+ * fuer denselben Roboter innerhalb von 60 s geht nicht noch einmal an
+ * Valetudo - der Endpunkt antwortet HTTP 200 mit UNVERAENDERT=1. Kein 429:
+ * ein anderer Wert geht sofort hinaus.
+ *
+ * Gebremst werden NUR die Sollwerte fan, wasser, modus und ruhezeit,
+ * verglichen mit dem zuletzt GESENDETEN Wert (Nr. 28). Start, Stopp, Pause,
+ * Heim und die Raum- und Zonenauftraege sind Auftraege: wer nach einem Stopp
+ * am Geraet erneut "start" schickt, will, dass er wirkt. locate, goto, reset,
+ * absaugen, wisch* und evquittieren sind Ereignisse. Bis 1.1.11 gab es keine
+ * Bremse: zweimal ?cmd=fan&p=max ergab zwei PUTs (Code-Pruefer Fall E3).
+ *
+ * Merker unter flock, geoeffnet mit "e" (close-on-exec), faellt geschlossen
+ * aus (503). Der Befehl wird VOR dem Senden vorgemerkt; scheitert er (OK=0),
+ * wird der Eintrag wieder verworfen. Bauform BYD Autos 0.9.22.
+ */
+define('RO_GLEICHWERT_S', 60);
+
+/** Pfad des Merkers. */
+function ro_gleichwert_datei()
+{
+    return ro_tmpdir() . '/gleichwert.json';
+}
+
+/** Der Vergleichswert eines Sollwert-Befehls, oder null (nicht gebremst). */
+function ro_gleichwert_wert($cmd, $param)
+{
+    if (!in_array($cmd, array('fan', 'wasser', 'modus', 'ruhezeit'), true)) { return null; }
+    return strtolower(trim((string) $param));
+}
+
+/**
+ * Vor dem Senden. Rueckgabe: array(Urteil, Sekunden, Marke).
+ *   'UNVERAENDERT' - derselbe Wert ging vor weniger als 60 s hinaus;
+ *   'MERKER'       - der Merker laesst sich nicht oeffnen, sperren oder
+ *                    schreiben: geschlossen ausfallen;
+ *   ''             - senden; der Befehl ist dann unter der Marke vorgemerkt.
+ */
+function ro_gleichwert_pruefen($schluessel, $wert)
+{
+    $fh = @fopen(ro_gleichwert_datei(), 'c+e');
+    if ($fh === false || !@flock($fh, LOCK_EX)) {
+        if (is_resource($fh)) { fclose($fh); }
+        return array('MERKER', 0, '');
+    }
+    $m = json_decode((string) stream_get_contents($fh), true);
+    if (!is_array($m)) { $m = array(); }    // unlesbar gilt als leer: im Zweifel senden
+    $jetzt = time();
+    if (isset($m[$schluessel]) && is_array($m[$schluessel]) && isset($m[$schluessel]['w'], $m[$schluessel]['t'])
+        && is_scalar($m[$schluessel]['w']) && is_scalar($m[$schluessel]['t'])) {
+        $seit = $jetzt - (int) $m[$schluessel]['t'];
+        if ($seit >= 0 && $seit < RO_GLEICHWERT_S && (string) $m[$schluessel]['w'] === (string) $wert) {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+            return array('UNVERAENDERT', $seit, '');
+        }
+    }
+    foreach ($m as $k => $e) {
+        if (!is_array($e) || !isset($e['t']) || !is_scalar($e['t'])
+            || $jetzt - (int) $e['t'] >= RO_GLEICHWERT_S || (int) $e['t'] > $jetzt) {
+            unset($m[$k]);
+        }
+    }
+    $marke = bin2hex(random_bytes(6));
+    $m[$schluessel] = array('w' => (string) $wert, 't' => $jetzt, 'm' => $marke);
+    $js = json_encode($m);
+    $ok = $js !== false && ftruncate($fh, 0) && rewind($fh)
+          && fwrite($fh, $js) === strlen($js) && fflush($fh);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if (!$ok) { return array('MERKER', 0, ''); }
+    return array('', 0, $marke);
+}
+
+/** Einen Eintrag verwerfen (nach OK=0) - nur den eigenen (Marke). */
+function ro_gleichwert_vergessen($schluessel, $marke)
+{
+    $f = ro_gleichwert_datei();
+    clearstatcache(true, $f);
+    if (!is_file($f)) { return true; }
+    $fh = @fopen($f, 'c+e');
+    if ($fh === false || !@flock($fh, LOCK_EX)) {
+        if (is_resource($fh)) { fclose($fh); }
+        return false;
+    }
+    $m = json_decode((string) stream_get_contents($fh), true);
+    $ok = true;
+    if (is_array($m) && isset($m[$schluessel]['m']) && (string) $m[$schluessel]['m'] === (string) $marke) {
+        unset($m[$schluessel]);
+        $js = json_encode($m);
+        $ok = $js !== false && ftruncate($fh, 0) && rewind($fh)
+              && fwrite($fh, $js) === strlen($js) && fflush($fh);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
 /** Die Befehle, die ?cmd= annimmt - EINE Liste fuer Endpunkt, Vorlage und Anleitung. */
 function ro_befehle()
 {
-    return array(
+    /* U12 (Durchgang 01.10.2026): die Erklaerspalte [1] kommt aus der
+     * Sprachdatei ([BEFEHL]); der deutsche Text hier bleibt nur als
+     * Rueckfall. Bis 1.1.11 stand er in der englischen Oberflaeche deutsch da
+     * (Oberflaechen-Pruefer, LBLANG=en). Die Spalte [2] ist der Kachelname
+     * der Vorlage und bleibt deutsch wie die Vorlage selbst. */
+    $b = array(
         'start'         => array('', 'Reinigung starten', 'starten'),
         'stop'          => array('', 'Stoppen', 'stoppen'),
         'pause'         => array('', 'Pausieren', 'pausieren'),
@@ -1298,6 +1562,11 @@ function ro_befehle()
         'ruhezeit'      => array('22:00-07:00', 'Nicht-stören-Zeit setzen; "aus" schaltet sie ab', 'Ruhezeit setzen'),
         'evquittieren'  => array('', 'Offenes Valetudo-Ereignis wegdrücken', 'Ereignis quittieren'),
     );
+    foreach ($b as $name => $z) {
+        $t = ro_t('BEFEHL.' . strtoupper($name));
+        if ($t !== 'BEFEHL.' . strtoupper($name)) { $b[$name][1] = $t; }
+    }
+    return $b;
 }
 
 /**
@@ -1622,8 +1891,18 @@ function ro_udp_senden($port, $zeilen)
     $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $port, $fehler, $text, 2);
     if ($fp === false) { return 0; }
     $n = 0;
+    /* M4 (Durchgang 01.10.2026): mindestens 5 ms zwischen zwei Datagrammen -
+     * auch ueber mehrere Aufrufe in einem Lauf (Roboter 1, Roboter 2,
+     * Lebenszeichen). Der UDP-Eingang des Gateways verwirft am Geraet
+     * stossweise 17-70 % (Regeln/07); ohne Pause gingen 104 Datagramme in
+     * 49 ms hinaus, Median-Abstand 0,00 ms (MQTT-Pruefer Fall s16). Bauart
+     * Fensterbilanz 0.12.9 / Marstek 1.1.17. */
+    static $letzt = 0.0;
     foreach ((array) $zeilen as $z) {
+        $warte = 0.005 - (microtime(true) - $letzt);
+        if ($warte > 0) { usleep((int) ceil($warte * 1000000)); }
         if (@fwrite($fp, $z) !== false) { $n++; }
+        $letzt = microtime(true);
     }
     @fclose($fp);
     return $n;
@@ -1869,7 +2148,7 @@ function ro_mqtt_behalten_liste(array $themen)
  *   1. den Broker nach allen Themen aus ro_mqtt_frueher_behalten() fragen;
  *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
  *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
- *      Minutenlauf sendet dann VOLL (ro_mqtt_altlast_offen()), damit die
+ *      Minutenlauf sendet dann VOLL (ro_mqtt_senden()), damit die
  *      leere retain-Nutzlast unmittelbar vor dem gueltigen Wert steht;
  *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
  *      ohnehin hinausgeht ('unbekannt'), KEIN Merker.
@@ -1925,19 +2204,236 @@ function ro_mqtt_altlast($praefix, $dev = 1)
     return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
 }
 
-/**
- * Fuer den Minutenlauf: meldet der Broker unter dem Praefix dieses Roboters
- * noch einen Altwert? Dann geht der Satz VOLL hinaus, auch wenn sich die
- * Werte nicht geaendert haben - sonst stuende die Loeschung nie vor einem
- * Wert, und der Altwert bliebe bis zum halbstuendlichen Vollsatz stehen (in
- * WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10, Fall R10).
+/* Bis 1.1.11 stand hier ro_mqtt_altlast_offen() fuer den Minutenlauf. Seit
+ * dem Durchgang vom 01.10.2026 (M2) wertet ro_mqtt_senden() ro_mqtt_altlast()
+ * selbst aus: meldet der Broker noch einen Altwert, geht der Satz VOLL hinaus,
+ * damit die Loeschung unmittelbar vor einem Wert steht (in WSL gemessen,
+ * Pruefung-Saugroboter-Valetudo-1.1.10, Fall R10). */
+
+/* ==================================================================
+ * Abraeumen nach einem Wechsel (M3, Entscheidung Nr. 26 vom 01.10.2026)
+ * ==================================================================
+ *
+ * Bis 1.1.11 blieben drei Arten retained Altwerte fuer immer im Broker
+ * (MQTT-Pruefer, Faelle s04, s14/s15, s17):
+ *   - nach einem Praefixwechsel die 41 Themen unter dem alten Praefix - auch
+ *     nach der Deinstallation, die nur das eingestellte leerte;
+ *   - die Themen eines ausgetragenen Roboters ("in der Ladestation, kein
+ *     Fehler" nach jedem Gateway-Neustart);
+ *   - beim Ausschalten von MQTT alles, was zuletzt gesendet war.
+ * ro_config_speichern() merkt diese Faelle in data/plugins/<ordner>/
+ * mqtt_raeumen.json vor (Praefix und Geraetenummern). Der Minutenlauf fragt
+ * den Broker, sendet fuer jedes noch belegte Thema die leere retain-Nutzlast
+ * ueber den UDP-Eingang und liest nach; die Vormerkung faellt erst, wenn der
+ * Broker nichts mehr meldet. Laesst er sich nicht fragen, bleibt sie stehen
+ * (eine Protokollzeile, bis es geht). Ist ein Praefix samt Geraet wieder in
+ * Gebrauch, wird es nicht abgeraeumt. preupgrade/postupgrade tragen die Datei
+ * ueber das Update; die Deinstallation leert auch die vorgemerkten Praefixe.
  */
-function ro_mqtt_altlast_offen($dev = 1)
+function ro_mqtt_vormerk_datei()
 {
+    return ro_datadir() . '/mqtt_raeumen.json';
+}
+
+/** Die Vormerkungen: Liste von array('praefix' => .., 'devs' => array(..), 'seit' => ts). */
+function ro_mqtt_vormerkungen()
+{
+    $f = ro_mqtt_vormerk_datei();
+    if (!is_file($f)) { return array(); }
+    $d = json_decode((string) @file_get_contents($f), true);
+    $aus = array();
+    foreach ((is_array($d) && isset($d['eintraege']) && is_array($d['eintraege'])) ? $d['eintraege'] : array() as $e) {
+        if (!is_array($e) || !isset($e['praefix'], $e['devs']) || !is_string($e['praefix']) || !is_array($e['devs'])) {
+            continue;
+        }
+        $pr = ro_mqtt_thema_saeubern($e['praefix']);
+        $devs = array();
+        foreach ($e['devs'] as $dv) {
+            if (is_int($dv) && $dv >= 1 && $dv <= 9) { $devs[] = $dv; }
+        }
+        if ($devs && $pr === $e['praefix']) {
+            $aus[] = array('praefix' => $pr, 'devs' => array_values(array_unique($devs)),
+                           'seit' => isset($e['seit']) ? (int) $e['seit'] : 0);
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Die Vormerkungen unter einer Sperre aendern: $fn bekommt die Liste und gibt
+ * die neue zurueck. Oberflaeche und Minutenlauf schreiben beide - ohne Sperre
+ * verloere einer die Aenderung des anderen.
+ */
+function ro_mqtt_vormerk_aendern($fn)
+{
+    $f = ro_mqtt_vormerk_datei();
+    $fh = @fopen($f . '.sperre', 'c');
+    if ($fh === false || !@flock($fh, LOCK_EX)) {
+        if (is_resource($fh)) { fclose($fh); }
+        ro_log_if_changed('mqtt_vormerk', 'Die Vormerkung zum Abraeumen (' . $f . ') liess sich nicht sperren.');
+        return false;
+    }
+    $neu = $fn(ro_mqtt_vormerkungen());
+    if (!$neu) {
+        @unlink($f);
+        $ok = !is_file($f);
+    } else {
+        $ok = ro_write_atomic($f, (string) json_encode(array('eintraege' => array_values($neu))), 0644);
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if (!$ok) {
+        ro_log_if_changed('mqtt_vormerk', 'Die Vormerkung zum Abraeumen (' . $f . ') liess sich nicht schreiben.');
+    }
+    return $ok;
+}
+
+/** Praefix und Geraete zum Abraeumen vormerken (zusammengefasst je Praefix). */
+function ro_mqtt_vormerken($praefix, array $devs, $grund)
+{
+    $praefix = ro_mqtt_thema_saeubern($praefix);
+    $devs = array_values(array_filter(array_map('intval', $devs), function ($d) { return $d >= 1 && $d <= 9; }));
+    if (!$devs) { return true; }
+    $ok = ro_mqtt_vormerk_aendern(function ($liste) use ($praefix, $devs) {
+        foreach ($liste as $i => $e) {
+            if ($e['praefix'] === $praefix) {
+                $liste[$i]['devs'] = array_values(array_unique(array_merge($e['devs'], $devs)));
+                return $liste;
+            }
+        }
+        $liste[] = array('praefix' => $praefix, 'devs' => $devs, 'seit' => time());
+        return $liste;
+    });
+    if ($ok) {
+        ro_log('MQTT: ' . $grund . ' - die zurueckbehaltenen Themen unter ' . $praefix . '/ (Roboter '
+            . implode(', ', $devs) . ') sind zum Abraeumen vorgemerkt; der Minutenlauf leert sie und liest beim Broker nach.');
+    }
+    return $ok;
+}
+
+/** Was hat sich zwischen zwei Konfigurationen fuer MQTT geaendert? (aus ro_config_speichern) */
+function ro_mqtt_wechsel_vormerken($alt, $neu)
+{
+    if (!is_array($alt) || empty($alt['mqtt_enabled'])) { return; }
+    $ab = ro_mqtt_thema_saeubern(isset($alt['mqtt_topic']) && is_string($alt['mqtt_topic']) ? $alt['mqtt_topic'] : '');
+    $nb = ro_mqtt_thema_saeubern(isset($neu['mqtt_topic']) && is_string($neu['mqtt_topic']) ? $neu['mqtt_topic'] : '');
+    $alt_dev = array_keys(ro_robots_aus($alt));
+    if (!$alt_dev) { $alt_dev = array(1); }
+    if (empty($neu['mqtt_enabled'])) {
+        ro_mqtt_vormerken($ab, $alt_dev, 'MQTT ausgeschaltet');
+        return;
+    }
+    if ($ab !== $nb) {
+        ro_mqtt_vormerken($ab, $alt_dev, 'Themenpraefix gewechselt (' . $ab . ' -> ' . $nb . ')');
+        return;
+    }
+    $weg = array_values(array_diff($alt_dev, array_keys(ro_robots_aus($neu))));
+    if ($weg) {
+        ro_mqtt_vormerken($ab, $weg, 'Roboter ausgetragen');
+    }
+}
+
+/**
+ * Minutenlauf: die Vormerkungen abraeumen, mit Nachlesen beim Broker. Laeuft
+ * auch bei ausgeschaltetem MQTT (genau dann gibt es etwas zu raeumen).
+ */
+function ro_mqtt_raeumen_vorgemerkt()
+{
+    $liste = ro_mqtt_vormerkungen();
+    if (!$liste) { return; }
     $cfg = ro_config();
-    if (empty($cfg['mqtt_enabled'])) { return false; }
-    $a = ro_mqtt_altlast(ro_mqtt_praefix(ro_mqtt_thema_saeubern($cfg['mqtt_topic']), $dev), $dev);
-    return $a['lage'] === 'belegt';
+    $basis = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
+    $aktiv = !empty($cfg['mqtt_enabled']) ? array_keys(ro_robots()) : array();
+    $udp = ro_mqtt_udpport();
+    $erledigt = array();          // praefix => array(dev => true)
+    foreach ($liste as $e) {
+        $devs = array();
+        foreach ($e['devs'] as $d) {
+            if ($e['praefix'] === $basis && in_array($d, $aktiv, true)) {
+                $erledigt[$e['praefix']][$d] = true;    // wieder in Gebrauch: nicht abraeumen
+                continue;
+            }
+            $devs[] = $d;
+        }
+        if (!$devs) { continue; }
+        $themen = array();
+        foreach ($devs as $d) {
+            foreach (ro_mqtt_leer_themen() as $t) { $themen[] = ro_mqtt_praefix($e['praefix'], $d) . '/' . $t; }
+        }
+        $f = ro_mqtt_behalten_liste($themen);
+        if ($f['lage'] !== 'ok') {
+            ro_log_if_changed('mqtt_raeumen_' . $e['praefix'], 'Der Broker liess sich nicht befragen - die '
+                . 'zurueckbehaltenen Themen unter ' . $e['praefix'] . '/ bleiben vorgemerkt.');
+            continue;
+        }
+        if ($f['belegt']) {
+            if (!$udp) {
+                ro_log_if_changed('mqtt_raeumen_' . $e['praefix'], 'Kein UDP-Eingang des Gateways in der '
+                    . 'general.json - die Themen unter ' . $e['praefix'] . '/ bleiben vorgemerkt.');
+                continue;
+            }
+            $zeilen = array();
+            foreach (array_keys($f['belegt']) as $t) { $zeilen[] = 'retain ' . $t . ' '; }
+            ro_udp_senden($udp, $zeilen);
+            usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+            $n = count($zeilen);
+            $f = ro_mqtt_behalten_liste(array_keys($f['belegt']));
+            if ($f['lage'] !== 'ok' || $f['belegt']) {
+                ro_log_if_changed('mqtt_raeumen_' . $e['praefix'], 'MQTT: unter ' . $e['praefix'] . '/ '
+                    . ($f['lage'] === 'ok' ? 'stehen nach dem Leeren noch ' . count($f['belegt']) . ' Themen'
+                                            : 'liess sich das Leeren nicht nachlesen')
+                    . ' - neuer Versuch im naechsten Lauf.');
+                continue;
+            }
+            ro_log('MQTT: unter ' . $e['praefix'] . '/ ' . $n . ' zurueckbehaltene Themen geleert (vom Broker bestaetigt).');
+        } else {
+            ro_log('MQTT: unter ' . $e['praefix'] . '/ steht (Roboter ' . implode(', ', $devs)
+                . ') nichts mehr zurueckbehalten - vom Broker bestaetigt.');
+        }
+        foreach ($devs as $d) { $erledigt[$e['praefix']][$d] = true; }
+    }
+    if (!$erledigt) { return; }
+    ro_mqtt_vormerk_aendern(function ($l) use ($erledigt) {
+        $aus = array();
+        foreach ($l as $e) {
+            $rest = array();
+            foreach ($e['devs'] as $d) {
+                if (!isset($erledigt[$e['praefix']][$d])) { $rest[] = $d; }
+            }
+            if ($rest) { $e['devs'] = $rest; $aus[] = $e; }
+        }
+        return $aus;
+    });
+}
+
+/**
+ * M5 (Durchgang 01.10.2026): die Abo-Datei des MQTT-Gateways,
+ * config/plugins/<ordner>/mqtt_subscriptions.cfg, mit <praefix>/#. Das
+ * Gateway V1 liest sie selbst, beim Start und bei jeder Aenderung (Regeln/07,
+ * am Geraet belegt an Midea2Lox). Mitgeliefert wird saugrobo/#; ein anderes
+ * Praefix fuehren Minutenlauf und Speichern nach (Bauform ap_abo_datei() aus
+ * APC-UPS 1.2.17). Bis 1.1.11 gab es keine Datei: unter V1 kam ohne
+ * Handeintrag nichts an, und nach einem Praefixwechsel zeigte das Hand-Abo ins
+ * Leere (MQTT-Pruefer Fall 6). Rueckgabe: array(Pfad, traegt das Abo).
+ */
+function ro_abo_datei($praefix, $schreiben = false)
+{
+    $p = ro_paths();
+    if ($p['lbhome'] === '') { return array('', false); }
+    $pfad = dirname($p['config']) . '/mqtt_subscriptions.cfg';
+    $soll = $praefix . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && ro_wert_pruefen('mqtt_topic', $praefix) === '' && $roh !== $soll . "\n"
+        && is_dir(dirname($pfad))) {
+        if (ro_write_atomic($pfad, $soll . "\n", 0644)) {
+            ro_log('MQTT: Abo-Datei des Gateways auf ' . $soll . ' gesetzt (' . $pfad . ').');
+            $da = true;
+        } else {
+            ro_log_if_changed('mqtt_abo', 'Die Abo-Datei ' . $pfad . ' liess sich nicht schreiben.');
+        }
+    }
+    return array($pfad, $da);
 }
 
 /**
@@ -1976,15 +2472,26 @@ function ro_mqtt_leeren($runden = 3, $pause = 1.0)
     }
     $geraete = array_keys(ro_robots());
     if (!$geraete) { $geraete = array(1); }
+    /* M3 (Durchgang 01.10.2026): auch die vorgemerkten Praefixe - ein altes
+     * Praefix stand bis 1.1.11 nach der Deinstallation weiter im Broker
+     * (MQTT-Pruefer Fall s17: 41 Themen unter saugrobo/ bei Praefix rob3). */
+    $basen = array($basis => $geraete);
+    foreach (ro_mqtt_vormerkungen() as $e) {
+        $basen[$e['praefix']] = array_values(array_unique(array_merge(
+            isset($basen[$e['praefix']]) ? $basen[$e['praefix']] : array(), $e['devs'])));
+    }
     $alle = array();
     $eingerichtet = array();
-    for ($k = 1; $k <= 9; $k++) {
-        $pr = ro_mqtt_praefix($basis, $k);
-        foreach (ro_mqtt_leer_themen() as $t) {
-            $alle[] = $pr . '/' . $t;
-            if (in_array($k, $geraete, true)) { $eingerichtet[] = $pr . '/' . $t; }
+    foreach ($basen as $b => $bdevs) {
+        for ($k = 1; $k <= 9; $k++) {
+            $pr = ro_mqtt_praefix($b, $k);
+            foreach (ro_mqtt_leer_themen() as $t) {
+                $alle[] = $pr . '/' . $t;
+                if (in_array($k, $bdevs, true)) { $eingerichtet[] = $pr . '/' . $t; }
+            }
         }
     }
+    $basis = implode('/, ', array_keys($basen));
     $n = count($alle);
     $f = ro_mqtt_behalten_liste($alle);
     $nachgelesen = ($f['lage'] === 'ok');
@@ -2006,7 +2513,8 @@ function ro_mqtt_leeren($runden = 3, $pause = 1.0)
         if ($r > 1) { usleep((int) ($pause * 1000000)); }
         foreach ($offen as $t) {
             // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
-            // Form, die das Gateway als Loeschung liest.
+            // Form, die das Gateway als Loeschung liest. M4: 5 ms Pause.
+            if ($datagramme > 0) { usleep(5000); }
             @fwrite($strom, 'retain ' . $t . ' ');
             $datagramme++;
         }
@@ -2042,29 +2550,35 @@ function ro_mqtt_leeren($runden = 3, $pause = 1.0)
 }
 
 /**
- * Den Zustand eines Roboters veroeffentlichen, samt Lebenszeichen.
+ * Den Zustand eines Roboters veroeffentlichen.
  *
- * PLATZHALTER GEHEN FLUECHTIG HINAUS (ro_mqtt_platzhalter()). Ist der
- * Roboter nicht erreichbar, traegt ro_state() Platzhalter (code 8, fehler 0,
- * -1 ...), bei einer gescheiterten Nebenabfrage dort 0 bzw. -1. Bis 1.1.9
- * gingen sie retained ueber den letzten gemessenen Stand - nach einem
- * Neustart von Broker oder Gateway las Loxone "Status unbekannt, kein
- * Fehler" statt des letzten Stands (Bestandsliste Klasse E vom 19.09.2026,
- * "Platzhalter ueberschreiben den Geraetestand"). Weglassen waere aber
- * ebenso falsch: an saugrobo_code haengen in der Anlage drei
- * Schwellwertschalter ("Saugroboter bereit" u. a.), und ohne den
- * Platzhalter 8 bliebe dort der letzte Status stehen. Jetzt gehen die Werte
- * wie bisher hinaus, die Platzhalter aber mit publish: Loxone sieht sie
- * live, der Broker behaelt den letzten Geraetestand (Bauart Robonect 1.1.12,
- * KODI-NG 1.2.10; in WSL gemessen, Pruefung-Saugroboter-Valetudo-1.1.10,
- * Faelle R16, R17, R19, R20).
+ * M1 (Durchgang 01.10.2026, Entscheidung Nr. 28): Ist der Roboter nicht
+ * erreichbar, gehen nur ok (0), code (8, FLUECHTIG - die benannte Ausnahme
+ * fuer die Schwellwertschalter an saugrobo_code), die Werte, die das Plugin
+ * selbst bildet (ann, audio, push, ptest, meldung), und das Lebenszeichen
+ * hinaus; die Geraetewerte gar nicht - der Broker behaelt den letzten
+ * gemessenen Stand, und das Gateway reicht keinen Platzhalter weiter. Bis
+ * 1.1.11 gingen 50 Platzhalter fluechtig hinaus (batt 0, fehler 0, laedt 0,
+ * ...; MQTT-Pruefer Fall s07). Bei einem Teilausfall wird die betroffene
+ * Gruppe nicht gesendet (Fall s09).
+ *
+ * M2/M4: gesendet wird gegen das zuletzt GESENDETE Abbild
+ * (/tmp/<ordner>/mqtt_gesendet_N.json, mit Praefix): nur geaenderte Werte,
+ * ok in jedem Lauf, alle 30 Minuten der volle Satz (Entscheidung Nr. 26,
+ * sinngemaess Raumklima). Ein anderes Praefix, ein fehlendes Abbild (jedes
+ * Speichern leert es, MQTT aus verwirft es) oder ein Altwert im Broker
+ * (ro_mqtt_altlast()) erzwingt den vollen Satz - bis 1.1.11 kamen nach einem
+ * Praefixwechsel bis zu 30 min KEINE Zustaende unter dem neuen Praefix
+ * (MQTT-Pruefer Faelle s04, s06), und jede einzelne Aenderung schickte alle
+ * 52 Themen.
  *
  * Die Altwerte frueher zurueckbehaltener Themen werden abgeraeumt, solange
  * der Broker sie haelt (ro_mqtt_altlast()): die leere retain-Nutzlast geht
- * UNMITTELBAR vor dem gueltigen Wert hinaus. Wer das Thema abonniert hat,
- * bekommt die Loeschung als leere Nachricht und den Wert gleich dahinter.
+ * UNMITTELBAR vor dem gueltigen Wert hinaus.
+ *
+ * Rueckgabe: Zahl der gesendeten Datagramme.
  */
-function ro_mqtt_publish($st = null, $dev = 1) {
+function ro_mqtt_senden($st, $dev = 1, $voll = false) {
     $cfg = ro_config();
     if (empty($cfg['mqtt_enabled'])) { return 0; }
     $udp = ro_mqtt_udpport();
@@ -2072,58 +2586,70 @@ function ro_mqtt_publish($st = null, $dev = 1) {
     if ($st === null) { $st = ro_state($dev); }
     $wurzel = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
     $prefix = ro_mqtt_praefix($wurzel, $dev);
-    $m = ro_mqtt_werte($st, $dev);
+    $werte = ro_mqtt_auswahl($st, $dev);
     $platz = ro_mqtt_platzhalter($st);
+    $af = ro_tmpdir() . '/mqtt_gesendet_' . (int) $dev . '.json';
+    $abbild = is_file($af) ? json_decode((string) @file_get_contents($af), true) : null;
+    $gilt = is_array($abbild) && isset($abbild['praefix'], $abbild['werte'], $abbild['voll'])
+            && $abbild['praefix'] === $prefix && is_array($abbild['werte']);
+    if (!$gilt || time() - (int) $abbild['voll'] >= 1800 || (int) $abbild['voll'] > time()) { $voll = true; }
     $alt = ro_mqtt_altlast($prefix, $dev);
+    if ($alt['lage'] === 'belegt') { $voll = true; }
     $raeumen = array_flip($alt['themen']);
+    $gesendet = $gilt ? $abbild['werte'] : array();
     $zeilen = array();
-    foreach ($m as $k => $v) {
+    foreach ($werte as $k => $v) {
+        $w = ro_mqtt_wert_saeubern($v);
+        if (!$voll && $k !== 'ok' && array_key_exists($k, $gesendet) && (string) $gesendet[$k] === $w) {
+            continue;
+        }
         if (isset($raeumen[$k])) {
             // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
             // Form, die das Gateway als Loeschung liest.
             $zeilen[] = 'retain ' . $prefix . '/' . $k . ' ';
         }
         $zeilen[] = ro_mqtt_zeile(ro_mqtt_retain($k, $v) && !isset($platz[$k]), $prefix . '/' . $k, $v);
+        $gesendet[$k] = $w;
     }
-    /* Das Lebenszeichen haengt an der WURZEL, nicht am Geraet: es sagt etwas
-     * ueber den Cron-Lauf, nicht ueber einen einzelnen Roboter. Und es ist
-     * NIE retained - retained zeigte es fuer immer "lebt". */
-    $lauf = ro_lauf_lesen();
-    $zeilen[] = 'publish ' . $wurzel . '/status/ok ' . (int) $lauf['ok'];
-    $zeilen[] = 'publish ' . $wurzel . '/status/ts ' . (int) $lauf['ts'];
-    $zeilen[] = 'publish ' . $wurzel . '/status/zaehler ' . (int) $lauf['zaehler'];
-    return ro_udp_senden($udp, $zeilen);
+    $n = $zeilen ? ro_udp_senden($udp, $zeilen) : 0;
+    ro_write_json($af, array('praefix' => $prefix, 'werte' => $gesendet,
+        'voll' => $voll ? time() : (int) $abbild['voll']));
+    return $n;
 }
 
 /**
- * Welche Themen tragen in diesem Zustand PLATZHALTER statt Geraetewerten?
- * Sie gehen fluechtig hinaus (ro_mqtt_publish()).
- *
- *   Roboter nicht erreichbar (ok != 1)  alle Geraetethemen der Positivliste;
- *                                       audio und push sind Einstellungen und
- *                                       bleiben retained
- *   Statistik nicht als Liste lesbar    flaeche, dauer
- *   Gesamtwerte nicht lesbar            flaecheg, dauerg, anzahlg
- *   Verbrauchsteile nicht lesbar        die zwoelf Reststaende und matwarn
- *   Ereignisliste nicht lesbar          event, evtyp, evmuell
- *
- * "Lesbar" heisst: die Antwort ist eine JSON-Liste (ro_ist_liste()), so wie
- * Valetudo sie fuer diese Faehigkeiten liefert. Ein Zustand ohne die Angabe
- * (aelterer Zwischenspeicher) gilt als nicht lesbar - lieber einmal
- * fluechtig als einen Platzhalter zurueckbehalten. Ueber HTTP aendert sich
- * nichts.
+ * Sofort senden (robo.php ?ptest=1): die geaenderten Werte, ohne Lebenszeichen -
+ * das sagt etwas ueber den Minutenlauf.
  */
-function ro_mqtt_platzhalter($st)
+function ro_mqtt_publish($st = null, $dev = 1) {
+    return ro_mqtt_senden($st, $dev, false);
+}
+
+/** M1: Was ein Roboter in diesem Zustand ueber MQTT sendet - Thema => Wert. */
+function ro_mqtt_auswahl($st, $dev = 1)
 {
-    $aus = array();
+    $m = ro_mqtt_werte($st, $dev);
     if (!isset($st['ok']) || (int) $st['ok'] !== 1) {
-        // Die Langform (ro_mqtt_langform()) steht nicht in der Positivliste,
-        // traegt aber dieselben Platzhalter wie ihre Kurzform.
-        foreach (array_merge(array_keys(ro_mqtt_retain_liste()), array_keys(ro_mqtt_langform())) as $k) {
-            if ($k !== 'audio' && $k !== 'push') { $aus[$k] = true; }
+        $aus = array('ok' => 0, 'code' => 8);
+        foreach (ro_mqtt_eigene() as $k) {
+            if (array_key_exists($k, $m)) { $aus[$k] = $m[$k]; }
         }
         return $aus;
     }
+    foreach (ro_mqtt_teil_weg($st) as $k => $_) { unset($m[$k]); }
+    return $m;
+}
+
+/** Die Themen, die das Plugin selbst bildet - sie gelten auch bei einem Ausfall. */
+function ro_mqtt_eigene()
+{
+    return array('ann', 'audio', 'push', 'ptest', 'meldung');
+}
+
+/** M1, Teilausfall: die Themen der Gruppen, die dieser Abruf nicht gelesen hat. */
+function ro_mqtt_teil_weg($st)
+{
+    $aus = array();
     $teil = (isset($st['teil_ok']) && is_array($st['teil_ok'])) ? $st['teil_ok'] : array();
     $gruppen = array(
         'statistik' => array('flaeche', 'dauer'),
@@ -2137,9 +2663,8 @@ function ro_mqtt_platzhalter($st)
         }
     }
     if (empty($st['evlesbar'])) {
-        foreach (array('event', 'evtyp', 'evmuell') as $t) { $aus[$t] = true; }
+        foreach (array('event', 'evtyp', 'evmuell', 'ereignistext') as $t) { $aus[$t] = true; }
     }
-    // Die Langform traegt denselben Platzhalter wie ihre Kurzform.
     foreach (ro_mqtt_langform() as $lang => $kurz) {
         if (isset($aus[$kurz])) { $aus[$lang] = true; }
     }
@@ -2147,10 +2672,25 @@ function ro_mqtt_platzhalter($st)
 }
 
 /**
+ * Welche Themen tragen in diesem Zustand einen Platzhalter? Seit M1 nur noch
+ * code bei einem Ausfall - er geht FLUECHTIG hinaus. Alle anderen Werte eines
+ * nicht gelesenen Geraets werden gar nicht gesendet (ro_mqtt_auswahl()).
+ */
+function ro_mqtt_platzhalter($st)
+{
+    if (!isset($st['ok']) || (int) $st['ok'] !== 1) {
+        return array('code' => true);
+    }
+    return array();
+}
+
+/**
  * NUR das Lebenszeichen - ohne die Werte.
  *
  * Es geht bei JEDEM Cron-Durchgang hinaus, auch wenn sich nichts geaendert
  * hat: der Doppelt-senden-Filter wird fuer diese drei Themen uebergangen.
+ * M4 (Durchgang 01.10.2026): EINMAL je Lauf, nicht je Roboter - bis 1.1.11
+ * ging es bei zwei Robotern doppelt hinaus (MQTT-Pruefer Fall s13).
  * Sonst faellt bei einem Roboter, der eine Woche in der Ladestation steht,
  * genau das Zeichen aus, das sagen soll, dass das Plugin noch lebt.
  */
@@ -2279,6 +2819,175 @@ function ro_mqtt_werte($st, $dev = 1)
     return $m;
 }
 
+/* ---------------- Ausgabeart Alexa-NG (Ansage-2, 01.10.2026; ab Werk nicht gewaehlt) ----------------
+ *
+ * Das eigene Plugin LoxBerry-Plugin-Alexa-NG (Ordner alexang) laesst
+ * Amazon-Echo-Geraete sprechen: https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG
+ * Aufruf per POST an seinen Endpunkt auf DIESEM LoxBerry (Port aus der
+ * general.json): das Sprechtoken steht so in keiner Adresse und keinem
+ * Zugriffsprotokoll. Faellt Alexa-NG aus, entfaellt die Ansage (kein stiller
+ * Wechsel auf einen anderen Lautsprecher); Protokoll und Reiter Test nennen
+ * HTTP-Code und GRUND, nie Token oder Text.
+ */
+
+/** Die Ausgabewege der Sprachausgabe - EINE Liste fuer Formular, Pruefung und Ansage. */
+function ro_tts_wege()
+{
+    return array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang');
+}
+
+/** Die Schluessel unter tts - die Positivliste der Sicherung. */
+function ro_tts_schluessel()
+{
+    return array('mode', 'ip', 'port', 'zones', 'volume', 'lang', 'template',
+                 'alexa_geraet', 'alexa_laut', 'alexa_token');
+}
+
+function ro_alexa_adresse()
+{
+    return 'http://127.0.0.1' . (ro_webport() === 80 ? '' : ':' . ro_webport()) . '/plugins/alexang/index.php';
+}
+
+/** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (Alexa-NG erzeugt 24 Hexzeichen). */
+function ro_alexa_token_ok($t)
+{
+    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+}
+
+/** Geraet: leer (= Standardgeraet von Alexa-NG) oder 1 bis 200 Zeichen UTF-8,
+ *  ohne Steuerzeichen und ohne Leerraum am Rand (Name, Kommaliste,
+ *  gruppe:<name> oder alle - das prueft Alexa-NG selbst). */
+function ro_alexa_geraet_ok($g)
+{
+    return is_string($g) && ($g === ''
+        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
+            && trim($g) === $g));
+}
+
+/** Die Alexa-Felder unter tts pruefen (aus ro_wert_pruefen()). '' = in Ordnung. */
+function ro_tts_alexa_pruefen(array $wert)
+{
+    if (isset($wert['alexa_geraet']) && !ro_alexa_geraet_ok($wert['alexa_geraet'])) {
+        return ro_t('GRUND.ALEXA_GERAET');
+    }
+    if (isset($wert['alexa_laut']) && !ro_ganz_ok($wert['alexa_laut'], -1, 100)) {
+        return ro_t('GRUND.ALEXA_LAUT');
+    }
+    if (isset($wert['alexa_token']) && !(is_string($wert['alexa_token'])
+            && ($wert['alexa_token'] === '' || ro_alexa_token_ok($wert['alexa_token'])))) {
+        return ro_t('GRUND.ALEXA_TOKEN');
+    }
+    return '';
+}
+
+/**
+ * POST an Alexa-NG. Rueckgabe: array('code' => HTTP-Code (0 = keine Antwort),
+ * 'zeile' => erste Antwortzeile ohne Token und Steuerzeichen). Ohne
+ * Weiterleitung.
+ */
+function ro_alexa_rufen(array $felder, $tmo = 10)
+{
+    $koerper = http_build_query($felder, '', '&');
+    list($r, $code) = ro_http(ro_alexa_adresse(), array(
+        'method' => 'POST', 'timeout' => $tmo, 'content' => $koerper, 'ignore_errors' => true,
+        'follow_location' => 0, 'user_agent' => 'LoxBerry Saugroboter',
+        'header' => "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " . strlen($koerper) . "\r\n"));
+    $zeilen = preg_split('/\r?\n/', trim((string) $r));
+    $erste = trim((string) $zeilen[0]);
+    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
+        $erste = str_replace($felder['token'], '***', $erste);
+    }
+    $erste = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste), 0, 200);
+    return array('code' => $r === false ? 0 : (int) $code, 'zeile' => $erste);
+}
+
+/**
+ * Antwort von Alexa-NG bewerten. Rueckgabe: '' bei "<praefix>;OK=1" mit HTTP
+ * 200, sonst ein Grund als Text (nie mit dem Token): keine Antwort, 404 ohne
+ * GRUND (Alexa-NG nicht installiert), eine Abweisung mit GRUND (403, 503,
+ * 200 mit OK=0 ...) oder eine unerwartete Antwort.
+ */
+function ro_alexa_bewerten(array $a, $praefix)
+{
+    if ($a['code'] === 200 && strpos($a['zeile'], $praefix . ';OK=1') === 0) {
+        return '';
+    }
+    if ($a['code'] <= 0) {
+        return sprintf(ro_t('GRUND.ALEXA_KEINE_ANTWORT'), ro_alexa_adresse());
+    }
+    if (preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $a['zeile'], $m)) {
+        return sprintf(ro_t('GRUND.ALEXA_ANTWORT'), (int) $a['code'], $m[1]);
+    }
+    if ($a['code'] === 404) {
+        return sprintf(ro_t('GRUND.ALEXA_FEHLT'), ro_alexa_adresse());
+    }
+    $s = substr((string) preg_replace('/[^A-Za-z0-9;=_.:\-]/', '', $a['zeile']), 0, 60);
+    return sprintf(ro_t('GRUND.ALEXA_UNERWARTET'), (int) $a['code'], $s !== '' ? $s : '-');
+}
+
+/**
+ * Eine Ansage ueber Alexa-NG. Rueckgabe: '' = gesprochen, sonst der Grund.
+ * Geraet und Lautstaerke aus den Einstellungen. Das Ergebnis (Zeit, ok,
+ * Grund - nie Token oder Text) liegt danach in alexa_letzte.json im
+ * Zwischenordner, fuer den Reiter Test.
+ */
+function ro_alexa_sprechen($text, array $cfg)
+{
+    $t = isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array();
+    $tok = isset($t['alexa_token']) ? $t['alexa_token'] : '';
+    if (!ro_alexa_token_ok($tok)) {
+        $grund = ro_t('GRUND.ALEXA_KEIN_TOKEN');
+    } else {
+        $f = array('aktion' => 'sprechen', 'token' => $tok);
+        $g = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? $t['alexa_geraet'] : '';
+        if ($g !== '') { $f['geraet'] = $g; }
+        $laut = isset($t['alexa_laut']) ? (int) $t['alexa_laut'] : -1;
+        if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
+        $f['text'] = (string) $text;
+        $grund = ro_alexa_bewerten(ro_alexa_rufen($f, 10), 'SPRECHEN');
+    }
+    ro_write_json(ro_tmpdir() . '/alexa_letzte.json',
+        array('zeit' => time(), 'ok' => $grund === '' ? 1 : 0, 'grund' => $grund));
+    return $grund;
+}
+
+/**
+ * Zeile im Reiter Test, wenn Alexa-NG die Ausgabeart ist: array(Stand, Text).
+ * Gefragt wird selftest=1 (prueft nur das Token, spricht nicht) und nur, wenn
+ * der Reiter Test offen ist - sonst kostete jeder Seitenaufbau bis zu 10 s,
+ * wenn Alexa-NG haengt. Die letzte Ansage wird dazugenannt.
+ */
+function ro_pruef_alexang(array $cfg, $offen)
+{
+    $tok = isset($cfg['tts']['alexa_token']) ? $cfg['tts']['alexa_token'] : '';
+    if (!ro_alexa_token_ok($tok)) {
+        return array(0, ro_t('GRUND.ALEXA_KEIN_TOKEN'));
+    }
+    $letzte = '';
+    $stand = 1;
+    $lf = ro_tmpdir() . '/alexa_letzte.json';
+    $l = is_file($lf) ? json_decode((string) @file_get_contents($lf), true) : null;
+    if (is_array($l) && isset($l['zeit'], $l['ok'])) {
+        $s = max(0, time() - (int) $l['zeit']);
+        $alter = $s < 90 ? $s . ' s' : ($s < 5400 ? (int) round($s / 60) . ' min' : (int) round($s / 3600) . ' h');
+        if ((int) $l['ok'] === 1) {
+            $letzte = ' ' . sprintf(ro_t('PRUEF.ALEXA_LETZTE_OK'), $alter);
+        } else {
+            $letzte = ' ' . sprintf(ro_t('PRUEF.ALEXA_LETZTE_FEHL'), $alter,
+                isset($l['grund']) && is_string($l['grund']) ? $l['grund'] : '-');
+            $stand = 2;
+        }
+    }
+    if (!$offen) {
+        return array(2, ro_t('PRUEF.ALEXA_ZU') . $letzte);
+    }
+    $grund = ro_alexa_bewerten(ro_alexa_rufen(array('selftest' => '1', 'token' => $tok), 10), 'SELFTEST');
+    if ($grund !== '') {
+        return array(0, $grund . $letzte);
+    }
+    return array($stand, sprintf(ro_t('PRUEF.ALEXA_OK'), ro_alexa_adresse()) . $letzte);
+}
+
 /* ---------------- Ansage (TTS) ---------------- */
 
 function ro_tts_url($text) {
@@ -2327,12 +3036,38 @@ function ro_tts_url($text) {
         array($tts['ip'], (int) $tts['port'], $tts['zones'], $vol, $lang, rawurlencode($text)), $tpl);
 }
 function ro_say($text) {
+    /* Ansage-2: Ausgabeart Alexa-NG (POST). Faellt Alexa-NG aus, entfaellt die
+     * Ansage - kein stiller Wechsel auf einen anderen Lautsprecher. Das
+     * Protokoll nennt Laenge und Grund, nie Text oder Token. */
+    $cfg = ro_config();
+    if (isset($cfg['tts']['mode']) && $cfg['tts']['mode'] === 'alexang') {
+        $grund = ro_alexa_sprechen($text, $cfg);
+        ro_log('Ansage ueber Alexa-NG (' . ro_zeichen($text) . ' Zeichen) -> '
+            . ($grund === '' ? 'OK' : 'FEHLER: ' . $grund));
+        return $grund === '';
+    }
     $url = ro_tts_url($text);
     if ($url === null) { ro_log('Ansage: Modus Audioserver - Ausgabe ueber Loxone Config'); return false; }
     if ($url === '') { ro_log('Ansage uebersprungen: keine TTS-IP konfiguriert'); return false; }
-    $r = ro_get($url, 10);
-    ro_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
-    return $r !== false;
+    /* C6 (Durchgang 01.10.2026): gesprochen heisst HTTP 2xx. Bis 1.1.11
+     * zaehlte jeder Rumpf, auch der einer 404 oder 500 (ignore_errors) - im
+     * Protokoll stand "Ansage gesendet ... -> OK", obwohl die Vorlage ins
+     * Leere zeigte (in WSL gemessen, Code-Pruefer Fall C2). Und der
+     * Ansagetext steht nicht mehr woertlich im Protokoll, nur seine Laenge
+     * (wie Alexa-NG, Entscheidung Nr. 18). */
+    list($r, $code) = ro_http($url, array('method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
+        'user_agent' => 'LoxBerry Saugroboter'));
+    $ok = ($r !== false && $code >= 200 && $code < 300);
+    ro_log('Ansage (' . ro_zeichen($text) . ' Zeichen) -> '
+        . ($ok ? 'OK, HTTP ' . $code : 'FEHLER ' . ($code > 0 ? 'HTTP ' . $code : '(keine Antwort)')));
+    return $ok;
+}
+
+/** Laenge eines Textes in Zeichen (UTF-8), fuer das Protokoll. */
+function ro_zeichen($t)
+{
+    $t = (string) $t;
+    return function_exists('mb_strlen') ? mb_strlen($t, 'UTF-8') : (int) preg_match_all('/./us', $t);
 }
 
 /** Meldefenster fuer Loxone: 1 fuer 10 Minuten nach einem meldewuerdigen Ereignis. */
@@ -2378,6 +3113,14 @@ function ro_events_check($zustaende = null) {
     foreach (ro_robots() as $n => $r) {
         $st = is_array($zustaende) && isset($zustaende[$n]) ? $zustaende[$n] : ro_state($n);
         $f = ro_tmpdir() . '/ev_' . $n . '.json';
+        /* C2 (Durchgang 01.10.2026): antwortet der Roboter nicht, wird nichts
+         * gemeldet und ev_N.json NICHT ueberschrieben - der letzte GEMESSENE
+         * Code bleibt, wie ro_state() es mit last_N.json haelt. Bis 1.1.11
+         * stand danach code 8 darin: endete eine Reinigung waehrend einer
+         * Funkpause (etwa beim Andocken), ging "fertig" verloren, und
+         * 9 -> 8 -> 9 meldete einen Fehler doppelt (in WSL gemessen,
+         * Code-Pruefer Fall C1: 0 Meldungen statt einer). */
+        if (!isset($st['ok']) || (int) $st['ok'] !== 1) { continue; }
         $prev = is_file($f) ? (json_decode((string) @file_get_contents($f), true) ?: array()) : array();
         /* Gesammelt, nicht ueberschrieben. Bis 1.0.14 schrieben Fertig,
          * Fehler und Material nacheinander DIESELBE Variable; fiel die
@@ -2569,7 +3312,12 @@ function ro_check($feld) { return '\i;' . $feld . '=\i\v'; }
  *     bleibt in [4] und steht in der Feldtabelle der Oberflaeche.
  */
 function ro_felder() {
-    return array(
+    /* U12 (Durchgang 01.10.2026): die Beschreibung [4] kommt aus der
+     * Sprachdatei ([FELD]); der deutsche Text hier bleibt nur als Rueckfall.
+     * Der Kachelname [6] ist der Name des Bausteins in der Vorlage und bleibt. */
+    static $f = null;
+    if ($f !== null) { return $f; }
+    $f = array(
         'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 0, 'Erreichbar'),
         'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 8 unbekannt, 9 Fehler', 1, 'Status'),
         'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent', 0, 'Batterie'),
@@ -2612,6 +3360,11 @@ function ro_felder() {
         'ALTER'    => array(1, -1, 100000, 's',   'Alter des letzten Cron-Laufs in Sekunden (-1 = noch keiner). Gehört auf eine Überwachung: ein festgefrorenes Ergebnis sieht sonst aus wie ein frisches.', 0, 'Alter letzter Lauf'),
         'ZAEHLER'  => array(1, 0, 999,   '',      'Laufzähler, läuft 0...999 um - steht er still, läuft der Cron nicht mehr', 0, 'Laufzähler'),
     );
+    foreach ($f as $name => $z) {
+        $t = ro_t('FELD.' . $name);
+        if ($t !== 'FELD.' . $name) { $f[$name][4] = $t; }
+    }
+    return $f;
 }
 
 /** Der Wert eines Feldes aus dem Zustand - EINE Stelle fuer HTTP, MQTT und Vorlage. */
@@ -2909,8 +3662,21 @@ function ro_config_speichern($cfg)
     // Erst fragen, dann anlegen: mkdir() warnt auch mit @, wenn der Ordner
     // schon da ist, und ein eigener Fehler-Aufnehmer sieht diese Warnung.
     if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
+    // M3: der Stand VOR dem Schreiben - fuer Praefixwechsel, MQTT aus, ausgetragene Roboter.
+    $vorher = ro_config();
     if (!ro_write_atomic($p['config'], $js, 0600)) { return false; }
-    ro_write_atomic($p['backup'], $js, 0600);
+    ro_mqtt_wechsel_vormerken($vorher, $cfg);
+    /* C8 (Durchgang 01.10.2026): auch die Zweitschrift wird geprueft. Bis
+     * 1.1.11 wurde ihr Rueckgabewert verworfen; scheiterte sie, blieb darin
+     * ein altes Token, und ein Update spielte es zurueck. Die Konfiguration
+     * selbst steht dann - deshalb kein Abbruch, aber eine Protokollzeile
+     * (einmal, bis es wieder gelingt). */
+    if (!ro_write_atomic($p['backup'], $js, 0600)) {
+        ro_log_if_changed('zweitschrift', 'Die Zweitschrift ' . $p['backup'] . ' liess sich nicht schreiben - '
+            . 'ein Update wuerde einen aelteren Stand zurueckspielen. Platz und Rechte im Ordner pruefen.');
+    } elseif (is_file(ro_tmpdir() . '/last_zweitschrift.txt')) {
+        @unlink(ro_tmpdir() . '/last_zweitschrift.txt');
+    }
     ro_cache_leeren();
     return true;
 }
@@ -2919,7 +3685,9 @@ function ro_config_speichern($cfg)
  *  einen fest verdrahteten Pfad. */
 function ro_cache_leeren()
 {
-    foreach (array('state_*.json', 'stumm_*', 'segments_*.json', 'caps_*.json', 'info_*.json') as $muster) {
+    // M2: auch das gesendete MQTT-Abbild - nach jedem Speichern geht der volle Satz hinaus.
+    foreach (array('state_*.json', 'stumm_*', 'segments_*.json', 'caps_*.json', 'info_*.json',
+                   'mqtt_gesendet_*.json') as $muster) {
         foreach (glob(ro_tmpdir() . '/' . $muster) ?: array() as $g) { @unlink($g); }
     }
 }
@@ -2959,90 +3727,106 @@ function ro_wert_taugt($v)
  */
 function ro_wert_pruefen($schluessel, $wert)
 {
+    /* C7 (Durchgang 01.10.2026, Bauart E): ERST der Typ, dann das Muster.
+     * Bis 1.1.11 wurde vor jedem Muster mit (string) oder (int) umgewandelt -
+     * eine Liste wurde zu "Array" oder 1, und 7 von 9 kaputten Sicherungen
+     * gingen durch (robots[0].ip als Liste -> "R1 (Array:..)", mqtt_topic als
+     * Liste -> Themen unter Array/..., leeres Aktionstoken -> 403 an jeder
+     * Loxone-Adresse; in WSL und unter 7.4/8.5 gemessen, Code-Pruefer t5/t6).
+     * Zahlen: eine ganze Zahl oder eine reine Ziffernfolge, nichts anderes
+     * ("80abc" ist kein Port). U12: die Gruende kommen aus der Sprachdatei. */
     switch ($schluessel) {
         case 'robots':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
-            if (count($wert) > 2) { return 'hoechstens zwei Roboter'; }
+            if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
+            if (count($wert) > 2) { return ro_t('GRUND.ROBOTER_MAX'); }
             foreach ($wert as $r) {
-                if (!is_array($r)) { return 'Roboter-Eintrag ist keine Liste'; }
-                $ip = isset($r['ip']) ? (string) $r['ip'] : '';
-                if ($ip !== '' && !preg_match('/^[\w\.\-]{1,253}$/', $ip)) {
-                    return 'ungueltige Adresse';
+                if (!is_array($r)) { return ro_t('GRUND.ROBOTER_ZEILE'); }
+                foreach (array_keys($r) as $k) {
+                    if (!in_array($k, array('nr', 'name', 'ip', 'port', 'user', 'pass'), true)) {
+                        return sprintf(ro_t('GRUND.ROBOTER_FELD'), $k);
+                    }
                 }
-                if (isset($r['port']) && ((int) $r['port'] < 1 || (int) $r['port'] > 65535)) {
-                    return 'Port ausserhalb 1..65535';
+                foreach (array('name', 'ip', 'user', 'pass') as $k) {
+                    if (isset($r[$k]) && !is_string($r[$k])) { return sprintf(ro_t('GRUND.TEXT'), $k); }
                 }
-                foreach (array('name', 'user', 'pass') as $k) {
-                    if (isset($r[$k]) && !is_string($r[$k])) { return $k . ' muss Text sein'; }
+                if (isset($r['ip']) && $r['ip'] !== '' && !preg_match('/^[\w\.\-]{1,253}\z/', $r['ip'])) {
+                    return ro_t('GRUND.ADRESSE');
                 }
                 // Die Geraetenummer ist eine Adresse (seit 1.1.4) und wird
                 // wie jeder andere Wert geprueft, nicht nur mitgenommen.
-                if (isset($r['nr']) && ((int) $r['nr'] < 1 || (int) $r['nr'] > 9)) {
-                    return 'Geraetenummer ausserhalb 1..9';
-                }
-                foreach (array_keys($r) as $k) {
-                    if (!in_array($k, array('nr', 'name', 'ip', 'port', 'user', 'pass'), true)) {
-                        return 'unbekanntes Feld ' . $k . ' in einer Roboterzeile';
-                    }
-                }
+                if (isset($r['port']) && !ro_ganz_ok($r['port'], 1, 65535)) { return ro_t('GRUND.PORT'); }
+                if (isset($r['nr']) && !ro_ganz_ok($r['nr'], 1, 9)) { return ro_t('GRUND.NR'); }
             }
             return '';
         case 'cache_sec':
-            return (is_int($wert) || preg_match('/^\d+$/', (string) $wert))
-                   && (int) $wert >= 5 && (int) $wert <= 300 ? '' : 'muss 5..300 sein';
+            return ro_ganz_ok($wert, 5, 300) ? '' : sprintf(ro_t('GRUND.BEREICH'), 5, 300);
         case 'warn_hours':
-            return (is_int($wert) || preg_match('/^\d+$/', (string) $wert))
-                   && (int) $wert >= 0 && (int) $wert <= 200 ? '' : 'muss 0..200 sein';
+            return ro_ganz_ok($wert, 0, 200) ? '' : sprintf(ro_t('GRUND.BEREICH'), 0, 200);
         case 'warn_prozent':
-            return (is_int($wert) || preg_match('/^\d+$/', (string) $wert))
-                   && (int) $wert >= 0 && (int) $wert <= 100 ? '' : 'muss 0..100 sein';
+            return ro_ganz_ok($wert, 0, 100) ? '' : sprintf(ro_t('GRUND.BEREICH'), 0, 100);
         case 'mqtt_enabled':
-            return in_array((string) $wert, array('0', '1'), true) ? '' : 'muss 0 oder 1 sein';
+            return ((is_int($wert) || is_string($wert)) && in_array((string) $wert, array('0', '1'), true))
+                   ? '' : ro_t('GRUND.NULL_EINS');
         case 'mqtt_topic':
-            return preg_match('#^[\w\-]+(/[\w\-]+)*$#', (string) $wert)
-                   ? '' : 'nur Buchstaben, Ziffern, - _ und /';
+            return (is_string($wert) && preg_match('#^[\w\-]+(/[\w\-]+)*\z#', $wert))
+                   ? '' : ro_t('GRUND.THEMA');
         case 'aktionstoken':
-            return (is_string($wert) && preg_match('/^[A-Za-z0-9]{0,64}$/', $wert))
-                   ? '' : 'nur Buchstaben und Ziffern, hoechstens 64';
+            /* Mindestens 8 Zeichen: ein leeres Token schaltet jede Loxone-
+             * Adresse auf 403 (Klasse 10). Erzeugt werden 24 (ro_token_erzeugen). */
+            return (is_string($wert) && preg_match('/^[A-Za-z0-9]{8,64}\z/', $wert))
+                   ? '' : ro_t('GRUND.TOKEN');
         case 'notify':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
             foreach ($wert as $k => $v) {
                 if (!in_array($k, array('audio', 'push', 'fertig', 'fehler', 'material', 'ereignis'), true)) {
-                    return 'unbekannter Schalter ' . $k;
+                    return sprintf(ro_t('GRUND.SCHALTER'), $k);
                 }
-                if (!in_array((string) $v, array('0', '1'), true)) { return $k . ' muss 0 oder 1 sein'; }
+                if (!((is_int($v) || is_string($v)) && in_array((string) $v, array('0', '1'), true))) {
+                    return sprintf(ro_t('GRUND.SCHALTER_WERT'), $k);
+                }
             }
             return '';
         case 'tts':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
             foreach ($wert as $k => $v) {
-                if (!in_array($k, array('mode', 'ip', 'port', 'zones', 'volume', 'lang', 'template'), true)) {
-                    return 'unbekannte Einstellung ' . $k;
+                if (!in_array($k, ro_tts_schluessel(), true)) {
+                    return sprintf(ro_t('GRUND.TTS_FELD'), $k);
                 }
             }
-            if (isset($wert['mode']) && !in_array((string) $wert['mode'],
-                array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
-                return 'unbekannter Ausgabeweg';
+            if (isset($wert['mode']) && !(is_string($wert['mode']) && in_array($wert['mode'], ro_tts_wege(), true))) {
+                return ro_t('GRUND.TTS_WEG');
             }
-            if (isset($wert['ip']) && (string) $wert['ip'] !== ''
-                && !preg_match('/^[\w\.\-]{1,253}$/', (string) $wert['ip'])) {
-                return 'ungueltige TTS-Adresse';
+            if (isset($wert['ip']) && !(is_string($wert['ip'])
+                    && ($wert['ip'] === '' || preg_match('/^[\w\.\-]{1,253}\z/', $wert['ip'])))) {
+                return ro_t('GRUND.TTS_ADRESSE');
             }
-            if (isset($wert['port']) && ((int) $wert['port'] < 1 || (int) $wert['port'] > 65535)) {
-                return 'TTS-Port ausserhalb 1..65535';
+            if (isset($wert['port']) && !ro_ganz_ok($wert['port'], 1, 65535)) { return ro_t('GRUND.TTS_PORT'); }
+            if (isset($wert['volume']) && !ro_ganz_ok($wert['volume'], 1, 100)) { return ro_t('GRUND.LAUTSTAERKE'); }
+            if (isset($wert['zones']) && !(is_string($wert['zones']) && preg_match('/^[0-9,~ ]*\z/', $wert['zones']))) {
+                return ro_t('GRUND.ZONEN');
             }
-            if (isset($wert['volume']) && ((int) $wert['volume'] < 1 || (int) $wert['volume'] > 100)) {
-                return 'Lautstaerke ausserhalb 1..100';
+            if (isset($wert['lang']) && !(is_string($wert['lang']) && preg_match('/^[a-z]{0,5}\z/', $wert['lang']))) {
+                return ro_t('GRUND.SPRACHE');
             }
-            if (isset($wert['zones']) && !preg_match('/^[0-9,~\s]*$/', (string) $wert['zones'])) {
-                return 'Zonen duerfen nur Ziffern, Komma und ~ enthalten';
+            if (isset($wert['template']) && !(is_string($wert['template']) && strlen($wert['template']) <= 2000)) {
+                return ro_t('GRUND.VORLAGE');
             }
-            if (isset($wert['lang']) && !preg_match('/^[a-z]{0,5}$/', (string) $wert['lang'])) {
-                return 'Sprachkuerzel darf nur Kleinbuchstaben enthalten';
-            }
-            return '';
+            return ro_tts_alexa_pruefen($wert);
     }
-    return 'unbekannt';
+    return ro_t('GRUND.UNBEKANNT');
+}
+
+/** Eine ganze Zahl im Bereich - als int oder reine Ziffernfolge (C7). */
+function ro_ganz_ok($w, $min, $max)
+{
+    if (is_int($w)) {
+        $z = $w;
+    } elseif (is_string($w) && preg_match('/^-?[0-9]{1,9}\z/', $w)) {
+        $z = (int) $w;
+    } else {
+        return false;
+    }
+    return $z >= $min && $z <= $max;
 }
 
 /**
@@ -3071,6 +3855,9 @@ function ro_sicherung_lesen($roh)
     $neu = ro_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    // C7: was aus der geltenden Konfiguration behalten wurde (fuer die Meldung).
+    $behalten = array();
+    $jetzt = ro_config();
     /* DER SCHLUESSELNAME KOMMT AUS EINER FREMDEN DATEI UND WIRD MASKIERT.
      *
      * ro_wert_taugt() prueft WERTE, nie Schluessel. Die Meldungen unten gehen
@@ -3093,6 +3880,31 @@ function ro_sicherung_lesen($roh)
             $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), ro_t('TEXT.SICH_STEUERZEICHEN'));
             continue;
         }
+        /* C7 (Durchgang 01.10.2026, Bauart E): ein LEERES Aktionstoken in der
+         * Datei ersetzt das geltende nicht - das geltende bleibt. Bis 1.1.11
+         * wurde es angenommen ("9 Werte uebernommen"), der Endpunkt antwortete
+         * danach 403 KEIN_TOKEN_EINGERICHTET, und der naechste Seitenaufruf
+         * wuerfelte still ein neues Token: jede Loxone-Adresse war ungueltig
+         * (in WSL gemessen, Oberflaechen-Pruefer Fall 8). Ist keines gespeichert,
+         * wird die Datei beanstandet. */
+        /* Ansage-2: Sicherungen tragen nie ein Sprechtoken fuer Alexa-NG.
+         * Bringt eine Datei eines mit, wird sie abgewiesen - sie stammt nicht
+         * aus "Einstellungen sichern", und das geltende Token bleibt. */
+        if ($k === 'tts' && is_array($w) && array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') {
+            $mangel[] = ro_t('TEXT.SICH_ALEXA_TOKEN');
+            continue;
+        }
+        if ($k === 'aktionstoken' && $w === '') {
+            $tok = (isset($jetzt['aktionstoken']) && is_string($jetzt['aktionstoken'])) ? $jetzt['aktionstoken'] : '';
+            if (ro_wert_pruefen('aktionstoken', $tok) === '') {
+                $neu['aktionstoken'] = $tok;
+                $behalten[] = 'aktionstoken';
+                $anzahl++;
+            } else {
+                $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), rb_e(ro_t('GRUND.TOKEN_LEER')));
+            }
+            continue;
+        }
         $grund = ro_wert_pruefen($k, $w);
         if ($grund !== '') {
             /* Auch der GRUND kann einen fremden Namen tragen:
@@ -3106,6 +3918,11 @@ function ro_sicherung_lesen($roh)
     }
     if ($anzahl === 0) {
         $mangel[] = ro_t('TEXT.SICH_LEER');
+    }
+    // Ansage-2: das geltende Sprechtoken bleibt (die Sicherung traegt keines).
+    if (isset($neu['tts']) && is_array($neu['tts'])) {
+        $neu['tts']['alexa_token'] = (isset($jetzt['tts']['alexa_token']) && is_string($jetzt['tts']['alexa_token']))
+            ? $jetzt['tts']['alexa_token'] : '';
     }
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
      *
@@ -3134,7 +3951,31 @@ function ro_sicherung_lesen($roh)
         $mangel[] = sprintf(ro_t('TEXT.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten);
+}
+
+/**
+ * X-3 (Durchgang 01.10.2026): Welche Einstellungen wuerde das Zurueckspielen
+ * der EIGENEN Sicherung abweisen? Gebaut wird genau die Datei, die
+ * "Einstellungen sichern" liefert, und durch dieselbe Pruefung geschickt wie
+ * beim Zurueckspielen (ro_sicherung_lesen()). Rueckgabe: Namen, nie Werte;
+ * leer heisst "wuerde angenommen".
+ *
+ * Der Fall, der hier anschlaegt: ein gespeicherter Wert, den eine aeltere
+ * Fassung oder eine Handaenderung hinterlassen hat (gemessen: cache_sec=999 -
+ * die Sicherung kam ohne Warnung, das Zurueckspielen wies sie ab,
+ * Oberflaechen-Pruefer Fall 7).
+ */
+function ro_sicherung_warnung(array $aus)
+{
+    $namen = array();
+    foreach ($aus as $k => $w) {
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_') { continue; }
+        if ($k === 'aktionstoken' && $w === '') { continue; }   // das geltende bliebe
+        if (!ro_wert_taugt($w) || ro_wert_pruefen($k, $w) !== '') { $namen[] = $k; }
+    }
+    return $namen;
 }
 
 /** Was in die Sicherungsdatei geschrieben wird - mit lesbarem Kopf. */
@@ -3151,6 +3992,16 @@ function ro_sicherung_bauen()
     // nichts in die Datei geraten, was die Leseseite danach ablehnt.
     foreach (array_keys(ro_vorgaben()) as $k) {
         $aus[$k] = isset($cfg[$k]) ? $cfg[$k] : null;
+    }
+    /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
+     * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
+     * geltende (ro_sicherung_lesen()). */
+    if (isset($aus['tts']) && is_array($aus['tts'])) { unset($aus['tts']['alexa_token']); }
+    /* X-3: wuerde das eigene Zurueckspielen diese Datei abweisen, sagt es der
+     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
+    $warn = ro_sicherung_warnung($aus);
+    if ($warn) {
+        $aus = array('_warnung' => sprintf(ro_t('TEXT.SICH_WARN_KOPF'), implode(', ', $warn))) + $aus;
     }
     return $aus;
 }
@@ -3324,8 +4175,82 @@ function ro_reiterlage()
     );
 }
 
-function ro_selbsttest()
+/**
+ * U9 (Durchgang 01.10.2026): Tragen alle Formulare der Oberflaeche das
+ * Merkmal, und setzt der Server sm-active? Gezaehlt in der EIGENEN Datei
+ * (Regeln/04, Pflichtzeilen): jedes <form>...</form> muss rb_fmt() tragen,
+ * jeder Reiter der Positivliste muss die serverseitige Bedingung genau
+ * zweimal haben (Leiste und Bereich).
+ * Rueckgabe: array('lesbar', 'formulare', 'mit_merkmal', 'ohne_active' => Liste).
+ */
+function ro_formularlage()
 {
+    $datei = ro_oberflaeche_datei();
+    $aus = array('lesbar' => false, 'formulare' => 0, 'mit_merkmal' => 0, 'ohne_active' => array());
+    if ($datei === '') { return $aus; }
+    $t = (string) @file_get_contents($datei);
+    if ($t === '') { return $aus; }
+    $aus['lesbar'] = true;
+    preg_match_all('#<form\b.*?</form>#s', $t, $m);
+    $aus['formulare'] = count($m[0]);
+    foreach ($m[0] as $f) {
+        if (strpos($f, 'rb_fmt()') !== false) { $aus['mit_merkmal']++; }
+    }
+    $rl = ro_reiterlage();
+    foreach ($rl['liste'] as $tab) {
+        $n = substr_count($t, "\$rb_tab === '" . $tab . "' ? ' sm-active'");
+        if ($n !== 2) { $aus['ohne_active'][] = $tab; }
+    }
+    return $aus;
+}
+
+/** Der Port des LoxBerry-Webservers (general.json, Webserver.Port), sonst 80. */
+function ro_webport()
+{
+    static $port = null;
+    if ($port !== null) { return $port; }
+    $port = 80;
+    $p = ro_paths();
+    if ($p['general'] !== '' && is_file($p['general'])) {
+        $g = json_decode((string) @file_get_contents($p['general']), true);
+        foreach (array('Webserver', 'WEBSERVER') as $ab) {
+            if (isset($g[$ab]['Port']) && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
+                $port = (int) $g[$ab]['Port'];
+                break;
+            }
+        }
+    }
+    return $port;
+}
+
+/**
+ * U9: Antwortet der eigene Endpunkt? Ein echter Aufruf ?selftest=1 auf
+ * 127.0.0.1 (loest nichts aus). Findet die getrennten Baeume, die keine
+ * Leseprobe sieht. Rueckgabe array(Stand 1/0, Text).
+ */
+function ro_endpunkt_probe($token)
+{
+    $url = 'http://127.0.0.1' . (ro_webport() === 80 ? '' : ':' . ro_webport())
+         . ro_endpunkt_pfad(array('selftest' => 1, 'token' => $token));
+    list($r, $code) = ro_http($url, array('method' => 'GET', 'timeout' => 3, 'ignore_errors' => true,
+        'follow_location' => 0, 'user_agent' => 'LoxBerry Saugroboter Selbstpruefung'));
+    $z = trim((string) strtok((string) $r, "\n"));
+    if ($code === 200 && strpos($z, 'SELFTEST;OK=1') === 0) {
+        return array(1, sprintf(ro_t('PRUEF.ENDPUNKT_OK'), ro_endpunkt_pfad()));
+    }
+    $z = substr((string) preg_replace('/[^A-Za-z0-9;=_.:\-]/', '', $z), 0, 60);
+    return array(0, sprintf(ro_t('PRUEF.ENDPUNKT_FEHL'), $code > 0 ? 'HTTP ' . $code : ro_t('PRUEF.KEINE_ANTWORT'),
+        $z !== '' ? $z : '-'));
+}
+
+/**
+ * $opt['test_offen']: der Reiter Test ist der aktive - nur dann werden
+ * Aufrufe gemacht, die warten koennen (eigener Endpunkt, Alexa-NG). Der
+ * Reiter Test wird bei JEDEM Seitenaufbau mitgerendert.
+ */
+function ro_selbsttest($opt = array())
+{
+    $test_offen = !empty($opt['test_offen']);
     $cfg = ro_config();
     $z = array();
     $add = function ($schluessel, $ok, $text) use (&$z) {
@@ -3354,8 +4279,14 @@ function ro_selbsttest()
         }
         foreach ((array) $st['material_fremd'] as $f) { $unbekannt[$f] = 1; }
     }
-    $add('PRUEF.ERREICHBAR', ($robots && $erreicht === count($robots)) ? 1 : ($erreicht > 0 ? 2 : 0),
-        $erreicht . '/' . count($robots));
+    /* U7 (Durchgang 01.10.2026): kein Urteil ueber eine leere Menge. Ohne
+     * Roboter stand hier ein Kreuz "0/0" (Oberflaechen-Pruefer Fall 10). */
+    if (!$robots) {
+        $add('PRUEF.ERREICHBAR', 2, ro_t('PRUEF.KEIN_ROBOTER'));
+    } else {
+        $add('PRUEF.ERREICHBAR', ($erreicht === count($robots)) ? 1 : ($erreicht > 0 ? 2 : 0),
+            $erreicht . '/' . count($robots));
+    }
     $add('PRUEF.MODELL', $modelle ? 1 : 2, implode(', ', $modelle));
 
     // Welche Faehigkeiten meldet der erste Roboter?
@@ -3414,6 +4345,26 @@ function ro_selbsttest()
         $add('PRUEF.KONFIG', 1, sprintf(ro_t('PRUEF.KONFIG_VOLL'), $lage['anzahl']));
     }
 
+    /* U8 (Durchgang 01.10.2026): Ist die Konfiguration heil? Aus
+     * ro_cfg_zustand() - dem ERSTEN Befund dieses Prozesses, den eine
+     * Selbstheilung nicht ueberschreibt. Bis 1.1.11 wurde er gesetzt und nie
+     * gelesen; eine aus der Zweitschrift geheilte Datei zeigte nur einen
+     * Haken (Oberflaechen-Pruefer Fall 11). Liegt eine .kaputt-Datei, steht
+     * das auch in jedem spaeteren Aufruf. */
+    $cz = ro_cfg_zustand();
+    $kp = ro_paths();
+    $kaputt_da = is_file($kp['config'] . '.kaputt');
+    if ($cz === 'aus der Zweitschrift' || $cz === 'kaputt') {
+        $add('PRUEF.HEIL', 0, ro_t($cz === 'kaputt' ? 'PRUEF.HEIL_KAPUTT' : 'PRUEF.HEIL_ZWEITSCHRIFT'));
+    } elseif ($kaputt_da) {
+        $add('PRUEF.HEIL', 2, sprintf(ro_t('PRUEF.HEIL_KAPUTT_LIEGT'),
+            basename($kp['config']) . '.kaputt', date('d.m.Y H:i', (int) @filemtime($kp['config'] . '.kaputt'))));
+    } elseif ($cz === 'fehlt' || $cz === 'leer') {
+        $add('PRUEF.HEIL', 2, ro_t('PRUEF.HEIL_LEER'));
+    } else {
+        $add('PRUEF.HEIL', 1, ro_t('PRUEF.HEIL_OK'));
+    }
+
     // Die eigene Vorlage: wohlgeformt?
     if (function_exists('simplexml_load_string')) {
         list(, $inhalt) = ro_vorlage(1);
@@ -3462,6 +4413,26 @@ function ro_selbsttest()
             count($rl['leiste']), count($rl['bereiche']), count($rl['liste'])));
     }
 
+    /* U9 (Durchgang 01.10.2026): drei Pflichtzeilen aus Regeln/04. */
+    $fl = ro_formularlage();
+    if (!$fl['lesbar']) {
+        $add('PRUEF.MERKMAL', 2, ro_t('PRUEF.REITER_UNLESBAR'));
+        $add('PRUEF.ACTIVE', 2, ro_t('PRUEF.REITER_UNLESBAR'));
+    } else {
+        $add('PRUEF.MERKMAL', ($fl['formulare'] > 0 && $fl['formulare'] === $fl['mit_merkmal']) ? 1 : 0,
+            sprintf(ro_t('PRUEF.MERKMAL_ZAHL'), $fl['mit_merkmal'], $fl['formulare']));
+        $add('PRUEF.ACTIVE', $fl['ohne_active'] ? 0 : 1,
+            $fl['ohne_active'] ? implode(', ', $fl['ohne_active']) : ro_t('PRUEF.ACTIVE_OK'));
+    }
+    if (trim((string) $cfg['aktionstoken']) === '') {
+        $add('PRUEF.ENDPUNKT', 2, ro_t('PRUEF.ENDPUNKT_KEIN_TOKEN'));
+    } elseif (!$test_offen) {
+        $add('PRUEF.ENDPUNKT', 2, ro_t('PRUEF.ENDPUNKT_ZU'));
+    } else {
+        list($es, $et) = ro_endpunkt_probe((string) $cfg['aktionstoken']);
+        $add('PRUEF.ENDPUNKT', $es, $et);
+    }
+
     /* Nennt die Themenliste genau das, was der Sender bildet?
      *
      * Gemessen wird die WIRKUNG: ro_mqtt_werte() wird wirklich gebildet und
@@ -3494,6 +4465,12 @@ function ro_selbsttest()
             implode(', ', array_merge($nur_liste, $nur_sender))));
     } else {
         $add('PRUEF.THEMEN', 1, sprintf(ro_t('PRUEF.THEMEN_OK'), count($themen)));
+    }
+
+    // Ansage-2: Alexa-NG als Ausgabeart - fragt nur bei offenem Reiter Test.
+    if (isset($cfg['tts']['mode']) && $cfg['tts']['mode'] === 'alexang') {
+        list($as, $at) = ro_pruef_alexang($cfg, $test_offen);
+        $add('PRUEF.ALEXA', $as, $at);
     }
 
     // Nicht-stoeren-Zeit in Valetudo - sie kann einem Loxone-Programm in die

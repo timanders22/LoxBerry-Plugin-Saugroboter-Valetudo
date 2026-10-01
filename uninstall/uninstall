@@ -90,11 +90,26 @@ fi
 BK="$BASE/config/plugins/$PDIR.backup.json"
 TMP="/tmp/$PDIR"
 
-if [ -f "$BK" ]; then
-    rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
-    echo "<INFO> Adressen der Roboter und das Aktionstoken sind damit fort."
-else
-    echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+# I4 (Durchgang 01.10.2026): "fort" nur, wenn die Datei wirklich weg ist.
+# Bis 1.1.11 stand der Satz unbedingt da - auch nach "Permission denied", und
+# die Zweitschrift lag noch (in WSL gemessen, Installer-Pruefer Fall E4).
+# I1: dazu die beiseitegelegte Zweitschrift (.alt) einer Neuinstallation und
+# die Marke eines abgebrochenen Updates.
+RO_REST=""
+for RO_D in "$BK" "$BK.alt" "$BASE/data/plugins/$PDIR.upgrade_laeuft"; do
+    if [ -e "$RO_D" ] || [ -L "$RO_D" ]; then
+        rm -f "$RO_D" 2>/dev/null
+        if [ -e "$RO_D" ] || [ -L "$RO_D" ]; then
+            RO_REST="$RO_REST $RO_D"
+        else
+            echo "<OK> Entfernt: $(basename "$RO_D")"
+        fi
+    fi
+done
+if [ -n "$RO_REST" ]; then
+    echo "<WARNING> Nicht zu entfernen, bitte von Hand loeschen (darin stehen Roboteradressen und Aktionstoken):$RO_REST"
+elif [ ! -e "$BK.alt" ]; then
+    echo "<INFO> Ausserhalb des Plugin-Ordners liegt keine Sicherung mehr - Adressen der Roboter und Aktionstoken sind fort."
 fi
 
 if [ -d "$TMP" ]; then

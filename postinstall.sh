@@ -4,8 +4,18 @@
 #
 # Laeuft IMMER, auch beim Upgrade - dort unmittelbar nachdem der Installer
 # config/plugins/<ordner>/ und data/plugins/<ordner>/ geloescht und die
-# mitgelieferte Konfiguration hineinkopiert hat. Die einzige Quelle, die den
-# Loeschschritt uebersteht, ist die Sicherung NEBEN dem Konfigordner.
+# mitgelieferte Konfiguration hineinkopiert hat.
+#
+# I1 (Durchgang 01.10.2026, Entscheidung 1): dieses Skript spielt NICHTS mehr
+# zurueck.
+#   - Aktualisierung (Marke data/plugins/<ordner>.upgrade_laeuft von
+#     preupgrade.sh): postupgrade.sh spielt zurueck - zuerst die Sicherung
+#     DIESES Laufs, die Zweitschrift nur als Rueckfall (I3).
+#   - Neuinstallation (keine Marke): preinstall.sh hat eine liegengebliebene
+#     Zweitschrift schon nach .alt gelegt.
+# Bis 1.1.11 spielte es die Zweitschrift bei JEDEM Einbau zurueck und meldete
+# auch bei einer Neuinstallation "Aktualisierung abgeschlossen" (in WSL
+# gemessen, Installer-Pruefer Fall D1).
 #
 # Bis 1.0.14 meldete dieses Skript <OK> und gab 0 zurueck, auch wenn gar
 # nichts angelegt werden konnte. Gemessen ohne fuenftes Argument und ohne
@@ -105,16 +115,13 @@ ro_hat_inhalt() {
         if (!is_array($d)) { exit(1); }
         exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
 }
-if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        if ro_hat_inhalt "$BK"; then
-            cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
-            echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
-        else
-            echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
-            echo "<WARNING> Objekt mit Aktionstoken) - sie wurde nicht uebernommen."
-        fi
-    fi
+# I1: Aktualisierung oder Neuinstallation - das sagt allein die Marke (kein
+# Altersvergleich, Entscheidung 1).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    AKTUALISIERUNG=1
+else
+    AKTUALISIERUNG=0
 fi
 
 # SCHLUSSZEILE NACH INHALT.
@@ -146,8 +153,10 @@ if command -v php >/dev/null 2>&1 && php -r '
     RO_EINGERICHTET=1
 fi
 
-if [ "$RO_EINGERICHTET" = "1" ]; then
-    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen (Roboteradresse eingetragen)."
+if [ "$AKTUALISIERUNG" = "1" ]; then
+    echo "<OK> Dateien eingespielt. Die Konfiguration spielt der naechste Schritt (postupgrade.sh) zurueck."
+elif [ "$RO_EINGERICHTET" = "1" ]; then
+    echo "<OK> Installation abgeschlossen. Die Konfiguration ist vorhanden (Roboteradresse eingetragen)."
 else
     echo "<OK> Installation abgeschlossen."
     echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen und im Reiter Einstellungen"
