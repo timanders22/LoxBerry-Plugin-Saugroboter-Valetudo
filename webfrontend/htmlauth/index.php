@@ -150,7 +150,8 @@ function rb_flash_lesen()
  * Formular". Mit der Einmalmeldung reisen unter 'eingaben' die Felder des
  * EINEN beanstandeten Formulars und die Namen der beanstandeten Felder. Nie
  * mit reisen: die Valetudo-Kennwoerter (r_pass[]), das Sprechtoken fuer
- * Alexa-NG (tts_alexa_token) und das Formularmerkmal - sie stehen in keiner
+ * Alexa-NG (tts_alexa_token), das fuer Chromecast 4 Lox NG (tts_google_token,
+ * Ansage-3) und das Formularmerkmal - sie stehen in keiner
  * der Listen unten; ihre Felder koennen markiert werden, ihr Wert reist nie
  * mit. Ein Wert, der kein gueltiges UTF-8 ist oder laenger als 2100 Byte,
  * reist nicht mit; sein Feld zeigt dann den gespeicherten Wert (und bleibt
@@ -164,7 +165,8 @@ function rb_eingabe_felder($formular)
         return array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis', 'tts_mode', 'tts_ip', 'tts_port', 'tts_zones', 'tts_volume', 'tts_lang',
-                     'tts_template', 'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen');
+                     'tts_template', 'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen',
+                     'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen');
     }
     return array();
 }
@@ -485,12 +487,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
         $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_AUDIOSERVER'));
     } elseif (ro_say(ro_t('TEXT.TESTANSAGE_TEXT'))) {
         $rb_meldungen[] = rb_e(ro_t('TEXT.TESTANSAGE_OK'));
+        /* Ansage-3: bei Google steht die Antwort immer dabei (HTTP-Code und GRUND,
+         * z. B. EINGEREIHT oder UNVERAENDERT) - nie Token oder Text. */
+        $rb_td = $rb_tm === 'cc4lox' ? ro_sprech_letzte('google') : null;
+        if (is_array($rb_td) && isset($rb_td['code'], $rb_td['antwort'])) {
+            $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.GOOGLE_ANTWORT'), (int) $rb_td['code'], (string) $rb_td['antwort']));
+        }
     } else {
         $rb_tg = '';
-        $rb_tl = ro_tmpdir() . '/alexa_letzte.json';
-        if ($rb_tm === 'alexang' && is_file($rb_tl)) {
-            $rb_td = json_decode((string) @file_get_contents($rb_tl), true);
-            $rb_tg = (is_array($rb_td) && isset($rb_td['grund']) && is_string($rb_td['grund'])) ? $rb_td['grund'] : '';
+        // Ansage-2/-3: der Grund aus der Merkdatei der gewaehlten Sprech-Ausgabeart.
+        $rb_tart = $rb_tm === 'alexang' ? 'alexa' : ($rb_tm === 'cc4lox' ? 'google' : '');
+        $rb_td = $rb_tart !== '' ? ro_sprech_letzte($rb_tart) : null;
+        if (is_array($rb_td) && isset($rb_td['grund']) && is_string($rb_td['grund'])) {
+            $rb_tg = $rb_td['grund'];
         }
         $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ($rb_tg !== '' ? ' ' . $rb_tg : ''));
     }
@@ -757,6 +766,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     if ($rb_t['mode'] === 'alexang' && $rb_t['alexa_token'] === '' && !in_array('tts_alexa_token', rb_bean(), true)) {
         $rb_hw[] = rb_e(ro_t('TEXT.ALEXA_OHNE_TOKEN'));
         rb_bean('tts_alexa_token');
+    }
+    /* Ansage-3: Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG), gleiche Regeln
+     * wie bei Alexa-NG, eigenes Sprechtoken. Leere Lautstaerke heisst: die
+     * Ansagelautstaerke des Chromecast-Plugins (-1). */
+    $rb_t['google_geraet'] = $rb_text('tts_google_geraet');
+    if ($rb_t['google_geraet'] === null || !ro_alexa_geraet_ok($rb_t['google_geraet'])) {
+        $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_GERAET'), ro_t('GRUND.GOOGLE_GERAET'));
+        rb_bean('tts_google_geraet');
+    }
+    $rb_gl = $rb_text('tts_google_laut');
+    if ($rb_gl === '') {
+        $rb_t['google_laut'] = -1;
+    } else {
+        $rb_t['google_laut'] = $rb_zahl($rb_gl, 0, 100);
+        if ($rb_t['google_laut'] === null) {
+            $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_LAUT'), ro_t('GRUND.GOOGLE_LAUT'));
+            rb_bean('tts_google_laut');
+        }
+    }
+    $rb_t['google_token'] = (string) $rb_ta['google_token'];
+    $rb_gtn = $rb_text('tts_google_token');
+    if ($rb_gtn === null) {
+        $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_TOKEN'), ro_t('GRUND.GOOGLE_TOKEN'));
+        rb_bean('tts_google_token');
+    } elseif (!empty($_POST['tts_google_token_loeschen'])) {
+        if ($rb_gtn !== '') {
+            $rb_hw[] = rb_e(ro_t('TEXT.GOOGLE_TOKEN_WIDERSPRUCH'));
+            rb_bean('tts_google_token');
+            rb_bean('tts_google_token_loeschen');
+        } else {
+            $rb_t['google_token'] = '';
+        }
+    } elseif ($rb_gtn !== '') {
+        if (ro_alexa_token_ok($rb_gtn)) {
+            $rb_t['google_token'] = $rb_gtn;
+        } else {
+            $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_TOKEN'), ro_t('GRUND.GOOGLE_TOKEN'));
+            rb_bean('tts_google_token');
+        }
+    }
+    if ($rb_t['mode'] === 'cc4lox' && $rb_t['google_token'] === '' && !in_array('tts_google_token', rb_bean(), true)) {
+        $rb_hw[] = rb_e(ro_t('TEXT.GOOGLE_OHNE_TOKEN'));
+        rb_bean('tts_google_token');
     }
     $rb_neu['tts'] = $rb_t;
     /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
@@ -1099,6 +1151,7 @@ for ($rb_i = 0; $rb_i < 2; $rb_i++) {
             <option value="audioserver"<?= $rb_tmod === 'audioserver' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_AUDIOSERVER')) ?></option>
             <option value="custom"<?= $rb_tmod === 'custom' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_EIGEN')) ?></option>
             <option value="alexang"<?= $rb_tmod === 'alexang' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_ALEXA')) ?></option>
+            <option value="cc4lox"<?= $rb_tmod === 'cc4lox' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_GOOGLE')) ?></option>
         </select>
     </div>
     <div>
@@ -1156,6 +1209,32 @@ for ($rb_i = 0; $rb_i < 2; $rb_i++) {
             <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1"<?= rb_haken('tts_alexa_token_loeschen', false) ? ' checked' : '' ?><?= rb_m('tts_alexa_token_loeschen') ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?>
         </label>
         <div class="sm-small"><?= rb_e(ro_t('EINST.ALEXA_TOKEN_HINWEIS')) ?></div>
+    </div>
+</div>
+</div>
+<?php /* Ansage-3: Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG). Das
+         Sprechtoken steht nie in der Seite - das Feld ist immer leer, der
+         Platzhalter sagt, ob eines gespeichert ist und wie lang es ist. */ ?>
+<div id="tts_google_rows">
+<div class="sm-alert sm-info"><?= ro_t('EINST.GOOGLE_HINWEIS') ?></div>
+<div class="sm-row">
+    <div>
+        <label><?= rb_e(ro_t('EINST.GOOGLE_GERAET')) ?></label>
+        <input data-role="none" type="text" name="tts_google_geraet" value="<?= rb_e(rb_w('tts_google_geraet', $rb_tts['google_geraet'])) ?>"<?= rb_m('tts_google_geraet') ?> maxlength="200" placeholder="Wohnzimmer">
+        <div class="sm-small"><?= ro_t('EINST.GOOGLE_GERAET_HINWEIS') ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('EINST.GOOGLE_LAUT')) ?></label>
+        <input data-role="none" type="number" name="tts_google_laut" value="<?= rb_e(rb_w('tts_google_laut', (int) $rb_tts['google_laut'] >= 0 ? (int) $rb_tts['google_laut'] : '')) ?>"<?= rb_m('tts_google_laut') ?> min="0" max="100">
+        <div class="sm-small"><?= rb_e(ro_t('EINST.GOOGLE_LAUT_HINWEIS')) ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('EINST.GOOGLE_TOKEN')) ?></label>
+        <input data-role="none" type="password" name="tts_google_token" value="" autocomplete="new-password"<?= rb_m('tts_google_token') ?> placeholder="<?= rb_e((string) $rb_tts['google_token'] !== '' ? sprintf(ro_t('EINST.GOOGLE_TOKEN_DA'), strlen((string) $rb_tts['google_token'])) : ro_t('EINST.GOOGLE_TOKEN_LEER')) ?>">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
+            <input data-role="none" type="checkbox" name="tts_google_token_loeschen" value="1"<?= rb_haken('tts_google_token_loeschen', false) ? ' checked' : '' ?><?= rb_m('tts_google_token_loeschen') ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?>
+        </label>
+        <div class="sm-small"><?= rb_e(ro_t('EINST.GOOGLE_TOKEN_HINWEIS')) ?></div>
     </div>
 </div>
 </div>
@@ -1406,7 +1485,7 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
 <h2><?= rb_e(ro_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <div class="sm-small"><?= rb_e(ro_t('TEST.SELBST_HINWEIS')) ?></div>
 <table class="sm-tbl sm-pruef">
-<?php /* U9: Aufrufe, die warten koennen (eigener Endpunkt, Alexa-NG), nur bei offenem Reiter Test. */
+<?php /* U9: Aufrufe, die warten koennen (eigener Endpunkt, Alexa-NG, Chromecast 4 Lox NG), nur bei offenem Reiter Test. */
 foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) {
     $rb_zeichen = $rb_z['ok'] === 1 ? '&#10003;' : ($rb_z['ok'] === 0 ? '&#10007;' : '&ndash;');
     $rb_farbe = $rb_z['ok'] === 1 ? '#4f7d17' : ($rb_z['ok'] === 0 ? '#c62828' : '#888'); ?>
@@ -1448,7 +1527,7 @@ foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) 
 <?php if (ro_kann(1, 'AutoEmptyDockManualTriggerCapability')) { ?>
 <a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'absaugen', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ABSAUGEN')) ?></a>
 <?php } ?>
-<?php /* U14: Testansage ueber den eingestellten Ausgabeweg (auch Alexa-NG). */ ?>
+<?php /* U14: Testansage ueber den eingestellten Ausgabeweg (auch Alexa-NG und Google-Lautsprecher). */ ?>
 <form method="post" action="index.php">
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <?= rb_fmt() ?>
@@ -1535,6 +1614,8 @@ function rbTtsMode() {
     document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
     var al = document.getElementById('tts_alexa_rows');
     if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
+    var gl = document.getElementById('tts_google_rows');
+    if (gl) { gl.style.display = (m === 'cc4lox' || gl.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
     var port = document.getElementsByName('tts_port')[0];
     if (m === 'musicserver' && (!port.value || port.value === '80')) { port.value = 7091; }
 }

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.11 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -479,6 +479,16 @@ Drei Änderungen, damit das wirklich wirkt:
 HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
 nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
 
+## Was 1.1.12 behebt
+
+Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an einer Attrappe und am echten Endpunkt aus Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe) unter PHP 7.4 und 8.5; die Ausgabe über Alexa NG und alle übrigen Ausgabearten messen vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Neue Ausgabeart „Google-Lautsprecher (Chromecast 4 Lox NG)“** für die Ansagen des Saugroboters, ab Werk nicht gewählt. Voraussetzung ist das Plugin [Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox) ab 1.3.15 mit eingeschalteter „Sprachausgabe für andere Plugins“.
+* Eigenes **Sprechtoken** (getrennt vom Alexa-NG-Token), wahlweise Lautsprecher (leer = Standardgerät) und Lautstärke (leer = Ansagelautstärke des Chromecast-Plugins). Das Token wird wie ein Kennwort behandelt: nie angezeigt, nie in einer Adresse oder im Protokoll, nicht in „Einstellungen sichern“; eine Sicherung mit Token wird abgewiesen, beim Zurückspielen bleibt das hinterlegte.
+* Als gesendet gilt nur HTTP 200 mit `SPRECHEN;OK=1`. Bei einem Ausfall (Plugin fehlt oder zu alt, Sprachausgabe dort aus, Dienst aus, kein Lautsprecher verbunden, falsches Token) entfällt die Ansage – kein Wiederholen, kein Wechsel auf einen anderen Lautsprecher. Protokoll und Reiter Test nennen HTTP-Code und Grund.
+* Reiter Test: neue Zeile „Antwortet Chromecast 4 Lox NG, passt das Sprechtoken?“ (nur bei geöffnetem Reiter); der Knopf „Testansage sprechen“ zeigt bei Google die Antwortzeile.
+* Bei dieser Ausgabeart steht vom Ansagetext nur seine Länge im Protokoll.
+
 ## Was 1.1.11 behebt
 
 Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Saugroboter-Valetudo_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 8, 16, 19, 26 und 28).
@@ -680,10 +690,11 @@ liefern in beiden Sprachen zeichengleiche Ausgabe ohne eine Meldung.
 - **Gleiche Sollwerte** (`fan`, `wasser`, `modus`, `ruhezeit`) gehen
   innerhalb von 60 s nur einmal an Valetudo (`UNVERAENDERT=1`); Aufträge wie
   `start`, `stop`, `home` und Raumreinigungen wirken immer
-- **Ansage** über Music Server, AudioServer4Home, eine eigene URL-Vorlage oder
-  das eigene Plugin **Alexa-NG** (ab Werk nicht gewählt,
-  https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG); gesprochen heißt:
-  die Gegenstelle hat sie mit HTTP 2xx angenommen
+- **Ansage** über Music Server, AudioServer4Home, eine eigene URL-Vorlage, das
+  eigene Plugin **Alexa-NG** (ab Werk nicht gewählt,
+  https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG) oder
+  **Google-Lautsprecher über Chromecast 4 Lox NG** (ab Werk nicht gewählt, siehe
+  unten); gesprochen heißt: die Gegenstelle hat sie mit HTTP 2xx angenommen
 - **Selbstprüfung** im Reiter Test, **Sicherung** der Einstellungen über zwei
   Knöpfe, **Anmeldung** an Valetudo (HTTP Basic Auth)
 - Bis zu **2 Roboter**, MQTT, JSON, Protokoll mit Rotation
@@ -771,6 +782,35 @@ Subscriptions). Unter V2 erscheint die Themengruppe von selbst. Das Plugin
 misst `Mqtt.Gatewayversion` und zeigt nur den Satz, der zur installierten
 Fassung passt.
 
+## Ansage über Google-Lautsprecher (Chromecast 4 Lox NG)
+
+Als Ausgabeweg der Sprachausgabe lässt sich **„Google-Lautsprecher (Chromecast 4
+Lox NG)“** wählen; ab Werk ist sie nicht gewählt. Gesprochen wird über das Plugin
+Chromecast 4 Lox NG auf demselben LoxBerry, ab der Fassung mit der Sprachausgabe
+für andere Plugins (1.3.15).
+
+* **Einrichten im Chromecast-Plugin:** Reiter *Einstellungen*, Abschnitt
+  *Sprachausgabe für andere Plugins*: den Haken einschalten (ab Werk aus), ein
+  Sprechtoken festlegen und wahlweise ein Standardgerät.
+* **Hier eintragen:** Lautsprecher (leer = Standardgerät; ein Name aus der
+  Geräteliste, auch das MQTT-Thema, mehrere mit Komma, `gruppe:Name` oder
+  `alle`), Lautstärke (leer = Ansagelautstärke des Chromecast-Plugins) und das
+  Sprechtoken. Es ist ein anderes als das von Alexa-NG und wird wie ein
+  Kennwort behandelt: nie in der Seite, nie in der Sicherung.
+* **Aufruf:** `POST http://127.0.0.1:<Webport>/plugins/chromecast-4lox-ng/index.php`,
+  das Token nur im Körper. Als gesendet gilt nur `HTTP 200` mit
+  `SPRECHEN;OK=1` – der Dienst hat die Ansage bei den verbundenen Lautsprechern
+  eingereiht. Derselbe Text binnen 30 s gilt als gesendet (`UNVERAENDERT`),
+  wird aber nicht wiederholt.
+* **Bei Ausfall** (Plugin fehlt oder ist älter als 1.3.15, Dienst aus,
+  Lautsprecher nicht verbunden, Token falsch, Stundengrenze) entfällt die
+  Ansage. Es wird nicht still auf einen anderen Lautsprecher gewechselt und
+  nicht selbst wiederholt; Protokoll und Reiter Test nennen HTTP-Code und
+  Grund. Im Protokoll steht von der Ansage nur ihre Länge.
+* **Reiter Test:** Die Zeile „Antwortet Chromecast 4 Lox NG, passt das
+  Sprechtoken?“ fragt nur bei offenem Reiter (Selbsttest, es wird nichts
+  gesprochen); der Knopf „Testansage sprechen“ zeigt die Antwort.
+
 ## Voraussetzung
 
 Auf dem Roboter läuft **Valetudo** (Fassung mit `/api/v2`). Es werden keine
@@ -789,8 +829,8 @@ die Anmeldung an Valetudo. Dasselbe gilt für die Sicherungsdatei, die der Knopf
 im Reiter Einstellungen erzeugt: ohne das Token stünden nach dem Zurückspielen
 alle Felder richtig, und das Plugin käme trotzdem nicht an die Anlage. Beide
 Dateien gehören behandelt wie ein Passwort — nicht in ein Forum hängen und
-nicht an einen Fehlerbericht heften. Das Sprechtoken für Alexa-NG steht nie in
-der Sicherung.
+nicht an einen Fehlerbericht heften. Die Sprechtoken für Alexa-NG und für
+Chromecast 4 Lox NG stehen nie in der Sicherung.
 
 Eine **Neuinstallation** spielt keine Einstellungen einer früheren Installation
 ein: eine liegengebliebene Zweitschrift (`config/plugins/saugrobo.backup.json`)
