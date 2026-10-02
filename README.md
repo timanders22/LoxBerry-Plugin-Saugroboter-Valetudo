@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -478,6 +478,20 @@ Drei Änderungen, damit das wirklich wirkt:
 `?selftest=1&token=…` — antwortet `SELFTEST;OK=1;TOKEN=OK` beziehungsweise
 HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
 nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
+
+## Was 1.1.13 behebt
+
+Baustein-Liste zum Nachbauen (Nachzug B: X-8, Hausregel A4).
+Gemessen mit der gerenderten Oberfläche unter PHP 7.4 und 8.5 gegen die mitgelieferten Vorlagen; nicht am Gerät.
+
+* **Baustein-Liste zum Nachbauen:** Schritt 4 im Reiter „Einbindung in Loxone“ ist jetzt EINE nummerierte Liste
+  (# | Baustein | Name | Parameter | Eingänge verbinden mit) mit 32 Zeilen statt drei Teiltabellen mit Kurzmarken
+  (S1…S7, U1…U4, O1). Neu vorne: der virtuelle HTTP-Eingang und der virtuelle Ausgang samt allen 41 bzw. 17 Befehlen –
+  Titel, Adressen und Befehle so, wie die beiden Vorlagen-Knöpfe sie erzeugen (aus denselben Funktionen gelesen).
+  Jede Analoganzeige hat eine eigene Zeile; „Saugen freigeben“ (drei Bedingungen) ist jetzt eine Kaskade aus zwei UND;
+  die drei Steuerbefehle Start, Home und Absaugen stehen als eigene Zeilen mit ihrer Quelle.
+* **In Loxone:** nichts zu tun. Wer nach der alten Liste gebaut hat, hat dieselben Bausteine; nur das UND „Saugen
+  freigeben“ mit drei Eingängen sollte nach der neuen Liste auf zwei UND aufgeteilt werden.
 
 ## Was 1.1.12 behebt
 

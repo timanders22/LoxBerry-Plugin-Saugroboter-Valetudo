@@ -1442,36 +1442,115 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
 </form>
 
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT4')) ?></b><br>
-<b><?= rb_e(ro_t('LOX.B4A')) ?></b>
+<?php /* X-8 (02.10.2026, Entscheidung 36): Komplette Baustein-Liste in EINER
+         nummerierten Tabelle, eine Zeile je Baustein. Typ, Name, Parameter und
+         Verbindung stehen in [BAUSTEIN] der Sprachdateien. Vorlagen-Titel,
+         Adressen und Befehlstitel kommen aus DENSELBEN Funktionen wie die
+         Importvorlagen: ro_vorlage(1) und ro_vo_vorlage(1) werden gerufen und
+         ihre XML gelesen, nicht abgeschrieben.
+         Platzhalter: {Bn} -> "#n", {F:FELD} -> Titel des Eingangsbefehls zum
+         Feld, {A:befehl} -> Titel des Ausgangsbefehls zu ?cmd=befehl.
+         Zeile: array(Kennung, Typ, Name, Parameter, Argumente, Verbindung);
+         ein Name als array(wert) steht woertlich da (Wert aus dem Code). */
+$rb_bs_lesen = function ($xml) {
+    $w = function ($el, $attr) {
+        return preg_match('/\s' . $attr . '="([^"]*)"/', $el, $m)
+            ? html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8') : '';
+    };
+    $aus = array('titel' => '', 'adresse' => '', 'zyklus' => '', 'befehle' => array());
+    if (preg_match('/<(?:VirtualInHttp|VirtualOut)\s[^>]*>/', $xml, $m)) {
+        $aus['titel'] = $w($m[0], 'Title');
+        $aus['adresse'] = $w($m[0], 'Address');
+        $aus['zyklus'] = $w($m[0], 'PollingTime');
+    }
+    preg_match_all('/<(?:VirtualInHttpCmd|VirtualOutCmd)\s[^>]*>/', $xml, $mm);
+    foreach ($mm[0] as $el) {
+        $aus['befehle'][] = array('titel' => $w($el, 'Title'), 'check' => $w($el, 'Check'), 'ein' => $w($el, 'CmdOn'));
+    }
+    return $aus;
+};
+$rb_bs_xml = ro_vorlage(1);
+$rb_bs_vi = $rb_bs_lesen($rb_bs_xml[1]);
+$rb_bs_xml = ro_vo_vorlage(1);
+$rb_bs_vo = $rb_bs_lesen($rb_bs_xml[1]);
+$rb_bs_titel = array();
+$rb_bs_check = array();
+foreach ($rb_bs_vi['befehle'] as $rb_bs_b) {
+    if (preg_match('/;([A-Z0-9_]+)=/', $rb_bs_b['check'], $rb_bs_m)) {
+        $rb_bs_titel['F:' . $rb_bs_m[1]] = $rb_bs_b['titel'];
+        $rb_bs_check[$rb_bs_m[1]] = $rb_bs_b['check'];
+    }
+}
+foreach ($rb_bs_vo['befehle'] as $rb_bs_b) {
+    if (preg_match('/[?&]cmd=([^&]+)/', $rb_bs_b['ein'], $rb_bs_m)) {
+        $rb_bs_titel['A:' . rawurldecode($rb_bs_m[1])] = $rb_bs_b['titel'];
+    }
+}
+$rb_bs_mono = function ($s) { return '<span class="sm-mono">' . rb_e($s) . '</span>'; };
+$rb_bs_namen = function ($befehle) use ($rb_bs_mono) {
+    $t = array();
+    foreach ($befehle as $b) { $t[] = $rb_bs_mono($b['titel']); }
+    return implode(', ', $t);
+};
+$rb_bs_a = function ($cmd) use ($rb_bs_titel) {
+    return isset($rb_bs_titel['A:' . $cmd]) ? $rb_bs_titel['A:' . $cmd] : '{A:' . $cmd . '}';
+};
+$rb_bs = array(
+    array('B1', 'T_VI', array($rb_bs_vi['titel']), 'P_VI', array($rb_bs_mono($rb_bs_vi['adresse']), rb_e($rb_bs_vi['zyklus']), rb_e(ro_t('KNOPF.VORLAGE_VI'))), 'V_KEINE'),
+    array('B2', 'T_VI_BEFEHL', 'N_VORLAGE', 'P_VI_BEFEHL', array(count($rb_bs_vi['befehle']), $rb_bs_namen($rb_bs_vi['befehle']), $rb_bs_mono(isset($rb_bs_check['CODE']) ? $rb_bs_check['CODE'] : '')), 'V_UNTER_B1'),
+    array('B3', 'T_VO', array($rb_bs_vo['titel']), 'P_VO', array($rb_bs_mono($rb_bs_vo['adresse']), rb_e(ro_t('KNOPF.VORLAGE_VO'))), 'V_KEINE'),
+    array('B4', 'T_VO_BEFEHL', 'N_VORLAGE', 'P_VO_BEFEHL', array(count($rb_bs_vo['befehle']), $rb_bs_namen($rb_bs_vo['befehle'])), 'V_UNTER_B3'),
+    array('B5', 'T_STATUS', 'B5_NAME', 'B5_PARAM', array(), 'B5_VERB'),
+    array('B6', 'T_ANALOG', 'B6_NAME', 'B6_PARAM', array(), 'B6_VERB'),
+    array('B7', 'T_ANALOG', 'B7_NAME', 'B7_PARAM', array(), 'B7_VERB'),
+    array('B8', 'T_ANALOG', 'B8_NAME', 'B8_PARAM', array(), 'B8_VERB'),
+    array('B9', 'T_ANALOG', 'B9_NAME', 'P_EINHEIT_H', array(), 'B9_VERB'),
+    array('B10', 'T_ANALOG', 'B10_NAME', 'P_EINHEIT_H', array(), 'B10_VERB'),
+    array('B11', 'T_ANALOG', 'B11_NAME', 'P_EINHEIT_H', array(), 'B11_VERB'),
+    array('B12', 'T_ANALOG', 'B12_NAME', 'P_EINHEIT_H', array(), 'B12_VERB'),
+    array('B13', 'T_ANALOG', 'B13_NAME', 'P_EINHEIT_H', array(), 'B13_VERB'),
+    array('B14', 'T_STATUS', 'B14_NAME', 'B14_PARAM', array(), 'B14_VERB'),
+    array('B15', 'T_SCHWELL', 'B15_NAME', 'P_EIN_AUS', array(), 'B15_VERB'),
+    array('B16', 'T_SCHWELL', 'B16_NAME', 'P_EIN_AUS', array(), 'B16_VERB'),
+    array('B17', 'T_UND', 'B17_NAME', 'P_KEINE', array(), 'B17_VERB'),
+    array('B18', 'T_ODER', 'B18_NAME', 'B18_PARAM', array(), 'B18_VERB'),
+    array('B19', 'T_BENACH', 'B19_NAME', 'B19_PARAM', array(), 'B19_VERB'),
+    array('B20', 'T_SCHWELL', 'B20_NAME', 'P_EIN', array(), 'B20_VERB'),
+    array('B21', 'T_SCHWELL', 'B21_NAME', 'P_EIN', array(), 'B21_VERB'),
+    array('B22', 'T_SCHWELL', 'B22_NAME', 'P_EIN', array(), 'B22_VERB'),
+    array('B23', 'T_BENACH', 'B23_NAME', 'B23_PARAM', array(), 'B23_VERB'),
+    array('B24', 'T_SCHWELL', 'B24_NAME', 'B24_PARAM', array(), 'B24_VERB'),
+    array('B25', 'T_SCHWELL', 'B25_NAME', 'B25_PARAM', array(), 'B25_VERB'),
+    array('B26', 'T_UND', 'B26_NAME', 'P_KEINE', array(), 'B26_VERB'),
+    array('B27', 'T_UND', 'B27_NAME', 'P_KEINE', array(), 'B27_VERB'),
+    array('B28', 'T_UND', 'B28_NAME', 'P_KEINE', array(), 'B28_VERB'),
+    array('B29', 'T_UND', 'B29_NAME', 'P_KEINE', array(), 'B29_VERB'),
+    array('B30', 'T_VO_EIN', array($rb_bs_a('start')), 'P_VO_EIN', array($rb_bs_mono('?cmd=start')), 'B30_VERB'),
+    array('B31', 'T_VO_EIN', array($rb_bs_a('home')), 'P_VO_EIN', array($rb_bs_mono('?cmd=home')), 'B31_VERB'),
+    array('B32', 'T_VO_EIN', array($rb_bs_a('absaugen')), 'P_VO_EIN', array($rb_bs_mono('?cmd=absaugen')), 'B32_VERB'),
+);
+$rb_bs_nr = array();
+foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { $rb_bs_nr[$rb_bs_z[0]] = $rb_bs_i + 1; }
+/* Erst vsprintf auf den Sprachtext, dann die Platzhalter: die eingesetzten
+ * Titel und Adressen kommen so nie durch vsprintf. */
+$rb_bs_t = function ($schluessel, $argumente = array()) use ($rb_bs_nr, $rb_bs_titel, $rb_bs_mono) {
+    $s = (string) ro_t('BAUSTEIN.' . $schluessel);
+    if ($argumente) { $s = vsprintf($s, $argumente); }
+    return preg_replace_callback('/\{(B\d+|[FA]:[A-Za-z0-9_]+)\}/', function ($m) use ($rb_bs_nr, $rb_bs_titel, $rb_bs_mono) {
+        if (isset($rb_bs_nr[$m[1]])) { return '#' . $rb_bs_nr[$m[1]]; }
+        return isset($rb_bs_titel[$m[1]]) ? $rb_bs_mono($rb_bs_titel[$m[1]]) : $m[0];
+    }, $s);
+}; ?>
+<?= $rb_bs_t('TEXT') ?>
+<div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
-<tr><td><?= rb_e(ro_t('LOX.STATUSBAUSTEIN')) ?></td><td><?= rb_e(ro_t('LOX.SAUGROBOTER_ZUSTAND')) ?></td><td><?= rb_e(ro_t('LOX.TEXTE_JE_WERT')) ?></td><td><span class="sm-mono">CODE</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.ANALOGANZEIGEN')) ?></td><td><?= rb_e(ro_t('LOX.BATT_FLAECHE_DAUER')) ?></td><td><?= rb_e(ro_t('WORT.EINHEIT')) ?> <span class="sm-mono">&lt;v.0&gt; %</span>, <span class="sm-mono">&lt;v.1&gt; m&sup2;</span>, <span class="sm-mono">&lt;v.0&gt; min</span></td><td><span class="sm-mono">BATT, FLAECHE, DAUER</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.ANALOGANZEIGEN')) ?></td><td><?= rb_e(ro_t('LOX.VERBRAUCH')) ?></td><td><?= rb_e(ro_t('WORT.EINHEIT')) ?> <span class="sm-mono">&lt;v.0&gt; h</span></td><td><span class="sm-mono">FILTER, BHAUPT, BSEITE, SENSOR, MOP</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.STATUSBAUSTEIN')) ?></td><td><?= rb_e(ro_t('LOX.STATION')) ?></td><td><?= rb_e(ro_t('LOX.TEXTE_JE_WERT_DOCK')) ?></td><td><span class="sm-mono">DOCK</span></td></tr>
+<tr><th>#</th><th><?= rb_e(ro_t('BAUSTEIN.T_TYP')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_NAME')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_PARAM')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_VERB')) ?></th></tr>
+<?php foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { ?>
+<tr><td><?= $rb_bs_i + 1 ?></td><td><?= $rb_bs_t($rb_bs_z[1]) ?></td><td><span class="sm-mono"><?= is_array($rb_bs_z[2]) ? rb_e($rb_bs_z[2][0]) : $rb_bs_t($rb_bs_z[2]) ?></span></td><td><?= $rb_bs_t($rb_bs_z[3], $rb_bs_z[4]) ?></td><td><?= $rb_bs_t($rb_bs_z[5]) ?></td></tr>
+<?php } ?>
 </table>
-<b><?= rb_e(ro_t('LOX.B4B')) ?></b>
-<table class="sm-tbl">
-<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S1</td><td><?= rb_e(ro_t('LOX.MELDEFENSTER')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AUS04')) ?></td><td><span class="sm-mono">ANN</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S2</td><td><?= rb_e(ro_t('LOX.PUSH_FREIGEGEBEN')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AUS04')) ?></td><td><span class="sm-mono">PUSH</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.UND_ODER')) ?></td><td><?= rb_e(ro_t('LOX.ROBOTER_MELDUNG')) ?></td><td><?= rb_e(ro_t('LOX.O1_QUELLE')) ?></td><td><span class="sm-mono">S1, S2</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.BENACHRICHTIGUNG')) ?></td><td><?= rb_e(ro_t('LOX.PUSH_SAUGROBOTER')) ?></td><td><?= rb_e(ro_t('LOX.PUSH_TEXT')) ?></td><td><span class="sm-mono">O1</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S3</td><td><?= rb_e(ro_t('LOX.STOERUNG')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">FEHLER</span></td><td><span class="sm-mono">FEHLER</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S4</td><td><?= rb_e(ro_t('LOX.WARTUNG')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">MATWARN</span></td><td><span class="sm-mono">MATWARN</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S5</td><td><?= rb_e(ro_t('LOX.BEHAELTER_VOLL')) ?></td><td><?= rb_e(ro_t('LOX.EIN05_AN')) ?> <span class="sm-mono">EVMUELL</span></td><td><span class="sm-mono">EVMUELL</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.BENACHRICHTIGUNG')) ?></td><td><?= rb_e(ro_t('LOX.TEST_PUSH')) ?></td><td><?= rb_e(ro_t('LOX.EIGENER_BAUSTEIN')) ?></td><td><span class="sm-mono">PTEST</span></td></tr>
-</table>
-<b><?= rb_e(ro_t('LOX.B4C')) ?></b>
-<table class="sm-tbl">
-<tr><th><?= rb_e(ro_t('WORT.BAUSTEIN')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('WORT.EINSTELLUNG')) ?></th><th><?= rb_e(ro_t('WORT.EINGAENGE')) ?></th></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S6</td><td><?= rb_e(ro_t('LOX.PLUGIN_LEBT')) ?></td><td><?= rb_e(ro_t('LOX.ALTER_HINWEIS')) ?></td><td><span class="sm-mono">ALTER</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.SCHWELLWERT')) ?> S7</td><td><?= rb_e(ro_t('LOX.ROBOTER_BEREIT')) ?></td><td><?= rb_e(ro_t('LOX.INVERTIERT')) ?></td><td><span class="sm-mono">CODE</span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U2</td><td><?= rb_e(ro_t('LOX.SAUGEN_FREIGEBEN')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=start</span></td><td><?= rb_e(ro_t('LOX.S7_ABWESENHEIT')) ?></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U3</td><td><?= rb_e(ro_t('LOX.HEIMSCHICKEN')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=home</span></td><td><?= rb_e(ro_t('LOX.ANWESENHEIT')) ?></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.UND')) ?> U4</td><td><?= rb_e(ro_t('LOX.ABSAUGEN_NACHTS')) ?></td><td><?= rb_e(ro_t('LOX.AUF_VO')) ?> <span class="sm-mono">?cmd=absaugen</span></td><td><?= rb_e(ro_t('LOX.U4_EINGAENGE')) ?></td></tr>
-</table>
-<b><?= rb_e(ro_t('LOX.PRAXIS')) ?></b> <?= ro_t('LOX.PRAXIS_TEXT') ?>
+</div>
+<div class="sm-hinweis"><?= $rb_bs_t('ERLAEUTERUNG') ?></div>
 </div>
 
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT5')) ?></b><br>
