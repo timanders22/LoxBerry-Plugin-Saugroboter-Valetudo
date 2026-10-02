@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -478,6 +478,28 @@ Drei Änderungen, damit das wirklich wirkt:
 `?selftest=1&token=…` — antwortet `SELFTEST;OK=1;TOKEN=OK` beziehungsweise
 HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
 nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
+
+## Was 1.1.14 behebt
+
+Gemeinsame Sprachausgabe (Entscheidung 40, Stufe 1).
+Gemessen gegen Attrappen (Music Server, Alexa-NG,
+Chromecast 4 Lox NG) unter PHP 7.4 und 8.5 (Windows) und PHP 8.3 mit und ohne curl (WSL), dazu die Oberfläche unter
+PHP 7.4 und 8.5. Nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Ansagen laufen über die gemeinsame Sprachausgabe des Hauses** (`webfrontend/html/sprachausgabe.php`, Fassung
+  1.0.2, in jedem Plugin mit Sprachausgabe dieselbe Datei). Einstellungen, Formular, Texte, Reiter Test und
+  Sicherungsdatei bleiben, wie sie sind; eine Sicherung älterer Fassungen lässt sich weiter zurückspielen.
+* Das Protokoll nannte vom Ansagetext schon bisher nur die Länge; daran ändert sich nichts.
+* **Music Server und eigene Vorlage:** Eine Umleitung (HTTP 3xx) wird nicht mehr verfolgt. Bisher zählte die Antwort
+  des Umleitungsziels; jetzt gilt die Umleitung selbst als Fehlschlag. Als gesendet gilt weiter nur eine Antwort
+  2xx, die Wartezeit bleibt 10 s.
+* **Alexa-NG und Google-Lautsprecher:** dieselben Antworten, Meldungen und Wartezeit 10 s. Berichtigt: Bricht die
+  Antwort von Alexa-NG mitten im Rumpf ab, gilt die Ansage jetzt als nicht gesendet (Zeitüberschreitung nach 10 s);
+  bisher wurde der halbe Rumpf „SPRECHEN;OK=1“ als gesendet gewertet.
+* **Webport:** Ein Eintrag in `general.json` mit Zeichen hinter der Zahl (z. B. `8080abc`) gilt jetzt als ungültig,
+  dann wird Port 80 benutzt (bisher 8080).
+
+**In Loxone:** nichts zu tun.
 
 ## Was 1.1.13 behebt
 

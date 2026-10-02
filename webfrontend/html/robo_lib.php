@@ -39,6 +39,12 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
 
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
+ * Nr. 36 b, Stufe 1). Liegt neben dieser Datei; sie legt beim Einbinden nur
+ * Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
+
+
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
@@ -2878,6 +2884,14 @@ function ro_sprech_art($art)
         'p_letzte_ok' => 'PRUEF.ALEXA_LETZTE_OK', 'p_letzte_fehl' => 'PRUEF.ALEXA_LETZTE_FEHL');
 }
 
+/** Kontext fuer die gemeinsame Sprachausgabe (Nr. 36 b): Webport und Kopfzeile
+ *  dieses Plugins. Keine Merkdatei des Moduls - <art>_letzte.json fuehrt die
+ *  Linie in Stufe 1 weiter selbst. */
+function ro_ansage_k()
+{
+    return array('port' => ro_webport(), 'kopf' => array('User-Agent: LoxBerry Saugroboter'), 'ordner' => '');
+}
+
 /** Adresse des Sprech-Endpunkts auf 127.0.0.1 (Webport aus der general.json). */
 function ro_sprech_adresse($art)
 {
@@ -2889,7 +2903,7 @@ function ro_sprech_adresse($art)
  *  Chromecast 4 Lox NG 32 und verlangt selbst mindestens 16). Gilt fuer beide Ausgabearten. */
 function ro_alexa_token_ok($t)
 {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /** Geraet: leer (= Standardgeraet des Sprech-Plugins) oder 1 bis 200 Zeichen UTF-8,
@@ -2930,18 +2944,11 @@ function ro_tts_sprech_pruefen(array $wert, $art)
  */
 function ro_sprech_rufen($art, array $felder, $tmo = 10)
 {
-    $koerper = http_build_query($felder, '', '&');
-    list($r, $code) = ro_http(ro_sprech_adresse($art), array(
-        'method' => 'POST', 'timeout' => $tmo, 'content' => $koerper, 'ignore_errors' => true,
-        'follow_location' => 0, 'user_agent' => 'LoxBerry Saugroboter',
-        'header' => "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " . strlen($koerper) . "\r\n"));
-    $zeilen = preg_split('/\r?\n/', trim((string) $r));
-    $erste = trim((string) $zeilen[0]);
-    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
-        $erste = str_replace($felder['token'], '***', $erste);
-    }
-    $erste = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste), 0, 200);
-    return array('code' => $r === false ? 0 : (int) $code, 'zeile' => $erste);
+    /* Nr. 36 b, Stufe 1: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst
+     * Datenstrom; ohne Weiterleitung, ohne Proxy; Verbindungsaufbau hoechstens
+     * 3 s, gesamt $tmo wie bisher). Rueckgabe wie bisher. */
+    $a = ansage_ng_rufen(ro_sprech_adresse($art), $felder, $tmo, ro_ansage_k());
+    return array('code' => $a['code'], 'zeile' => $a['zeile']);
 }
 
 /**
@@ -3080,49 +3087,31 @@ function ro_pruef_sprech($art, array $cfg, $offen)
 /* ---------------- Ansage (TTS) ---------------- */
 
 function ro_tts_url($text) {
+    /* Nr. 36 b, Stufe 1: die Adresse baut die gemeinsame Sprachausgabe
+     * (ansage_tts_url()). Was diese Linie vorher anders machte als das Modul,
+     * bleibt hier davor: ein unbekannter Modus gilt als musicserver, nur Zonen
+     * der Form 3 oder 3~20 kommen in die Adresse (ueber eine zurueckgespielte
+     * Sicherung kaeme sonst beliebiger Text hinein), die Lautstaerke ist auf 1
+     * bis 100 begrenzt, und in Vorlagen steht {lang} nur aus Kleinbuchstaben. */
     $cfg = ro_config(); $tts = $cfg['tts'];
     $mode = (string) (isset($tts['mode']) ? $tts['mode'] : 'musicserver');
     if (!in_array($mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
         $mode = 'musicserver';
     }
     if ($mode === 'audioserver') { return null; }
-    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
-    }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren. Vorher wurde nur im
-     * Modus musicserver je Zone getrimmt; in den Vorlagen-Modi ging die
-     * Eingabe roh in {zones} - aus "2, 4, 6" wurde eine Adresse mit
-     * Leerzeichen. */
     $zl = array();
     foreach (explode(',', (string) $tts['zones']) as $z) {
         $z = trim($z);
-        // Nur das, was eine Zone sein kann. Ueber eine zurueckgespielte
-        // Sicherung kaeme sonst beliebiger Text in die Adresse.
         if ($z !== '' && preg_match('/^[0-9]+(~[0-9]+)?$/', $z)) { $zl[] = $z; }
     }
+    $tts['mode'] = $mode;
     $tts['zones'] = implode(',', $zl);
-    $vol = max(1, min(100, (int) $tts['volume']));
-    if ($mode === 'musicserver') {
-        $zones = array();
-        foreach ($zl as $z) {
-            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
-        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
-    }
-    $tpl = trim((string) $tts['template']);
-    if ($tpl === '') { $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}'; }
-    /* Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
-     * Vorher stand die Pruefung unbedingt am Anfang der Funktion - eine
-     * eigene Vorlage ohne {ip} war damit unbenutzbar (AWM-1.2.0-Fund,
-     * hier nachgezogen). */
-    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    $lang = preg_replace('/[^a-z]/', '', strtolower((string) $tts['lang']));
-    return str_replace(array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-        array($tts['ip'], (int) $tts['port'], $tts['zones'], $vol, $lang, rawurlencode($text)), $tpl);
+    $tts['volume'] = max(1, min(100, (int) $tts['volume']));
+    $tts['ip'] = (string) $tts['ip'];
+    $tts['template'] = (string) $tts['template'];
+    $tts['lang'] = ($mode === 'musicserver') ? (string) $tts['lang']
+        : (string) preg_replace('/[^a-z]/', '', strtolower((string) $tts['lang']));
+    return ansage_tts_url((string) $text, $tts);
 }
 function ro_say($text) {
     /* Ansage-2: Ausgabeart Alexa-NG (POST). Faellt Alexa-NG aus, entfaellt die
@@ -3162,8 +3151,14 @@ function ro_say($text) {
      * Leere zeigte (in WSL gemessen, Code-Pruefer Fall C2). Und der
      * Ansagetext steht nicht mehr woertlich im Protokoll, nur seine Laenge
      * (wie Alexa-NG, Entscheidung Nr. 18). */
-    list($r, $code) = ro_http($url, array('method' => 'GET', 'timeout' => 10, 'ignore_errors' => true,
-        'user_agent' => 'LoxBerry Saugroboter'));
+    /* Nr. 36 b, Stufe 1: abgerufen ueber die gemeinsame Sprachausgabe - ohne
+     * Weiterleitung (bisher folgte der Abruf einer Umleitung und wertete die
+     * Antwort des Ziels), ohne Proxy; gesendet heisst weiter HTTP 2xx, die
+     * Zeitgrenze bleibt 10 s (mit curl hoechstens 3 s fuer den Verbindungsaufbau). */
+    $k36 = ro_ansage_k();
+    $a36 = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k36), $k36);
+    $code = $a36['code'];
+    $r = $code > 0 ? $a36['rumpf'] : false;
     $ok = ($r !== false && $code >= 200 && $code < 300);
     ro_log('Ansage (' . ro_zeichen($text) . ' Zeichen) -> '
         . ($ok ? 'OK, HTTP ' . $code : 'FEHLER ' . ($code > 0 ? 'HTTP ' . $code : '(keine Antwort)')));
@@ -4119,7 +4114,7 @@ function ro_sicherung_bauen()
     /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
      * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
      * geltende (ro_sicherung_lesen()). */
-    if (isset($aus['tts']) && is_array($aus['tts'])) { unset($aus['tts']['alexa_token'], $aus['tts']['google_token']); }
+    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }   // Nr. 36 b: eine Quelle
     /* X-3: wuerde das eigene Zurueckspielen diese Datei abweisen, sagt es der
      * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
     $warn = ro_sicherung_warnung($aus);
@@ -4330,19 +4325,13 @@ function ro_formularlage()
 /** Der Port des LoxBerry-Webservers (general.json, Webserver.Port), sonst 80. */
 function ro_webport()
 {
+    /* Nr. 36 b, Stufe 1: gemeinsame Sprachausgabe (Webserver.Port oder
+     * WEBSERVER.Port, 1 bis 65535, sonst 80); einmal je Prozess gelesen wie
+     * bisher. */
     static $port = null;
     if ($port !== null) { return $port; }
-    $port = 80;
     $p = ro_paths();
-    if ($p['general'] !== '' && is_file($p['general'])) {
-        $g = json_decode((string) @file_get_contents($p['general']), true);
-        foreach (array('Webserver', 'WEBSERVER') as $ab) {
-            if (isset($g[$ab]['Port']) && (int) $g[$ab]['Port'] > 0 && (int) $g[$ab]['Port'] <= 65535) {
-                $port = (int) $g[$ab]['Port'];
-                break;
-            }
-        }
-    }
+    $port = ansage_webport($p['general']);
     return $port;
 }
 
