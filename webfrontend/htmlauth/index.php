@@ -162,11 +162,10 @@ function rb_eingabe_felder($formular)
         return array('mqtt_enabled', 'mqtt_topic');
     }
     if ($formular === 'settings') {
-        return array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'cache_sec', 'warn_hours',
+        return array_merge(array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
-                     'n_ereignis', 'tts_mode', 'tts_ip', 'tts_port', 'tts_zones', 'tts_volume', 'tts_lang',
-                     'tts_template', 'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen',
-                     'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen');
+                     'n_ereignis'),
+                     ansage_x2_felder(array('modi' => ro_tts_wege())));    // Nr. 36 b, Stufe 2: ohne Sprechtoken
     }
     return array();
 }
@@ -478,30 +477,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['neu_lesen'])) {
     rb_umleiten('tab-test', array('meldungen' => array(rb_e(ro_t('TEXT.NEU_GELESEN')))));
 }
 
-/* --- Testansage (U14, Durchgang 01.10.2026) ---
- * Spricht einen festen Satz ueber den eingestellten Ausgabeweg - auch ueber
- * Alexa-NG. Gesprochen heisst: HTTP 2xx bzw. SPRECHEN;OK=1. */
+/* --- Testansage (U14, Durchgang 01.10.2026; Nr. 36 b, Stufe 2: ansage_testansage()) ---
+ * Spricht den Testsatz der gemeinsamen Sprachausgabe ueber den eingestellten Ausgabeweg - auch ueber
+ * Alexa-NG und Google-Lautsprecher -, mit den GESPEICHERTEN Einstellungen. POST, danach 303. Ins
+ * Protokoll nur die Kurzform, nie Text oder Token. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
-    $rb_tm = isset($rb_cfg['tts']['mode']) ? (string) $rb_cfg['tts']['mode'] : '';
-    if ($rb_tm === 'audioserver') {
-        $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_AUDIOSERVER'));
-    } elseif (ro_say(ro_t('TEXT.TESTANSAGE_TEXT'))) {
+    $rb_ak = ro_ansage_k();
+    $rb_ar = ansage_testansage(ro_tts(), $rb_ak);
+    ro_log('Testansage: ' . ansage_kurz($rb_ar));
+    if ($rb_ar['stand'] === 1) {
         $rb_meldungen[] = rb_e(ro_t('TEXT.TESTANSAGE_OK'));
-        /* Ansage-3: bei Google steht die Antwort immer dabei (HTTP-Code und GRUND,
-         * z. B. EINGEREIHT oder UNVERAENDERT) - nie Token oder Text. */
-        $rb_td = $rb_tm === 'cc4lox' ? ro_sprech_letzte('google') : null;
-        if (is_array($rb_td) && isset($rb_td['code'], $rb_td['antwort'])) {
-            $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.GOOGLE_ANTWORT'), (int) $rb_td['code'], (string) $rb_td['antwort']));
+        /* Bei Google steht die Antwort dabei (HTTP-Code und GRUND, z. B. EINGEREIHT) - nie Token oder Text. */
+        if ($rb_ar['art'] === 'cc4lox') {
+            $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.GOOGLE_ANTWORT'), (int) $rb_ar['http'],
+                preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $rb_ar['zeile'], $rb_gm) ? $rb_gm[1] : '-'));
         }
+    } elseif ($rb_ar['stand'] === -1) {
+        $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($rb_ar['kennung'], $rb_ak)));
     } else {
-        $rb_tg = '';
-        // Ansage-2/-3: der Grund aus der Merkdatei der gewaehlten Sprech-Ausgabeart.
-        $rb_tart = $rb_tm === 'alexang' ? 'alexa' : ($rb_tm === 'cc4lox' ? 'google' : '');
-        $rb_td = $rb_tart !== '' ? ro_sprech_letzte($rb_tart) : null;
-        if (is_array($rb_td) && isset($rb_td['grund']) && is_string($rb_td['grund'])) {
-            $rb_tg = $rb_td['grund'];
-        }
-        $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ($rb_tg !== '' ? ' ' . $rb_tg : ''));
+        $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ' ' . ansage_kennung_text($rb_ar['kennung'], $rb_ak));
     }
     rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
 }
@@ -680,137 +674,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'material' => isset($_POST['n_material']) ? 1 : 0,
         'ereignis' => isset($_POST['n_ereignis']) ? 1 : 0,
     );
-    // --- Sprachausgabe ---
-    $rb_ta = $rb_neu['tts'];
-    $rb_t = array();
-    $rb_t['mode'] = $rb_text('tts_mode');
-    if ($rb_t['mode'] === null || !in_array($rb_t['mode'], ro_tts_wege(), true)) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.TTS_WEG'), ro_t('GRUND.TTS_WEG'));
-        rb_bean('tts_mode');
-        $rb_t['mode'] = (string) $rb_ta['mode'];
-    }
-    $rb_t['ip'] = $rb_text('tts_ip');
-    if ($rb_t['ip'] === null || ($rb_t['ip'] !== '' && !preg_match('/^[\w\.\-]{1,253}\z/', $rb_t['ip']))) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.TTS_IP'), ro_t('GRUND.TTS_ADRESSE'));
-        rb_bean('tts_ip');
-    }
-    $rb_t['port'] = $rb_zahl($rb_text('tts_port'), 1, 65535);
-    if ($rb_t['port'] === null) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.TTS_PORT'), ro_t('GRUND.TTS_PORT'));
-        rb_bean('tts_port');
-    }
-    $rb_t['zones'] = $rb_text('tts_zones');
-    if ($rb_t['zones'] === null || !preg_match('/^[0-9,~ ]*\z/', $rb_t['zones'])) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.ZONEN'), ro_t('GRUND.ZONEN'));
-        rb_bean('tts_zones');
-    }
-    $rb_t['volume'] = $rb_zahl($rb_text('tts_volume'), 1, 100);
-    if ($rb_t['volume'] === null) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.LAUTSTAERKE'), ro_t('GRUND.LAUTSTAERKE'));
-        rb_bean('tts_volume');
-    }
-    $rb_t['lang'] = $rb_text('tts_lang');
-    if ($rb_t['lang'] !== null) { $rb_t['lang'] = strtolower($rb_t['lang']); }
-    if ($rb_t['lang'] === null || !preg_match('/^[a-z]{0,5}\z/', $rb_t['lang'])
-        || ($rb_t['mode'] === 'musicserver' && $rb_t['lang'] === '')) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.SPRACHE'), ro_t('GRUND.SPRACHE'));
-        rb_bean('tts_lang');
-    }
-    $rb_t['template'] = $rb_text('tts_template');
-    if ($rb_t['template'] === null || strlen($rb_t['template']) > 2000
-        || preg_match('/[\x00-\x1F\x7F]/', $rb_t['template'])) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.TTS_VORLAGE'), ro_t('GRUND.VORLAGE'));
-        rb_bean('tts_template');
-    }
-    /* Ansage-2 (U14): Ausgabeart Alexa-NG. Geraet und Lautstaerke werden
-     * beanstandet statt zurechtgebogen. Das Sprechtoken ist ein Kennwort: es
-     * steht nie in der Seite und reist nach einer Beanstandung nicht zurueck.
-     * Leer abgeschickt heisst behalten, der Haken loescht es, beides zugleich
-     * ist ein Widerspruch (Bauform Abfahrtsassistent 1.6.19). */
-    $rb_t['alexa_geraet'] = $rb_text('tts_alexa_geraet');
-    if ($rb_t['alexa_geraet'] === null || !ro_alexa_geraet_ok($rb_t['alexa_geraet'])) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.ALEXA_GERAET'), ro_t('GRUND.ALEXA_GERAET'));
-        rb_bean('tts_alexa_geraet');
-    }
-    $rb_al = $rb_text('tts_alexa_laut');
-    if ($rb_al === '') {
-        $rb_t['alexa_laut'] = -1;       // leer: die Lautstaerke des Geraets bleibt
-    } else {
-        $rb_t['alexa_laut'] = $rb_zahl($rb_al, 0, 100);
-        if ($rb_t['alexa_laut'] === null) {
-            $rb_hw[] = $rb_wert(ro_t('EINST.ALEXA_LAUT'), ro_t('GRUND.ALEXA_LAUT'));
-            rb_bean('tts_alexa_laut');
-        }
-    }
-    $rb_t['alexa_token'] = (string) $rb_ta['alexa_token'];
-    $rb_atn = $rb_text('tts_alexa_token');
-    if ($rb_atn === null) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.ALEXA_TOKEN'), ro_t('GRUND.ALEXA_TOKEN'));
-        rb_bean('tts_alexa_token');
-    } elseif (!empty($_POST['tts_alexa_token_loeschen'])) {
-        if ($rb_atn !== '') {
-            $rb_hw[] = rb_e(ro_t('TEXT.ALEXA_TOKEN_WIDERSPRUCH'));
-            rb_bean('tts_alexa_token');
-            rb_bean('tts_alexa_token_loeschen');
-        } else {
-            $rb_t['alexa_token'] = '';
-        }
-    } elseif ($rb_atn !== '') {
-        if (ro_alexa_token_ok($rb_atn)) {
-            $rb_t['alexa_token'] = $rb_atn;
-        } else {
-            $rb_hw[] = $rb_wert(ro_t('EINST.ALEXA_TOKEN'), ro_t('GRUND.ALEXA_TOKEN'));
-            rb_bean('tts_alexa_token');
-        }
-    }
-    if ($rb_t['mode'] === 'alexang' && $rb_t['alexa_token'] === '' && !in_array('tts_alexa_token', rb_bean(), true)) {
-        $rb_hw[] = rb_e(ro_t('TEXT.ALEXA_OHNE_TOKEN'));
-        rb_bean('tts_alexa_token');
-    }
-    /* Ansage-3: Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG), gleiche Regeln
-     * wie bei Alexa-NG, eigenes Sprechtoken. Leere Lautstaerke heisst: die
-     * Ansagelautstaerke des Chromecast-Plugins (-1). */
-    $rb_t['google_geraet'] = $rb_text('tts_google_geraet');
-    if ($rb_t['google_geraet'] === null || !ro_alexa_geraet_ok($rb_t['google_geraet'])) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_GERAET'), ro_t('GRUND.GOOGLE_GERAET'));
-        rb_bean('tts_google_geraet');
-    }
-    $rb_gl = $rb_text('tts_google_laut');
-    if ($rb_gl === '') {
-        $rb_t['google_laut'] = -1;
-    } else {
-        $rb_t['google_laut'] = $rb_zahl($rb_gl, 0, 100);
-        if ($rb_t['google_laut'] === null) {
-            $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_LAUT'), ro_t('GRUND.GOOGLE_LAUT'));
-            rb_bean('tts_google_laut');
-        }
-    }
-    $rb_t['google_token'] = (string) $rb_ta['google_token'];
-    $rb_gtn = $rb_text('tts_google_token');
-    if ($rb_gtn === null) {
-        $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_TOKEN'), ro_t('GRUND.GOOGLE_TOKEN'));
-        rb_bean('tts_google_token');
-    } elseif (!empty($_POST['tts_google_token_loeschen'])) {
-        if ($rb_gtn !== '') {
-            $rb_hw[] = rb_e(ro_t('TEXT.GOOGLE_TOKEN_WIDERSPRUCH'));
-            rb_bean('tts_google_token');
-            rb_bean('tts_google_token_loeschen');
-        } else {
-            $rb_t['google_token'] = '';
-        }
-    } elseif ($rb_gtn !== '') {
-        if (ro_alexa_token_ok($rb_gtn)) {
-            $rb_t['google_token'] = $rb_gtn;
-        } else {
-            $rb_hw[] = $rb_wert(ro_t('EINST.GOOGLE_TOKEN'), ro_t('GRUND.GOOGLE_TOKEN'));
-            rb_bean('tts_google_token');
-        }
-    }
-    if ($rb_t['mode'] === 'cc4lox' && $rb_t['google_token'] === '' && !in_array('tts_google_token', rb_bean(), true)) {
-        $rb_hw[] = rb_e(ro_t('TEXT.GOOGLE_OHNE_TOKEN'));
-        rb_bean('tts_google_token');
-    }
-    $rb_neu['tts'] = $rb_t;
+    /* --- Sprachausgabe (Nr. 36 b, Stufe 2, 1.1.15): ansage_formular_lesen() - Adresse und Vorlage im
+     * Heimnetz, Token leer = behalten, Haken = loeschen, beides zugleich ein Widerspruch, Alexa-NG/
+     * Google ohne Token beanstandet; kein Token steht in einer Meldung. Jede Beanstandung verhindert
+     * das Speichern (Nr. 16); die beanstandeten Felder werden markiert (X-2). */
+    $rb_tmangel = array();
+    $rb_tbean = array();
+    $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean, array('modi' => ro_tts_wege()),
+                                           ro_ansage_k());
+    foreach ($rb_tmangel as $rb_tm) { $rb_hw[] = $rb_wert(ro_t('EINST.H_SPRACHAUSGABE'), $rb_tm['text']); }
+    foreach ($rb_tbean as $rb_tb) { rb_bean($rb_tb); }
     /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
      * zulaessige Werte gibt es nicht. Sie laeuft auf den GEPRUEFTEN Werten;
      * vorher stand sie hinter dem Klemmen und schlug nie an. */
@@ -843,8 +716,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ---------- Daten fuer die Anzeige ---------- */
 $rb_notify = is_array($rb_cfg['notify']) ? $rb_cfg['notify'] : array();
 $rb_notify += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1);
-$rb_tts = is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array();
-$rb_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+list($rb_tts) = ansage_vervollstaendigen(is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array(), 'musicserver');
 $rb_robots = ro_robots();
 $rb_states = array();
 foreach ($rb_robots as $rb_k => $rb_r) { $rb_states[$rb_k] = ro_state($rb_k); }
@@ -896,6 +768,19 @@ if ($rb_frame) {
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+/* ERGAENZT 1.1.15 (Nr. 36 b, Stufe 2): der Formular-Baustein der gemeinsamen Sprachausgabe benutzt
+   sm-feld und sm-hilfe aus VORLAGE_hausstandard.css.html - die folgenden Zeilen stehen dort so. */
+.sm-feld { margin: 14px 0; }
+.sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
+/* Bedienelemente werden von jQuery Mobile umgebaut und bekommen einen eigenen
+   Behaelter. Begrenzt man das Feld selbst, bleibt der Behaelter breit - man
+   sieht ein schmales Feld in einem breiten weissen Kasten. Und beim
+   Auswahlfeld liegt das unsichtbare <select> ueber dem Knopf und faengt die
+   Klicks ab; wer es gestaltet, schiebt es weg. Deshalb wird ausschliesslich
+   der Behaelter begrenzt. */
+.sm-feld .ui-input-text, .sm-feld .ui-select, .sm-feld .ui-textinput { max-width: 520px; }
+.sm-feld .ui-input-text input, .sm-feld .ui-input-text textarea { font-size: 0.95em; }
+.sm-hilfe { font-size: 0.85em; color: #555; margin: 4px 0 0; max-width: 640px; }
 /* Hinweis und Warnung. Beide gehoeren zum Hausstandard, und sie heissen SO.
    Bis 1.0.14 benutzte das HTML class="sm-warnung", der Stilblock kannte aber
    nur sm-warn - ausgerechnet der Satz, dass die Sicherungsdatei ein Geheimnis
@@ -1141,103 +1026,16 @@ for ($rb_i = 0; $rb_i < 2; $rb_i++) {
 </div>
 
 <h2><?= rb_e(ro_t('EINST.H_SPRACHAUSGABE')) ?></h2>
-<div class="sm-row">
-    <div>
-        <label><?= rb_e(ro_t('EINST.TTS_WEG')) ?></label>
-        <?php $rb_tmod = rb_w('tts_mode', $rb_tts['mode']); ?>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="rbTtsMode()"<?= rb_m('tts_mode') ?>>
-            <option value="musicserver"<?= $rb_tmod === 'musicserver' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_MUSICSERVER')) ?></option>
-            <option value="ms4h"<?= $rb_tmod === 'ms4h' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_MS4H')) ?></option>
-            <option value="audioserver"<?= $rb_tmod === 'audioserver' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_AUDIOSERVER')) ?></option>
-            <option value="custom"<?= $rb_tmod === 'custom' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_EIGEN')) ?></option>
-            <option value="alexang"<?= $rb_tmod === 'alexang' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_ALEXA')) ?></option>
-            <option value="cc4lox"<?= $rb_tmod === 'cc4lox' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TTS_GOOGLE')) ?></option>
-        </select>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.TTS_IP')) ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= rb_e(rb_w('tts_ip', $rb_tts['ip'])) ?>"<?= rb_m('tts_ip') ?> placeholder="<?= rb_e(ro_t('EINST.IP_BEISPIEL2')) ?>">
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.PORT')) ?></label>
-        <input data-role="none" type="number" name="tts_port" value="<?= rb_e(rb_w('tts_port', (int) $rb_tts['port'])) ?>"<?= rb_m('tts_port') ?> min="1" max="65535">
-    </div>
-</div>
-<div class="sm-row">
-    <div>
-        <label><?= rb_e(ro_t('EINST.ZONEN')) ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= rb_e(rb_w('tts_zones', $rb_tts['zones'])) ?>"<?= rb_m('tts_zones') ?> placeholder="2,4,6">
-        <div class="sm-small"><?= ro_t('EINST.ZONEN_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.LAUTSTAERKE')) ?></label>
-        <input data-role="none" type="number" name="tts_volume" value="<?= rb_e(rb_w('tts_volume', (int) $rb_tts['volume'])) ?>"<?= rb_m('tts_volume') ?> min="1" max="100">
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.SPRACHE')) ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= rb_e(rb_w('tts_lang', $rb_tts['lang'])) ?>"<?= rb_m('tts_lang') ?> maxlength="5">
-    </div>
-</div>
-<div id="tts_template_row">
-    <label><?= rb_e(ro_t('EINST.TTS_VORLAGE')) ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2"<?= rb_m('tts_template') ?> placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= rb_e(rb_w('tts_template', $rb_tts['template'])) ?></textarea>
-    <div class="sm-small"><?= ro_t('EINST.TTS_VORLAGE_HINWEIS') ?></div>
-</div>
-<div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
-    <?= ro_t('EINST.TTS_AUDIOSERVER_HINWEIS') ?>
-</div>
-<?php /* Ansage-2 (U14): Ausgabeart Alexa-NG. Das Sprechtoken steht nie in der
-         Seite - das Feld ist immer leer, der Platzhalter sagt, ob eines
-         gespeichert ist und wie lang es ist. */ ?>
-<div id="tts_alexa_rows">
-<div class="sm-alert sm-info"><?= ro_t('EINST.ALEXA_HINWEIS') ?></div>
-<div class="sm-row">
-    <div>
-        <label><?= rb_e(ro_t('EINST.ALEXA_GERAET')) ?></label>
-        <input data-role="none" type="text" name="tts_alexa_geraet" value="<?= rb_e(rb_w('tts_alexa_geraet', $rb_tts['alexa_geraet'])) ?>"<?= rb_m('tts_alexa_geraet') ?> maxlength="200" placeholder="kueche">
-        <div class="sm-small"><?= ro_t('EINST.ALEXA_GERAET_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.ALEXA_LAUT')) ?></label>
-        <input data-role="none" type="number" name="tts_alexa_laut" value="<?= rb_e(rb_w('tts_alexa_laut', (int) $rb_tts['alexa_laut'] >= 0 ? (int) $rb_tts['alexa_laut'] : '')) ?>"<?= rb_m('tts_alexa_laut') ?> min="0" max="100">
-        <div class="sm-small"><?= rb_e(ro_t('EINST.ALEXA_LAUT_HINWEIS')) ?></div>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.ALEXA_TOKEN')) ?></label>
-        <input data-role="none" type="password" name="tts_alexa_token" value="" autocomplete="new-password"<?= rb_m('tts_alexa_token') ?> placeholder="<?= rb_e((string) $rb_tts['alexa_token'] !== '' ? sprintf(ro_t('EINST.ALEXA_TOKEN_DA'), strlen((string) $rb_tts['alexa_token'])) : ro_t('EINST.ALEXA_TOKEN_LEER')) ?>">
-        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
-            <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1"<?= rb_haken('tts_alexa_token_loeschen', false) ? ' checked' : '' ?><?= rb_m('tts_alexa_token_loeschen') ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?>
-        </label>
-        <div class="sm-small"><?= rb_e(ro_t('EINST.ALEXA_TOKEN_HINWEIS')) ?></div>
-    </div>
-</div>
-</div>
-<?php /* Ansage-3: Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG). Das
-         Sprechtoken steht nie in der Seite - das Feld ist immer leer, der
-         Platzhalter sagt, ob eines gespeichert ist und wie lang es ist. */ ?>
-<div id="tts_google_rows">
-<div class="sm-alert sm-info"><?= ro_t('EINST.GOOGLE_HINWEIS') ?></div>
-<div class="sm-row">
-    <div>
-        <label><?= rb_e(ro_t('EINST.GOOGLE_GERAET')) ?></label>
-        <input data-role="none" type="text" name="tts_google_geraet" value="<?= rb_e(rb_w('tts_google_geraet', $rb_tts['google_geraet'])) ?>"<?= rb_m('tts_google_geraet') ?> maxlength="200" placeholder="Wohnzimmer">
-        <div class="sm-small"><?= ro_t('EINST.GOOGLE_GERAET_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.GOOGLE_LAUT')) ?></label>
-        <input data-role="none" type="number" name="tts_google_laut" value="<?= rb_e(rb_w('tts_google_laut', (int) $rb_tts['google_laut'] >= 0 ? (int) $rb_tts['google_laut'] : '')) ?>"<?= rb_m('tts_google_laut') ?> min="0" max="100">
-        <div class="sm-small"><?= rb_e(ro_t('EINST.GOOGLE_LAUT_HINWEIS')) ?></div>
-    </div>
-    <div>
-        <label><?= rb_e(ro_t('EINST.GOOGLE_TOKEN')) ?></label>
-        <input data-role="none" type="password" name="tts_google_token" value="" autocomplete="new-password"<?= rb_m('tts_google_token') ?> placeholder="<?= rb_e((string) $rb_tts['google_token'] !== '' ? sprintf(ro_t('EINST.GOOGLE_TOKEN_DA'), strlen((string) $rb_tts['google_token'])) : ro_t('EINST.GOOGLE_TOKEN_LEER')) ?>">
-        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
-            <input data-role="none" type="checkbox" name="tts_google_token_loeschen" value="1"<?= rb_haken('tts_google_token_loeschen', false) ? ' checked' : '' ?><?= rb_m('tts_google_token_loeschen') ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?>
-        </label>
-        <div class="sm-small"><?= rb_e(ro_t('EINST.GOOGLE_TOKEN_HINWEIS')) ?></div>
-    </div>
-</div>
-</div>
+<div class="sm-hilfe"><?= rb_e(ro_t('EINST.TTS_SCHALTER')) ?></div>
+<?php /* Nr. 36 b, Stufe 2 (1.1.15): der Formular-Baustein der gemeinsamen Sprachausgabe
+         (ansage_formular_html(), Klassen sm-feld/sm-hilfe/sm-hinweis aus der Vorlage); X-2 ueber
+         rb_w()/rb_m()/rb_haken(). Das Sprechtoken steht nie in der Seite, der Platzhalter nennt
+         nur seine Laenge. */ ?>
+<?= ansage_formular_html($rb_tts, array(
+    'w' => function ($n, $g) { return rb_w($n, $g); },
+    'm' => function ($n) { return rb_m($n); },
+    'c' => function ($n, $g) { return rb_haken($n, $g); },
+    'modi' => ro_tts_wege()), ro_ansage_k()) ?>
 
 <?php /* U10 (Durchgang 01.10.2026): EINE Legende je Reiter, oben, ueber der
          ersten Knopfreihe, mit allen Farben des Reiters (Regeln/04). Bis
@@ -1687,17 +1485,6 @@ while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
 
 </div>
 <script>
-function rbTtsMode() {
-    var m = document.getElementById('tts_mode').value;
-    document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
-    document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
-    var al = document.getElementById('tts_alexa_rows');
-    if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
-    var gl = document.getElementById('tts_google_rows');
-    if (gl) { gl.style.display = (m === 'cc4lox' || gl.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
-    var port = document.getElementsByName('tts_port')[0];
-    if (m === 'musicserver' && (!port.value || port.value === '80')) { port.value = 7091; }
-}
 (function () {
     var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {
@@ -1706,7 +1493,6 @@ function rbTtsMode() {
     }
     tabs.forEach(function (t) { t.addEventListener('click', function (e) { e.preventDefault(); activate(t.dataset.pane); }); });
     activate(<?= json_encode($rb_tab) ?>);
-    rbTtsMode();
 })();
 </script>
 <?php

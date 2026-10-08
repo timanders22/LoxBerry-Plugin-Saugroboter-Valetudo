@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.15 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -478,6 +478,39 @@ Drei Änderungen, damit das wirklich wirkt:
 `?selftest=1&token=…` — antwortet `SELFTEST;OK=1;TOKEN=OK` beziehungsweise
 HTTP 403 mit `SELFTEST;OK=0;ERR=TOKEN`. Es wird dabei nichts geschaltet und
 nichts angefahren. Hausstandard fuer alle Aktionsendpunkte.
+
+## Neu in 1.1.15
+
+Sprachausgabe in der Hausform aller Plugins (Entscheidung 40, Stufe 2) mit dem gemeinsamen Sprachmodul 1.1.1.
+Gemessen unter PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG, Chromecast 4 Lox NG); nicht am Gerät,
+nicht an einem echten Lautsprecher.
+
+* **Ab Werk unverändert:** angesagt wird nur mit dem Haken „Audioausgabe aktiv“ (ab Werk aus); Ausgabeart
+  Loxone Music Server; dieselben sechs Ausgabearten wie bisher. Gespeicherte Einstellungen bleiben.
+* **Abschnitt Sprachausgabe im Reiter Einstellungen** in der gemeinsamen Form: dieselben Felder und Texte wie
+  in den anderen Plugins, die Felder der gewählten Ausgabeart werden eingeblendet. Eine Beanstandung markiert
+  das Feld, behält die Eingabe und speichert nichts.
+* **Adresse des Music Servers und eigene Adressvorlage müssen im Heimnetz liegen** (private Adressen, Namen
+  ohne Punkt oder auf `.local`, `.lan`, `.home`, `.fritz.box`, `.home.arpa`, `.internal`, `.intranet`,
+  `.intern`) – beim Speichern, beim Zurückspielen einer Sicherung und vor jedem Senden. Eine Adresse im
+  Internet würde den Ansagetext hinaustragen.
+* **Strengere Prüfung:** Sprache zwei Buchstaben, Zonen als Zahlen durch Komma (je wahlweise `~Lautstärke`
+  1 bis 100), Lautstärke für Alexa-NG und Google leer oder 1 bis 100 (0 wäre stumm und gälte als gesprochen),
+  Vorlage höchstens 500 Zeichen.
+* **Testansage** (Reiter Test) über die gemeinsame Sprachausgabe; Neuladen der Seite spricht nicht erneut.
+  Der Satz ist jetzt der gemeinsame Testsatz der Sprachausgabe.
+* **Reiter Test:** eine Zeile „Ist die Sprachausgabe eingerichtet?“ für alle Ausgabearten (bisher je eine für
+  Alexa-NG und Google). Alexa-NG und Chromecast 4 Lox NG werden nur bei geöffnetem Reiter gefragt, ohne dass
+  dort etwas gesprochen wird; der Music Server nie.
+* **Protokoll:** eine Ansage steht als Kurzzeile darin (Ausgabeart, Ergebnis, Zeichenzahl, HTTP-Code) – nie
+  der Text, nie ein Token. Die Zeile „Meldung:“ nennt jetzt nur die Anlässe (fertig, Fehler, Ereignis,
+  Material) und die Länge: der Satz ist zugleich der Ansagetext. Er steht weiter unter `<praefix>/meldung`
+  und im Feld `meldung` von `robo.php` – dort ist er die Meldung selbst.
+* Ein Netzfehler zur Gegenstelle nennt seinen Text.
+* Die Einstellungen bekommen zwei Felder `tts.sonos_zone` und `tts.sonos_laut` mit Vorgabewerten (Sonos4Lox
+  bietet dieses Plugin nicht an). Eine Sicherung aus 1.1.14 und älter wird angenommen.
+
+**In Loxone:** nichts zu tun.
 
 ## Was 1.1.14 behebt
 
