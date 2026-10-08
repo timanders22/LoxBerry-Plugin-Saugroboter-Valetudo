@@ -869,6 +869,29 @@ foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT
 <?php if (!$rb_robots) { ?>
 <div class="sm-alert sm-info"><b><?= rb_e(ro_t('TEXT.NOCH_KEIN_ROBOTER')) ?></b> <?= rb_e(ro_t('TEXT.BITTE_ADRESSE_EINTRAGEN')) ?></div>
 <?php } ?>
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.1.16): Statusuebersicht ueber den
+   Reitern, immer sichtbar - die Kaesten darunter gibt es nur je eingerichtetem
+   Roboter. Kein Dienst, der Abruf laeuft im Minutencron. Nur Werte, die die
+   Seite ohnehin liest (lauf.json wie der Reiter Test, $rb_robots, $rb_states,
+   $rb_cfg); keine Netzabfrage. */
+$rb_kok = 0;
+foreach ($rb_states as $rb_ks) { if (!empty($rb_ks['ok'])) { $rb_kok++; } }
+$rb_klauf = ro_lauf_lesen();
+$rb_kalt = $rb_klauf['ts'] > 0 ? time() - (int) $rb_klauf['ts'] : -1; ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
+<tr><td><?= rb_e(ro_t('TEXT.KOPF_ABRUF')) ?></td>
+    <td><?= rb_e(ro_t('TEXT.KOPF_OHNE_DIENST')) ?></td></tr>
+<tr><td><?= rb_e(ro_t('TEXT.KOPF_LETZTER_LAUF')) ?></td>
+    <td><?= $rb_kalt < 0 ? rb_e(ro_t('TEXT.KOPF_NOCH_KEIN_LAUF'))
+        : rb_e(date('d.m.Y H:i:s', (int) $rb_klauf['ts'])
+               . ($rb_kalt < 3600 ? ' ' . sprintf(ro_t('TEXT.KOPF_VOR_S'), $rb_kalt) : '')) ?></td></tr>
+<tr><td><?= rb_e(ro_t('TEXT.KOPF_ROBOTER')) ?></td>
+    <td><?= rb_e(sprintf(ro_t('TEXT.KOPF_ROBOTER_ZAHL'), count($rb_robots), $rb_kok)) ?></td></tr>
+<tr><td><?= rb_e(ro_t('REITER.MQTT')) ?></td>
+    <td><?= rb_e(!empty($rb_cfg['mqtt_enabled']) ? ro_t('TEXT.KOPF_EIN') : ro_t('TEXT.KOPF_AUS')) ?></td></tr>
+</table>
+
 <?php foreach ($rb_states as $rb_k => $rb_s) { ?>
 <div class="sm-alert <?= $rb_s['fehler'] ? 'sm-warn' : 'sm-info' ?>">
 <b><?= rb_e($rb_s['name']) ?></b>:
@@ -932,6 +955,7 @@ if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEU
 
 <!-- ================= Einstellungen ================= -->
 <div class="sm-pane<?= $rb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= ro_t('EINST.WAS_IST_DAS') ?></div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
