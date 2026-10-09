@@ -2852,9 +2852,12 @@ function ro_tts_wege()
 /**
  * Kontext der gemeinsamen Sprachausgabe: Webport, Kopfzeile, Ordner fuer <art>_letzte.json (der
  * Zwischenordner - dort lagen schon alexa_letzte.json und google_letzte.json), Texte aus [ANSAGE].
- * Zur Kennung TTS_EINTRAG (unbekannter Eintrag im Block tts) hat auch Modul 1.1.1 keinen Satz; die
- * Linie nennt ihren eigenen (wie Intercom und Raumklima). Die Zeilen fuer den Reiter Test maskiert
- * die Oberflaeche selbst ('e' gibt den Text unveraendert zurueck).
+ * Den Satz zur Kennung TTS_EINTRAG bringt das Modul seit 1.1.2 selbst mit; die eigene Umlenkung
+ * (GRUND.TTS_EINTRAG) ist seit 1.1.17 gestrichen. 'werk': die Werksart dieser Linie ist der Music
+ * Server (ro_config()) - ohne den Eintrag sagte die Seite "Ab Werk aus". ART_HINWEIS bleibt
+ * linieneigen (EINST.TTS_ART_HINWEIS, wie Ferien): gesprochen wird erst mit dem Haken
+ * "Audioausgabe aktiv" (notify.audio, ab Werk aus), den der Modulsatz nicht nennt. Die Zeilen
+ * fuer den Reiter Test maskiert die Oberflaeche selbst ('e' gibt den Text unveraendert zurueck).
  */
 function ro_ansage_k()
 {
@@ -2863,7 +2866,8 @@ function ro_ansage_k()
         'kopf'   => array('User-Agent: LoxBerry Saugroboter'),
         'ordner' => ro_tmpdir(),
         't'      => function ($s) { return ro_t($s); },
-        'schluessel' => array('K_TTS_EINTRAG' => 'GRUND.TTS_EINTRAG'),
+        'werk'   => 'musicserver',
+        'schluessel' => array('ART_HINWEIS' => 'EINST.TTS_ART_HINWEIS'),
     );
 }
 

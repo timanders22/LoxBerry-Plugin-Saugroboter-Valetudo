@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.16 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.17 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,24 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.17
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `Ausgang von ROBO_BATT (#2)` statt „Eingang = #2 (ROBO_BATT)“,
+  `Ausgang von #27`, an den Statusbausteinen `V1 = …`. Was aus der eigenen Anlage kommt (Anwesenheit,
+  Zeitfenster, Reinigung beendet), bleibt in Worten. Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe: richtige Werksart.** Ab Werk ist der Loxone Music Server als Ausgabe gewählt (gesprochen
+  wird erst mit dem Haken „Audioausgabe aktiv“); die Seite sagte bisher „Ab Werk aus“. Jetzt steht dort
+  der Music Server mit „(ab Werk)“ und der Hinweis, dass erst mit eingetragener Adresse und gesetztem
+  Haken „Audioausgabe aktiv“ gesendet wird.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.1.16
 
