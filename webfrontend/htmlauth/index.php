@@ -844,6 +844,10 @@ if ($rb_frame) {
 /* X-2 (Durchgang 01.10.2026): ein beanstandetes Feld nach der Umleitung - eigene Zutat, nicht Teil der Hausvorlage. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 <div class="sm-wrap">
@@ -1272,8 +1276,9 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
          ihre XML gelesen, nicht abgeschrieben.
          Platzhalter: {Bn} -> "#n", {F:FELD} -> Titel des Eingangsbefehls zum
          Feld, {A:befehl} -> Titel des Ausgangsbefehls zu ?cmd=befehl.
-         Zeile: array(Kennung, Typ, Name, Parameter, Argumente, Verbindung);
-         ein Name als array(wert) steht woertlich da (Wert aus dem Code). */
+         Welle Bild 8 (1.1.18): Zeile jetzt array(Kennung, Typ, Typ-Argumente, Name,
+         Parameter, Verbindung), siehe unten.
+         Ein Name als array(wert) steht woertlich da (Wert aus dem Code). */
 $rb_bs_lesen = function ($xml) {
     $w = function ($el, $attr) {
         return preg_match('/\s' . $attr . '="([^"]*)"/', $el, $m)
@@ -1309,47 +1314,43 @@ foreach ($rb_bs_vo['befehle'] as $rb_bs_b) {
     }
 }
 $rb_bs_mono = function ($s) { return '<span class="sm-mono">' . rb_e($s) . '</span>'; };
-$rb_bs_namen = function ($befehle) use ($rb_bs_mono) {
-    $t = array();
-    foreach ($befehle as $b) { $t[] = $rb_bs_mono($b['titel']); }
-    return implode(', ', $t);
-};
+/* Welle Bild 8 (1.1.18, Entscheidung 45 + A): die Liste ist die im LoxBerry-Plugins
+ * Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
+ * (Musterprojekt/baustein_listen.txt, Abschnitt Saugroboter) - eine Zeile = ein Baustein,
+ * nur die Hauptvariante, fuer Roboter 1 (wie die Vorlagen-Knoepfe ohne Auswahl).
+ * Namen #1 bis #8 sind die Befehlstitel aus ro_vorlage(1), #21 der Titel des Befehls
+ * start aus ro_vo_vorlage(1); die Vorlagentitel im Typ ebenso (nicht abgeschrieben).
+ * Zeile: array(Kennung, Typ, Typ-Argumente, Name, Parameter, Verbindung). */
 $rb_bs_a = function ($cmd) use ($rb_bs_titel) {
     return isset($rb_bs_titel['A:' . $cmd]) ? $rb_bs_titel['A:' . $cmd] : '{A:' . $cmd . '}';
 };
+$rb_bs_f = function ($feld) use ($rb_bs_titel) {
+    return isset($rb_bs_titel['F:' . $feld]) ? $rb_bs_titel['F:' . $feld] : '{F:' . $feld . '}';
+};
+$rb_bs_vi_t = array(rb_e($rb_bs_vi['titel']));
+$rb_bs_vo_t = array(rb_e($rb_bs_vo['titel']));
 $rb_bs = array(
-    array('B1', 'T_VI', array($rb_bs_vi['titel']), 'P_VI', array($rb_bs_mono($rb_bs_vi['adresse']), rb_e($rb_bs_vi['zyklus']), rb_e(ro_t('KNOPF.VORLAGE_VI'))), 'V_KEINE'),
-    array('B2', 'T_VI_BEFEHL', 'N_VORLAGE', 'P_VI_BEFEHL', array(count($rb_bs_vi['befehle']), $rb_bs_namen($rb_bs_vi['befehle']), $rb_bs_mono(isset($rb_bs_check['CODE']) ? $rb_bs_check['CODE'] : '')), 'V_UNTER_B1'),
-    array('B3', 'T_VO', array($rb_bs_vo['titel']), 'P_VO', array($rb_bs_mono($rb_bs_vo['adresse']), rb_e(ro_t('KNOPF.VORLAGE_VO'))), 'V_KEINE'),
-    array('B4', 'T_VO_BEFEHL', 'N_VORLAGE', 'P_VO_BEFEHL', array(count($rb_bs_vo['befehle']), $rb_bs_namen($rb_bs_vo['befehle'])), 'V_UNTER_B3'),
-    array('B5', 'T_STATUS', 'B5_NAME', 'B5_PARAM', array(), 'B5_VERB'),
-    array('B6', 'T_ANALOG', 'B6_NAME', 'B6_PARAM', array(), 'B6_VERB'),
-    array('B7', 'T_ANALOG', 'B7_NAME', 'B7_PARAM', array(), 'B7_VERB'),
-    array('B8', 'T_ANALOG', 'B8_NAME', 'B8_PARAM', array(), 'B8_VERB'),
-    array('B9', 'T_ANALOG', 'B9_NAME', 'P_EINHEIT_H', array(), 'B9_VERB'),
-    array('B10', 'T_ANALOG', 'B10_NAME', 'P_EINHEIT_H', array(), 'B10_VERB'),
-    array('B11', 'T_ANALOG', 'B11_NAME', 'P_EINHEIT_H', array(), 'B11_VERB'),
-    array('B12', 'T_ANALOG', 'B12_NAME', 'P_EINHEIT_H', array(), 'B12_VERB'),
-    array('B13', 'T_ANALOG', 'B13_NAME', 'P_EINHEIT_H', array(), 'B13_VERB'),
-    array('B14', 'T_STATUS', 'B14_NAME', 'B14_PARAM', array(), 'B14_VERB'),
-    array('B15', 'T_SCHWELL', 'B15_NAME', 'P_EIN_AUS', array(), 'B15_VERB'),
-    array('B16', 'T_SCHWELL', 'B16_NAME', 'P_EIN_AUS', array(), 'B16_VERB'),
-    array('B17', 'T_UND', 'B17_NAME', 'P_KEINE', array(), 'B17_VERB'),
-    array('B18', 'T_ODER', 'B18_NAME', 'B18_PARAM', array(), 'B18_VERB'),
-    array('B19', 'T_BENACH', 'B19_NAME', 'B19_PARAM', array(), 'B19_VERB'),
-    array('B20', 'T_SCHWELL', 'B20_NAME', 'P_EIN', array(), 'B20_VERB'),
-    array('B21', 'T_SCHWELL', 'B21_NAME', 'P_EIN', array(), 'B21_VERB'),
-    array('B22', 'T_SCHWELL', 'B22_NAME', 'P_EIN', array(), 'B22_VERB'),
-    array('B23', 'T_BENACH', 'B23_NAME', 'B23_PARAM', array(), 'B23_VERB'),
-    array('B24', 'T_SCHWELL', 'B24_NAME', 'B24_PARAM', array(), 'B24_VERB'),
-    array('B25', 'T_SCHWELL', 'B25_NAME', 'B25_PARAM', array(), 'B25_VERB'),
-    array('B26', 'T_UND', 'B26_NAME', 'P_KEINE', array(), 'B26_VERB'),
-    array('B27', 'T_UND', 'B27_NAME', 'P_KEINE', array(), 'B27_VERB'),
-    array('B28', 'T_UND', 'B28_NAME', 'P_KEINE', array(), 'B28_VERB'),
-    array('B29', 'T_UND', 'B29_NAME', 'P_KEINE', array(), 'B29_VERB'),
-    array('B30', 'T_VO_EIN', array($rb_bs_a('start')), 'P_VO_EIN', array($rb_bs_mono('?cmd=start')), 'B30_VERB'),
-    array('B31', 'T_VO_EIN', array($rb_bs_a('home')), 'P_VO_EIN', array($rb_bs_mono('?cmd=home')), 'B31_VERB'),
-    array('B32', 'T_VO_EIN', array($rb_bs_a('absaugen')), 'P_VO_EIN', array($rb_bs_mono('?cmd=absaugen')), 'B32_VERB'),
+    array('B1', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('CODE')), 'B1_PARAM', 'B1_VERB'),
+    array('B2', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('BATT')), 'B2_PARAM', 'B2_VERB'),
+    array('B3', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('FEHLER')), 'B3_PARAM', 'B3_VERB'),
+    array('B4', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('MATWARN')), 'B4_PARAM', 'B4_VERB'),
+    array('B5', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('ANN')), 'B5_PARAM', 'B5_VERB'),
+    array('B6', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('PUSH')), 'B6_PARAM', 'B6_VERB'),
+    array('B7', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('OK')), 'B7_PARAM', 'B7_VERB'),
+    array('B8', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('ZAEHLER')), 'B8_PARAM', 'B8_VERB'),
+    array('B9', 'B9_TYP', array(), 'B9_NAME', 'B9_PARAM', 'B9_VERB'),
+    array('B10', 'B10_TYP', array(), 'B10_NAME', 'B10_PARAM', 'B10_VERB'),
+    array('B11', 'B11_TYP', array(), 'B11_NAME', 'B11_PARAM', 'B11_VERB'),
+    array('B12', 'B12_TYP', array(), 'B12_NAME', 'B12_PARAM', 'B12_VERB'),
+    array('B13', 'B13_TYP', array(), 'B13_NAME', 'B13_PARAM', 'B13_VERB'),
+    array('B14', 'B14_TYP', array(), 'B14_NAME', 'B14_PARAM', 'B14_VERB'),
+    array('B15', 'B15_TYP', array(), 'B15_NAME', 'B15_PARAM', 'B15_VERB'),
+    array('B16', 'B16_TYP', array(), 'B16_NAME', 'B16_PARAM', 'B16_VERB'),
+    array('B17', 'B17_TYP', array(), 'B17_NAME', 'B17_PARAM', 'B17_VERB'),
+    array('B18', 'B18_TYP', array(), 'B18_NAME', 'B18_PARAM', 'B18_VERB'),
+    array('B19', 'B19_TYP', array(), 'B19_NAME', 'B19_PARAM', 'B19_VERB'),
+    array('B20', 'B20_TYP', array(), 'B20_NAME', 'B20_PARAM', 'B20_VERB'),
+    array('B21', 'TYP_VO', $rb_bs_vo_t, array($rb_bs_a('start')), 'B21_PARAM', 'B21_VERB'),
 );
 $rb_bs_nr = array();
 foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { $rb_bs_nr[$rb_bs_z[0]] = $rb_bs_i + 1; }
@@ -1368,11 +1369,16 @@ $rb_bs_t = function ($schluessel, $argumente = array()) use ($rb_bs_nr, $rb_bs_t
 <table class="sm-tbl">
 <tr><th>#</th><th><?= rb_e(ro_t('BAUSTEIN.T_TYP')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_NAME')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_PARAM')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_VERB')) ?></th></tr>
 <?php foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { ?>
-<tr><td><?= $rb_bs_i + 1 ?></td><td><?= $rb_bs_t($rb_bs_z[1]) ?></td><td><span class="sm-mono"><?= is_array($rb_bs_z[2]) ? rb_e($rb_bs_z[2][0]) : $rb_bs_t($rb_bs_z[2]) ?></span></td><td><?= $rb_bs_t($rb_bs_z[3], $rb_bs_z[4]) ?></td><td><?= $rb_bs_t($rb_bs_z[5]) ?></td></tr>
+<tr><td><?= $rb_bs_i + 1 ?></td><td><?= $rb_bs_t($rb_bs_z[1], $rb_bs_z[2]) ?></td><td><span class="sm-mono"><?= is_array($rb_bs_z[3]) ? rb_e($rb_bs_z[3][0]) : $rb_bs_t($rb_bs_z[3]) ?></span></td><td><?= $rb_bs_t($rb_bs_z[4]) ?></td><td><?= $rb_bs_t($rb_bs_z[5]) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-hinweis"><?= $rb_bs_t('ERLAEUTERUNG') ?></div>
+<div class="sm-hinweis"><?= $rb_bs_t('H_KONSTANTE') ?><br><?= $rb_bs_t('H_ODER') ?><br><?= $rb_bs_t('H_WARTUNG') ?><br><?= $rb_bs_t('H_START') ?><br><?= $rb_bs_t('ERLAEUTERUNG') ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= rb_e(ro_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= rb_e(ro_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?= ro_t('LOX.MUSTERPROJEKT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT5')) ?></b><br>
