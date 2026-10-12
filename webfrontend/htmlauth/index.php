@@ -848,6 +848,9 @@ if ($rb_frame) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 10 VOLL: Schritte und Hinweise je Baustein-Liste. */
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 <div class="sm-wrap">
@@ -1274,11 +1277,7 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
          Adressen und Befehlstitel kommen aus DENSELBEN Funktionen wie die
          Importvorlagen: ro_vorlage(1) und ro_vo_vorlage(1) werden gerufen und
          ihre XML gelesen, nicht abgeschrieben.
-         Platzhalter: {Bn} -> "#n", {F:FELD} -> Titel des Eingangsbefehls zum
-         Feld, {A:befehl} -> Titel des Ausgangsbefehls zu ?cmd=befehl.
-         Welle Bild 8 (1.1.18): Zeile jetzt array(Kennung, Typ, Typ-Argumente, Name,
-         Parameter, Verbindung), siehe unten.
-         Ein Name als array(wert) steht woertlich da (Wert aus dem Code). */
+         Welle Bild 10 VOLL (1.1.19): drei Listen statt einer, siehe unten. */
 $rb_bs_lesen = function ($xml) {
     $w = function ($el, $attr) {
         return preg_match('/\s' . $attr . '="([^"]*)"/', $el, $m)
@@ -1313,72 +1312,271 @@ foreach ($rb_bs_vo['befehle'] as $rb_bs_b) {
         $rb_bs_titel['A:' . rawurldecode($rb_bs_m[1])] = $rb_bs_b['titel'];
     }
 }
-$rb_bs_mono = function ($s) { return '<span class="sm-mono">' . rb_e($s) . '</span>'; };
-/* Welle Bild 8 (1.1.18, Entscheidung 45 + A): die Liste ist die im LoxBerry-Plugins
- * Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
- * (Musterprojekt/baustein_listen.txt, Abschnitt Saugroboter) - eine Zeile = ein Baustein,
- * nur die Hauptvariante, fuer Roboter 1 (wie die Vorlagen-Knoepfe ohne Auswahl).
- * Namen #1 bis #8 sind die Befehlstitel aus ro_vorlage(1), #21 der Titel des Befehls
- * start aus ro_vo_vorlage(1); die Vorlagentitel im Typ ebenso (nicht abgeschrieben).
- * Zeile: array(Kennung, Typ, Typ-Argumente, Name, Parameter, Verbindung). */
+/* Welle Bild 10 VOLL (1.1.19, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll
+ * das Maximum leicht uebernehmen koennen): drei Seiten aus dem LoxBerry-Plugins Musterprojekt,
+ * dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Saugroboter" 44, "Saugroboter Wartung" 42,
+ * "Saugroboter Steuerung" 42 Zeilen). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie
+ * diese Seite", Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Fuer Roboter 1 wie die
+ * Vorlagen-Knoepfe ohne Auswahl. Bis 1.1.18 stand hier eine Seite mit 21 Zeilen.
+ * Namen aus den Vorlagen ($rb_bs_f: Eingangsbefehl zum Feld, $rb_bs_a: Ausgangsbefehl zu
+ * ?cmd=) und die Vorlagentitel im Typ kommen aus ro_vorlage(1) / ro_vo_vorlage(1), oben
+ * gelesen - nicht abgeschrieben. Texte aus [BAUSTEIN]; jede Zelle ist fertiges, maskiertes HTML.
+ * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
 $rb_bs_a = function ($cmd) use ($rb_bs_titel) {
     return isset($rb_bs_titel['A:' . $cmd]) ? $rb_bs_titel['A:' . $cmd] : '{A:' . $cmd . '}';
 };
 $rb_bs_f = function ($feld) use ($rb_bs_titel) {
     return isset($rb_bs_titel['F:' . $feld]) ? $rb_bs_titel['F:' . $feld] : '{F:' . $feld . '}';
 };
-$rb_bs_vi_t = array(rb_e($rb_bs_vi['titel']));
-$rb_bs_vo_t = array(rb_e($rb_bs_vo['titel']));
-$rb_bs = array(
-    array('B1', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('CODE')), 'B1_PARAM', 'B1_VERB'),
-    array('B2', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('BATT')), 'B2_PARAM', 'B2_VERB'),
-    array('B3', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('FEHLER')), 'B3_PARAM', 'B3_VERB'),
-    array('B4', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('MATWARN')), 'B4_PARAM', 'B4_VERB'),
-    array('B5', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('ANN')), 'B5_PARAM', 'B5_VERB'),
-    array('B6', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('PUSH')), 'B6_PARAM', 'B6_VERB'),
-    array('B7', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('OK')), 'B7_PARAM', 'B7_VERB'),
-    array('B8', 'TYP_VI', $rb_bs_vi_t, array($rb_bs_f('ZAEHLER')), 'B8_PARAM', 'B8_VERB'),
-    array('B9', 'B9_TYP', array(), 'B9_NAME', 'B9_PARAM', 'B9_VERB'),
-    array('B10', 'B10_TYP', array(), 'B10_NAME', 'B10_PARAM', 'B10_VERB'),
-    array('B11', 'B11_TYP', array(), 'B11_NAME', 'B11_PARAM', 'B11_VERB'),
-    array('B12', 'B12_TYP', array(), 'B12_NAME', 'B12_PARAM', 'B12_VERB'),
-    array('B13', 'B13_TYP', array(), 'B13_NAME', 'B13_PARAM', 'B13_VERB'),
-    array('B14', 'B14_TYP', array(), 'B14_NAME', 'B14_PARAM', 'B14_VERB'),
-    array('B15', 'B15_TYP', array(), 'B15_NAME', 'B15_PARAM', 'B15_VERB'),
-    array('B16', 'B16_TYP', array(), 'B16_NAME', 'B16_PARAM', 'B16_VERB'),
-    array('B17', 'B17_TYP', array(), 'B17_NAME', 'B17_PARAM', 'B17_VERB'),
-    array('B18', 'B18_TYP', array(), 'B18_NAME', 'B18_PARAM', 'B18_VERB'),
-    array('B19', 'B19_TYP', array(), 'B19_NAME', 'B19_PARAM', 'B19_VERB'),
-    array('B20', 'B20_TYP', array(), 'B20_NAME', 'B20_PARAM', 'B20_VERB'),
-    array('B21', 'TYP_VO', $rb_bs_vo_t, array($rb_bs_a('start')), 'B21_PARAM', 'B21_VERB'),
-);
-$rb_bs_nr = array();
-foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { $rb_bs_nr[$rb_bs_z[0]] = $rb_bs_i + 1; }
-/* Erst vsprintf auf den Sprachtext, dann die Platzhalter: die eingesetzten
- * Titel und Adressen kommen so nie durch vsprintf. */
-$rb_bs_t = function ($schluessel, $argumente = array()) use ($rb_bs_nr, $rb_bs_titel, $rb_bs_mono) {
+/* Erst vsprintf auf den Sprachtext, dann maskieren: eingesetzte Titel kommen nie roh heraus. */
+$rb_bs_k = function ($schluessel, $argumente = array()) {
     $s = (string) ro_t('BAUSTEIN.' . $schluessel);
-    if ($argumente) { $s = vsprintf($s, $argumente); }
-    return preg_replace_callback('/\{(B\d+|[FA]:[A-Za-z0-9_]+)\}/', function ($m) use ($rb_bs_nr, $rb_bs_titel, $rb_bs_mono) {
-        if (isset($rb_bs_nr[$m[1]])) { return '#' . $rb_bs_nr[$m[1]]; }
-        return isset($rb_bs_titel[$m[1]]) ? $rb_bs_mono($rb_bs_titel[$m[1]]) : $m[0];
-    }, $s);
-}; ?>
-<?= $rb_bs_t('TEXT') ?>
+    return rb_e($argumente ? vsprintf($s, $argumente) : $s);
+};
+$rb_bs_m = '&mdash;';
+$rb_bs_ein = function ($nr) use ($rb_bs_k) { return $rb_bs_k('E_EIN', array($nr)); };
+$rb_bs_aus = function ($pin, $nr) use ($rb_bs_k) {
+    return $pin === '' ? $rb_bs_k('E_AUSGANG_NUR', array($nr)) : $rb_bs_k('E_AUSGANG', array($pin, $nr));
+};
+/* Befehl aus der Eingangsvorlage: Typ mit Vorlagentitel, Name = Titel des Befehls zum Feld. */
+$rb_bs_vi_z = function ($nr, $feld, $param) use ($rb_bs_k, $rb_bs_f, $rb_bs_vi, $rb_bs_m) {
+    return array($nr, $rb_bs_k('TYP_VI', array($rb_bs_vi['titel'])), rb_e($rb_bs_f($feld)),
+                 $param === '' ? $rb_bs_m : $rb_bs_k($param), $rb_bs_m);
+};
+/* Befehl aus der Ausgangsvorlage: Name = Titel des Befehls zu ?cmd=. */
+$rb_bs_vo_z = function ($nr, $cmd, $param, $verb) use ($rb_bs_k, $rb_bs_a, $rb_bs_vo, $rb_bs_m) {
+    return array($nr, $rb_bs_k('TYP_VO', array($rb_bs_vo['titel'])), rb_e($rb_bs_a($cmd)),
+                 $param === '' ? $rb_bs_m : $rb_bs_k($param), $verb);
+};
+/* Uebriger Baustein: Typ-Schluessel, Name <S>_NAME, Parameter <S>_PARAM. */
+$rb_bs_zl = function ($nr, $typ, $s, $param, $verb) use ($rb_bs_k, $rb_bs_m) {
+    return array($nr, $rb_bs_k($typ), $rb_bs_k($s . '_NAME'), $param === '' ? $rb_bs_m : $rb_bs_k($param), $verb);
+};
+$rb_bs_seiten = array(
+    array('kopf' => 'BL_WERTE', 'seite' => 'Saugroboter', 'bild' => 'einbindung_loxone_werte.png', 'zeilen' => array(
+    $rb_bs_vi_z(1, 'CODE', 'S1_01_PARAM'),
+    $rb_bs_vi_z(2, 'BATT', 'S1_02_PARAM'),
+    $rb_bs_vi_z(3, 'FEHLER', 'S1_03_PARAM'),
+    $rb_bs_vi_z(4, 'MATWARN', 'S1_04_PARAM'),
+    $rb_bs_vi_z(5, 'ANN', 'S1_05_PARAM'),
+    $rb_bs_vi_z(6, 'PUSH', 'S1_06_PARAM'),
+    $rb_bs_vi_z(7, 'OK', 'S1_07_PARAM'),
+    $rb_bs_vi_z(8, 'ZAEHLER', 'S1_08_PARAM'),
+    $rb_bs_zl(9, 'T_KONSTANTE', 'S1_09', 'S1_09_PARAM', $rb_bs_m),
+    $rb_bs_zl(10, 'T_STATUS', 'S1_10', 'S1_10_PARAM', 'V1 = #1, V2 = #2'),
+    $rb_bs_zl(11, 'T_UND', 'S1_11', '', 'I1 = #5, I2 = #6'),
+    $rb_bs_zl(12, 'T_BENACHR', 'S1_12', 'S1_12_PARAM', $rb_bs_ein(11)),
+    $rb_bs_zl(13, 'T_BENACHR', 'S1_13', 'S1_13_PARAM', $rb_bs_ein(4)),
+    $rb_bs_zl(14, 'T_NICHT', 'S1_14', '', 'I = #7'),
+    $rb_bs_zl(15, 'T_VALID', 'S1_15', 'S1_15_PARAM', 'V = #8, En = #9'),
+    $rb_bs_zl(16, 'T_ODER', 'S1_16', '', 'I1 = #14, I2 = ' . $rb_bs_aus('E', 15)),
+    $rb_bs_zl(17, 'T_ODER', 'S1_17', '', 'I1 = #3, I2 = #16'),
+    $rb_bs_zl(18, 'T_EVZ', 'S1_18', 'S1_18_PARAM', $rb_bs_ein(17)),
+    $rb_bs_zl(19, 'T_BENACHR', 'S1_19', 'S1_19_PARAM', $rb_bs_ein(18)),
+    $rb_bs_zl(20, 'T_VTASTE', 'S1_20', 'S1_20_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(21, 'start', '', $rb_bs_ein(43)),
+    $rb_bs_vi_z(22, 'LAEDT', 'S1_22_PARAM'),
+    $rb_bs_zl(23, 'T_STATUS', 'S1_23', 'S1_23_PARAM', 'V1 = #22, V2 = #2'),
+    $rb_bs_vi_z(24, 'PTEST', 'S1_24_PARAM'),
+    $rb_bs_zl(25, 'T_BENACHR', 'S1_25', 'S1_25_PARAM', $rb_bs_ein(24)),
+    $rb_bs_vi_z(26, 'ALTER', 'S1_26_PARAM'),
+    $rb_bs_vi_z(27, 'AUDIO', 'S1_27_PARAM'),
+    $rb_bs_zl(28, 'T_STATUS', 'S1_28', 'S1_28_PARAM', 'V1 = #26, V2 = #6, V3 = #27'),
+    $rb_bs_zl(29, 'T_VSCHALTER', 'S1_29', 'S1_29_PARAM', $rb_bs_m),
+    $rb_bs_zl(30, 'T_VEIN', 'S1_30', 'S1_30_PARAM', $rb_bs_m),
+    $rb_bs_zl(31, 'T_NICHT', 'S1_31', '', 'I = #30'),
+    $rb_bs_zl(32, 'T_EVZ', 'S1_32', 'S1_32_PARAM', $rb_bs_ein(31)),
+    $rb_bs_zl(33, 'T_IMPULS', 'S1_33', 'S1_33_PARAM', $rb_bs_m),
+    $rb_bs_zl(34, 'T_IMPULS', 'S1_34', 'S1_34_PARAM', $rb_bs_m),
+    $rb_bs_zl(35, 'T_GLEICH', 'S1_35', 'S1_35_PARAM', 'V1 = #1'),
+    $rb_bs_zl(36, 'T_ODER', 'S1_36', '', 'I1 = ' . $rb_bs_aus('Q', 34) . ', I2 = #35'),
+    $rb_bs_zl(37, 'T_RS', 'S1_37', 'S1_37_PARAM', 'S = ' . $rb_bs_aus('Q', 33) . ', R = #36'),
+    $rb_bs_zl(38, 'T_KLEINER', 'S1_38', 'S1_38_PARAM', 'V1 = #1'),
+    $rb_bs_zl(39, 'T_UND', 'S1_39', '', 'I1 = #38, I2 = #7'),
+    $rb_bs_zl(40, 'T_UND', 'S1_40', '', 'I1 = #29, I2 = #32'),
+    $rb_bs_zl(41, 'T_UND', 'S1_41', '', 'I1 = #39, I2 = #40'),
+    $rb_bs_zl(42, 'T_UND', 'S1_42', '', 'I1 = #41, I2 = ' . $rb_bs_aus('', 37)),
+    $rb_bs_zl(43, 'T_ODER', 'S1_43', 'S1_43_PARAM', 'I1 = #20, I2 = #42'),
+    $rb_bs_zl(44, 'T_STATUS', 'S1_44', 'S1_44_PARAM', 'V1 = #29, V2 = ' . $rb_bs_aus('', 37) . ', V3 = #32'),
+    ),
+      'schritte' => array(
+        array('S1_SCHRITT1', array(ro_t('LOX.H_VORLAGE'), ro_t('KNOPF.VORLAGE_VI'), ro_t('KNOPF.VORLAGE_VO'))),
+        array('S1_SCHRITT2', array($rb_bs_vi['titel'])),
+        array('S1_SCHRITT3', array($rb_bs_a('start'), $rb_bs_vo['titel'])),
+        array('S1_SCHRITT4', array()),
+        array('S1_SCHRITT5', array()),
+        array('S1_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S1_SCHRITT7', array()),
+        array('S1_SCHRITT8', array()),
+        array('S1_SCHRITT9', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_MELDUNGEN'), ro_t('EINST.PUSH_AKTIV'))),
+        array('S1_SCHRITT10', array(ro_t('REITER.TEST'), ro_t('TEST.K_PTEST'))),
+        array('S1_SCHRITT11', array()),
+      ),
+      'hinweise' => array(
+        array('S1_H1', array($rb_bs_a('start'))),
+        array('S1_H2', array()),
+        array('S1_H3', array()),
+        array('S1_H4', array()),
+        array('S1_H5', array()),
+        array('S1_H6', array()),
+        array('S1_H7', array($rb_bs_f('MATWARN'))),
+        array('S1_H8', array($rb_bs_f('ANN'), ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_SPRACHAUSGABE'))),
+        array('S1_H9', array(ro_t('LOX.VORLAGE_ROBOTER'))),
+      )),
+    array('kopf' => 'BL_WARTUNG', 'seite' => 'Saugroboter Wartung', 'bild' => 'einbindung_loxone_wartung.png', 'zeilen' => array(
+    $rb_bs_vi_z(1, 'FILTER', 'S2_01_PARAM'),
+    $rb_bs_vi_z(2, 'FILTER2', 'S2_02_PARAM'),
+    $rb_bs_vi_z(3, 'BHAUPT', 'S2_03_PARAM'),
+    $rb_bs_vi_z(4, 'BSEITE', 'S2_04_PARAM'),
+    $rb_bs_vi_z(5, 'BSEITE2', 'S2_05_PARAM'),
+    $rb_bs_vi_z(6, 'SENSOR', 'S2_06_PARAM'),
+    $rb_bs_vi_z(7, 'RAEDER', 'S2_07_PARAM'),
+    $rb_bs_vi_z(8, 'MOP', 'S2_08_PARAM'),
+    $rb_bs_zl(9, 'T_STATUS', 'S2_09', 'S2_09_PARAM', 'V1 = #1, V2 = #2, V3 = #3, V4 = #4, V5 = #5, V6 = #6, V7 = #7, V8 = #8'),
+    $rb_bs_vi_z(10, 'DOCKFILTER', 'S2_10_PARAM'),
+    $rb_bs_vi_z(11, 'DOCKBUERSTE', 'S2_11_PARAM'),
+    $rb_bs_vi_z(12, 'DOCKBEHAELTER', 'S2_12_PARAM'),
+    $rb_bs_vi_z(13, 'REINIGER', 'S2_13_PARAM'),
+    $rb_bs_zl(14, 'T_STATUS', 'S2_14', 'S2_14_PARAM', 'V1 = #10, V2 = #11, V3 = #12, V4 = #13'),
+    $rb_bs_zl(15, 'T_VTASTE', 'S2_15', 'S2_15_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(16, 'reset', 'S2_16_PARAM', $rb_bs_ein(15)),
+    $rb_bs_vi_z(17, 'DOCK', 'S2_17_PARAM'),
+    $rb_bs_zl(18, 'T_STATUS', 'S2_18', 'S2_18_PARAM', 'V1 = #17'),
+    $rb_bs_zl(19, 'T_GLEICH', 'S2_19', 'S2_19_PARAM', 'V1 = #17'),
+    $rb_bs_zl(20, 'T_EVZ', 'S2_20', 'S2_20_PARAM', $rb_bs_ein(19)),
+    $rb_bs_zl(21, 'T_BENACHR', 'S2_21', 'S2_21_PARAM', $rb_bs_ein(20)),
+    $rb_bs_vi_z(22, 'BEHAELTER', 'S2_22_PARAM'),
+    $rb_bs_vi_z(23, 'WASSERTANK', 'S2_23_PARAM'),
+    $rb_bs_vi_z(24, 'WISCHER', 'S2_24_PARAM'),
+    $rb_bs_zl(25, 'T_STATUS', 'S2_25', 'S2_25_PARAM', 'V1 = #22, V2 = #23, V3 = #24'),
+    $rb_bs_vi_z(26, 'FEHLER', 'S2_26_PARAM'),
+    $rb_bs_vi_z(27, 'FSTUFE', 'S2_27_PARAM'),
+    $rb_bs_vi_z(28, 'FTEIL', 'S2_28_PARAM'),
+    $rb_bs_zl(29, 'T_STATUS', 'S2_29', 'S2_29_PARAM', 'V1 = #26, V2 = #27'),
+    $rb_bs_zl(30, 'T_STATUS', 'S2_30', 'S2_30_PARAM', 'V1 = #28'),
+    $rb_bs_vi_z(31, 'EVENT', 'S2_31_PARAM'),
+    $rb_bs_vi_z(32, 'EVTYP', 'S2_32_PARAM'),
+    $rb_bs_vi_z(33, 'EVMUELL', 'S2_33_PARAM'),
+    $rb_bs_zl(34, 'T_STATUS', 'S2_34', 'S2_34_PARAM', 'V1 = #31, V2 = #32, V3 = #33'),
+    $rb_bs_zl(35, 'T_VTASTE', 'S2_35', 'S2_35_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(36, 'evquittieren', '', $rb_bs_ein(35)),
+    $rb_bs_vi_z(37, 'FLAECHE', 'S2_37_PARAM'),
+    $rb_bs_vi_z(38, 'DAUER', 'S2_38_PARAM'),
+    $rb_bs_vi_z(39, 'FLAECHEG', 'S2_39_PARAM'),
+    $rb_bs_vi_z(40, 'DAUERG', 'S2_40_PARAM'),
+    $rb_bs_vi_z(41, 'ANZAHLG', 'S2_41_PARAM'),
+    $rb_bs_zl(42, 'T_STATUS', 'S2_42', 'S2_42_PARAM', 'V1 = #37, V2 = #38, V3 = #39, V4 = #40, V5 = #41'),
+    ),
+      'schritte' => array(
+        array('S2_SCHRITT1', array()),
+        array('S2_SCHRITT2', array($rb_bs_vi['titel'], $rb_bs_f('FEHLER'))),
+        array('S2_SCHRITT3', array($rb_bs_vo['titel'], $rb_bs_a('reset'), $rb_bs_a('evquittieren'))),
+        array('S2_SCHRITT4', array()),
+        array('S2_SCHRITT5', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S2_SCHRITT6', array()),
+        array('S2_SCHRITT7', array()),
+        array('S2_SCHRITT8', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.WARN_STUNDEN'), ro_t('EINST.WARN_PROZENT'))),
+        array('S2_SCHRITT9', array()),
+      ),
+      'hinweise' => array(
+        array('S2_H1', array()),
+        array('S2_H2', array()),
+        array('S2_H3', array($rb_bs_a('reset'))),
+        array('S2_H4', array()),
+      )),
+    array('kopf' => 'BL_STEUERUNG', 'seite' => 'Saugroboter Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'zeilen' => array(
+    $rb_bs_vi_z(1, 'CODE', 'S3_01_PARAM'),
+    $rb_bs_vi_z(2, 'SAUGST', 'S3_02_PARAM'),
+    $rb_bs_vi_z(3, 'WASSER', 'S3_03_PARAM'),
+    $rb_bs_vi_z(4, 'MODUS', 'S3_04_PARAM'),
+    $rb_bs_zl(5, 'T_STATUS', 'S3_05', 'S3_05_PARAM', 'V1 = #2'),
+    $rb_bs_zl(6, 'T_STATUS', 'S3_06', 'S3_06_PARAM', 'V1 = #3'),
+    $rb_bs_zl(7, 'T_STATUS', 'S3_07', 'S3_07_PARAM', 'V1 = #4'),
+    $rb_bs_zl(8, 'T_VTASTE', 'S3_08', 'S3_08_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(9, 'stop', '', $rb_bs_ein(8)),
+    $rb_bs_zl(10, 'T_VTASTE', 'S3_10', 'S3_10_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(11, 'pause', '', $rb_bs_ein(10)),
+    $rb_bs_zl(12, 'T_VTASTE', 'S3_12', 'S3_12_PARAM', $rb_bs_m),
+    $rb_bs_zl(13, 'T_VEIN', 'S3_13', 'S3_13_PARAM', $rb_bs_m),
+    $rb_bs_zl(14, 'T_VSCHALTER', 'S3_14', 'S3_14_PARAM', $rb_bs_m),
+    $rb_bs_zl(15, 'T_GLEICH', 'S3_15', 'S3_15_PARAM', 'V1 = #1'),
+    $rb_bs_zl(16, 'T_FLANKE', 'S3_16', 'S3_16_PARAM', $rb_bs_ein(13)),
+    $rb_bs_zl(17, 'T_UND', 'S3_17', '', 'I1 = #14, I2 = #15'),
+    $rb_bs_zl(18, 'T_UND', 'S3_18', '', 'I1 = #17, I2 = ' . $rb_bs_aus('On', 16)),
+    $rb_bs_zl(19, 'T_ODER', 'S3_19', 'S3_19_PARAM', 'I1 = #12, I2 = #18'),
+    $rb_bs_vo_z(20, 'home', '', $rb_bs_ein(19)),
+    $rb_bs_zl(21, 'T_VTASTE', 'S3_21', 'S3_21_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(22, 'locate', '', $rb_bs_ein(21)),
+    $rb_bs_zl(23, 'T_VTASTE', 'S3_23', 'S3_23_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(24, 'segments', 'S3_24_PARAM', $rb_bs_ein(23)),
+    $rb_bs_zl(25, 'T_VTASTE', 'S3_25', 'S3_25_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(26, 'zone', 'S3_26_PARAM', $rb_bs_ein(25)),
+    $rb_bs_zl(27, 'T_VTASTE', 'S3_27', 'S3_27_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(28, 'goto', 'S3_28_PARAM', $rb_bs_ein(27)),
+    $rb_bs_zl(29, 'T_VTASTE', 'S3_29', 'S3_29_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(30, 'fan', 'S3_30_PARAM', $rb_bs_ein(29)),
+    $rb_bs_zl(31, 'T_VTASTE', 'S3_31', 'S3_31_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(32, 'wasser', 'S3_32_PARAM', $rb_bs_ein(31)),
+    $rb_bs_zl(33, 'T_VTASTE', 'S3_33', 'S3_33_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(34, 'modus', 'S3_34_PARAM', $rb_bs_ein(33)),
+    $rb_bs_zl(35, 'T_VTASTE', 'S3_35', 'S3_35_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(36, 'ruhezeit', 'S3_36_PARAM', $rb_bs_ein(35)),
+    $rb_bs_zl(37, 'T_VTASTE', 'S3_37', 'S3_37_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(38, 'absaugen', '', $rb_bs_ein(37)),
+    $rb_bs_zl(39, 'T_VTASTE', 'S3_39', 'S3_39_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(40, 'wischwaschen', '', $rb_bs_ein(39)),
+    $rb_bs_zl(41, 'T_VTASTE', 'S3_41', 'S3_41_PARAM', $rb_bs_m),
+    $rb_bs_vo_z(42, 'wischtrocknen', '', $rb_bs_ein(41)),
+    ),
+      'schritte' => array(
+        array('S3_SCHRITT1', array()),
+        array('S3_SCHRITT2', array($rb_bs_vi['titel'], $rb_bs_f('CODE'), $rb_bs_f('SAUGST'), $rb_bs_f('WASSER'), $rb_bs_f('MODUS'))),
+        array('S3_SCHRITT3', array($rb_bs_vo['titel'], implode(', ', array_map($rb_bs_a, array('stop', 'pause', 'home', 'locate', 'segments', 'zone', 'goto', 'fan', 'wasser', 'modus', 'ruhezeit', 'absaugen', 'wischwaschen', 'wischtrocknen'))))),
+        array('S3_SCHRITT4', array()),
+        array('S3_SCHRITT5', array()),
+        array('S3_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S3_SCHRITT7', array()),
+        array('S3_SCHRITT8', array(ro_t('LOX.H_TOKEN'))),
+      ),
+      'hinweise' => array(
+        array('S3_H1', array()),
+        array('S3_H2', array(ro_t('REITER.TEST'), ro_t('TEST.H_RAEUME'), $rb_bs_a('zone'), $rb_bs_a('goto'))),
+        array('S3_H3', array()),
+        array('S3_H4', array(ro_t('REITER.TEST'), ro_t('TEST.H_FAEHIGKEITEN'))),
+        array('S3_H5', array($rb_bs_a('start'))),
+      )),
+);
+?>
+<?= ro_t('BAUSTEIN.TEXT') ?>
+<?php foreach ($rb_bs_seiten as $rb_bs_s) { ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('LOX.' . $rb_bs_s['kopf'])) ?></h3>
+<div class="sm-hinweis"><b><?= $rb_bs_k('SCHRITTE_TITEL') ?></b>
+<ol class="sm-schritte">
+<?php foreach ($rb_bs_s['schritte'] as $rb_bs_x) { ?>
+<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
+<?php } ?>
+</ol></div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= rb_e(ro_t('BAUSTEIN.T_TYP')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_NAME')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_PARAM')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_VERB')) ?></th></tr>
-<?php foreach ($rb_bs as $rb_bs_i => $rb_bs_z) { ?>
-<tr><td><?= $rb_bs_i + 1 ?></td><td><?= $rb_bs_t($rb_bs_z[1], $rb_bs_z[2]) ?></td><td><span class="sm-mono"><?= is_array($rb_bs_z[3]) ? rb_e($rb_bs_z[3][0]) : $rb_bs_t($rb_bs_z[3]) ?></span></td><td><?= $rb_bs_t($rb_bs_z[4]) ?></td><td><?= $rb_bs_t($rb_bs_z[5]) ?></td></tr>
+<?php foreach ($rb_bs_s['zeilen'] as $rb_bs_r) { ?>
+<tr><td><?= (int) $rb_bs_r[0] ?></td><td><?= $rb_bs_r[1] ?></td><td><span class="sm-mono"><?= $rb_bs_r[2] ?></span></td><td><?= $rb_bs_r[3] ?></td><td><?= $rb_bs_r[4] ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-hinweis"><?= $rb_bs_t('H_KONSTANTE') ?><br><?= $rb_bs_t('H_ODER') ?><br><?= $rb_bs_t('H_WARTUNG') ?><br><?= $rb_bs_t('H_START') ?><br><?= $rb_bs_t('ERLAEUTERUNG') ?></div>
+<div class="sm-warnung"><b><?= $rb_bs_k('HINWEISE_TITEL') ?></b>
+<ul class="sm-schritte">
+<?php foreach ($rb_bs_s['hinweise'] as $rb_bs_x) { ?>
+<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= rb_e(ro_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= rb_e(ro_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= rb_e($rb_bs_s['bild']) ?>" alt="<?= rb_e(sprintf(ro_t('LOX.BILD_ALT'), $rb_bs_s['seite'])) ?>" loading="lazy">
+<figcaption><?= rb_e(sprintf(ro_t('LOX.BILD_UNTERSCHRIFT'), $rb_bs_s['seite'])) ?></figcaption>
 </figure>
 <div class="sm-small"><?= ro_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT5')) ?></b><br>

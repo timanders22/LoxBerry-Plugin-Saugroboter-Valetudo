@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,13 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.19
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt): Der Reiter „Einbindung in
+Loxone“ zeigt drei Baustein-Listen – Werte, Meldungen und Automatik (saugt, wenn niemand da ist; fährt
+heim, wenn jemand kommt), Wartung, Station und Ereignisse sowie die Steuerung mit allen Befehlen –, je mit
+Bild und Schritt-für-Schritt-Anleitung (44, 42 und 42 Zeilen statt 21).
 
 ## Neu in 1.1.18
 
@@ -800,8 +807,9 @@ liefern in beiden Sprachen zeichengleiche Ausgabe ohne eine Meldung.
 - **Selbstprüfung** im Reiter Test, **Sicherung** der Einstellungen über zwei
   Knöpfe, **Anmeldung** an Valetudo (HTTP Basic Auth)
 - Bis zu **2 Roboter**, MQTT, JSON, Protokoll mit Rotation
-- Reiter: Einstellungen, MQTT, Einbindung in Loxone (mit kompletter
-  Baustein-Liste und zwei Vorlagen-Knöpfen), Test, Protokoll
+- Reiter: Einstellungen, MQTT, Einbindung in Loxone (mit drei kompletten
+  Baustein-Listen aus dem Musterprojekt, je mit Bild und Anleitung, und zwei
+  Vorlagen-Knöpfen), Test, Protokoll
 
 ## Endpunkte
 
@@ -836,7 +844,8 @@ Die Antwortzeile trägt 41 Felder. Die vollständige Liste mit Einheit, Grenzen
 und Befehlserkennung steht im Reiter „Einbindung in Loxone“ — und lässt sich
 dort mit einem Knopf als fertige Datei für Loxone Config erzeugen.
 
-Die Bausteine der Baustein-Liste stehen fertig verbunden auf der Seite „Saugroboter“ im
+Die Bausteine der drei Baustein-Listen stehen fertig verbunden auf den Seiten „Saugroboter“,
+„Saugroboter Wartung“ und „Saugroboter Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer gemeinsamen
 Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
