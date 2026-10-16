@@ -1419,6 +1419,7 @@ $rb_bs_seiten = array(
         array('S1_H3', array()),
         array('S1_H4', array()),
         array('S1_H5', array()),
+        array('S1_H5_EN', array()),
         array('S1_H6', array()),
         array('S1_H7', array($rb_bs_f('MATWARN'))),
         array('S1_H8', array($rb_bs_f('ANN'), ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_SPRACHAUSGABE'))),
