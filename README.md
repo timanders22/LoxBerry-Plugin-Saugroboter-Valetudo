@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -9,6 +9,10 @@ die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
 PUT mit JSON-Rumpf).
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.21
+
+Hinweis zur Analogwertvalidierung berichtigt.
 
 ## Neu in 1.1.20
 
