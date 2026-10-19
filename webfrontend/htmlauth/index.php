@@ -159,7 +159,8 @@ function rb_flash_lesen()
 function rb_eingabe_felder($formular)
 {
     if ($formular === 'mqtt') {
-        return array('mqtt_enabled', 'mqtt_topic');
+        // Gruppe 2 (1.1.22): dazu die beiden Haken der Befehlsbruecke (Entwurf sv 3.3).
+        return array('mqtt_enabled', 'mqtt_topic', 'befehle_mqtt_ein', 'befehle_mqtt_steuern');
     }
     if ($formular === 'settings') {
         return array_merge(array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'cache_sec', 'warn_hours',
@@ -348,6 +349,19 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 if ($rb_token_meldung !== '') { $rb_fehler[] = rb_e($rb_token_meldung); }
 
 // --- Downloads. Sie enden mit exit und muessen VOR lbheader() stehen. ---
+/* ---------- Gruppe 2 (1.1.22): Vorlage der MQTT-Befehle (Download, veraendert nichts). Fuer die Werte ueber das
+ * MQTT-Gateway gibt es keine Vorlage (Hausherr 19.10.2026, Regeln/07 R2_078): Namenstabelle in Schritt 3. ---------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_befehle'])) {
+    $rb_vq = ro_vorlage_befehle();
+    if ($rb_vq === null) {
+        list(, $rb_vqf) = ro_befehle_liste();
+        rb_umleiten('tab-loxone', array('fehler' => array(rb_e(sprintf(ro_t('BEFEHL.LISTE_FEHLT'), $rb_vqf)))));
+    }
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $rb_vq[0] . '"');
+    echo $rb_vq[1];
+    exit;
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_vo'])) {
     list($rb_vname, $rb_vinhalt) = ro_vo_vorlage(isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
     header('Content-Type: application/x-download');
@@ -522,9 +536,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
     $rb_neu = ro_config();
     $rb_neu['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $rb_neu['mqtt_topic'] = $rb_thema;
+    // Gruppe 2 (1.1.22): die beiden Haken der Befehlsbruecke (Entwurf sv 3.3, E4), ab Werk aus.
+    $rb_neu['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $rb_neu['befehle_mqtt_steuern'] = isset($_POST['befehle_mqtt_steuern']) ? 1 : 0;
     if (ro_config_speichern($rb_neu)) {
         ro_abo_datei($rb_thema, true);
-        rb_umleiten('tab-mqtt', array('saved' => 1));
+        /* Gruppe 2 (1.1.22): die Befehlsbruecke sofort starten bzw. anhalten (ro_bruecke_schalten()) - der Waechter
+         * im Minutentakt startet hoechstens alle 600 s neu. Die Ausgabe von befehlsbruecke.sh traegt nie ein
+         * Kennwort; sie wird gekuerzt und maskiert. */
+        list($rb_brc, $rb_baus, $rb_bart) = ro_bruecke_schalten();
+        $rb_baus = substr((string) preg_replace('/[^\x20-\x7E]/', ' ', (string) $rb_baus), 0, 160);
+        $rb_bm = array();
+        $rb_bf = array();
+        if ($rb_bart === 'start') {
+            if ($rb_brc === 0) { $rb_bm[] = rb_e(sprintf(ro_t('BEFEHL.M_EIN'), $rb_baus)); }
+            else { $rb_bf[] = rb_e(sprintf(ro_t('BEFEHL.M_START_FEHL'), $rb_baus)); }
+        } elseif ($rb_bart === 'stop') {
+            if ($rb_brc === 0) { $rb_bm[] = rb_e(ro_t('BEFEHL.M_AUS')); }
+            else { $rb_bf[] = rb_e(sprintf(ro_t('BEFEHL.M_STOP_FEHL'), $rb_baus)); }
+        } elseif ($rb_brc !== 0) {
+            $rb_bf[] = rb_e(sprintf(ro_t('BEFEHL.M_FEHLT'), $rb_baus));
+        }
+        rb_umleiten('tab-mqtt', array('saved' => 1, 'meldungen' => $rb_bm, 'fehler' => $rb_bf));
     }
     rb_umleiten('tab-mqtt', array('fehler' => array(rb_e(ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile)),
         'eingaben' => rb_eingaben_sammeln('mqtt')));
@@ -852,6 +885,9 @@ if ($rb_frame) {
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
 
+/* Gruppe 2 (1.1.22): der zugeklappte Abschnitt "Bisherige Anlagen (HTTP)" im Reiter Einbindung. */
+.sm-http { margin: 18px 0 8px; }
+.sm-http > summary { cursor: pointer; margin: 6px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -903,10 +939,10 @@ $rb_kalt = $rb_klauf['ts'] > 0 ? time() - (int) $rb_klauf['ts'] : -1; ?>
 <div class="sm-alert <?= $rb_s['fehler'] ? 'sm-warn' : 'sm-info' ?>">
 <b><?= rb_e($rb_s['name']) ?></b>:
 <?php if ($rb_s['ok']) { ?>
-<b><?= rb_e($rb_s['text']) ?></b> &middot; <?= rb_e(ro_t('TEXT.BATTERIE')) ?> <?= (int) $rb_s['batterie'] ?>&nbsp;%<?= $rb_s['laedt'] ? ' (' . rb_e(ro_t('TEXT.LAEDT')) . ')' : '' ?>
+<b><?= rb_e($rb_s['text']) ?></b> &middot; <?= rb_e(ro_t('TEXT.BATTERIE')) ?> <?= $rb_s['batterie'] < 0 ? '&ndash;' : (int) $rb_s['batterie'] . '&nbsp;%' ?><?= $rb_s['laedt'] ? ' (' . rb_e(ro_t('TEXT.LAEDT')) . ')' : '' ?>
 <?= $rb_s['fehler'] ? ' &middot; <b>' . rb_e(ro_t('TEXT.FEHLER_KURZ')) . ' ' . (int) $rb_s['fehler'] . '</b> ' . rb_e($rb_s['fehlertext']) : '' ?><br>
-<?= rb_e(ro_t('TEXT.LETZTE_REINIGUNG')) ?> <?= rb_e($rb_s['flaeche']) ?>&nbsp;m&sup2; <?= rb_e(ro_t('WORT.IN')) ?> <?= (int) $rb_s['dauer'] ?>&nbsp;min<?= $rb_s['letzte'] ? ' (' . rb_e(date('d.m.Y H:i', $rb_s['letzte'])) . ')' : '' ?><br>
-<?= rb_e(ro_t('TEXT.GESAMT')) ?> <?= rb_e($rb_s['flaeche_gesamt']) ?>&nbsp;m&sup2;, <?= rb_e($rb_s['dauer_gesamt']) ?>&nbsp;h, <?= (int) $rb_s['anzahl_gesamt'] ?> <?= rb_e(ro_t('TEXT.REINIGUNGEN')) ?><br>
+<?= rb_e(ro_t('TEXT.LETZTE_REINIGUNG')) ?> <?= $rb_s['flaeche'] < 0 ? '&ndash;' : rb_e($rb_s['flaeche']) . '&nbsp;m&sup2; ' . rb_e(ro_t('WORT.IN')) . ' ' . (int) $rb_s['dauer'] . '&nbsp;min' ?><?= $rb_s['letzte'] ? ' (' . rb_e(date('d.m.Y H:i', $rb_s['letzte'])) . ')' : '' ?><br>
+<?= rb_e(ro_t('TEXT.GESAMT')) ?> <?= $rb_s['anzahl_gesamt'] < 0 ? '&ndash;' : rb_e($rb_s['flaeche_gesamt']) . '&nbsp;m&sup2;, ' . rb_e($rb_s['dauer_gesamt']) . '&nbsp;h, ' . (int) $rb_s['anzahl_gesamt'] . ' ' . rb_e(ro_t('TEXT.REINIGUNGEN')) ?><br>
 <?= rb_e(ro_t('TEXT.VERBRAUCHSMATERIAL')) ?> <?= rb_e(ro_t('TEXT.FILTER')) ?> <?= rb_h($rb_s['filter']) ?> &middot; <?= rb_e(ro_t('TEXT.HAUPTBUERSTE')) ?> <?= rb_h($rb_s['buerste_haupt']) ?> &middot; <?= rb_e(ro_t('TEXT.SEITENBUERSTE')) ?> <?= rb_h($rb_s['buerste_seite']) ?> &middot; <?= rb_e(ro_t('TEXT.SENSOREN')) ?> <?= rb_h($rb_s['sensor']) ?><?php
 if ($rb_s['mop'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.WISCHBEZUG')) . ' ' . rb_h($rb_s['mop']); }
 if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEUTEL')) . ' ' . rb_h($rb_s['dock_behaelter'], '%'); }
@@ -1129,6 +1165,19 @@ if ($rb_sich_warn) { ?>
             '<span class="sm-mono">' . rb_e($rb_cfg['mqtt_topic']) . '/2/&hellip;</span>') ?></div>
     </div>
 </div>
+<?php /* Gruppe 2 (1.1.22): die Befehlsbruecke - zwei Haken, ab Werk aus (Entwurf sv 3.3, E4). Gespeichert mit dem
+         MQTT-Formular; beim Speichern startet bzw. haelt das Plugin die Bruecke sofort (ro_bruecke_schalten()). */ ?>
+<h2><?= rb_e(ro_t('BEFEHL.H_BEFEHLE')) ?></h2>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" <?= rb_haken('befehle_mqtt_ein', !empty($rb_cfg['befehle_mqtt_ein'])) ? 'checked' : '' ?>> <?= rb_e(ro_t('BEFEHL.L_ANNEHMEN')) ?>
+</label>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_steuern" <?= rb_haken('befehle_mqtt_steuern', !empty($rb_cfg['befehle_mqtt_steuern'])) ? 'checked' : '' ?>> <?= rb_e(ro_t('BEFEHL.L_STEUERN')) ?>
+</label>
+<div class="sm-small"><?= rb_e(ro_t('BEFEHL.H_ANNEHMEN')) ?></div>
+<?php if (empty($rb_cfg['mqtt_enabled'])) { ?><div class="sm-warnung"><?= rb_e(ro_t('BEFEHL.W_MQTT_AUS')) ?></div><?php } ?>
+<?php list(, $rb_bzt) = ro_bruecke_zustand(); ?>
+<div class="sm-small"><?= rb_e($rb_bzt) ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
 </div>
@@ -1183,7 +1232,265 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
 <div class="sm-pane<?= $rb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= rb_e(ro_t('LOX.H_EINBINDUNG')) ?></h2>
 <p><?= ro_t('LOX.EINLEITUNG') ?></p>
+<?php
+/* Gruppe 2 (1.1.22, Hausherr 18.10.2026: Werte UND Befehle ueber MQTT; Musterprojekt, Vorlagen und Haus nutzen nur
+ * MQTT, die HTTP-Wege bleiben fuer bestehende Anlagen; Gateway V1 und V2). Sieben feste Schritte in der Reihenfolge
+ * des MQTT-Wegs (Entwurf sv 2.5): einschalten, Gateway, Eingaenge nach der Namenstabelle (keine Importvorlage fuer
+ * Gateway-Werte, Hausherr 19.10.2026), Ausfallerkennung, Befehle, Baustein-Seiten, Gegenprobe. Darunter zugeklappt
+ * "Bisherige Anlagen (HTTP)". Namenstabelle und Hakenliste kommen aus ro_mqtt_namen(), die Befehle aus bb_liste(). */
+$rb_schritt = 0;
+$rb_lgw = ro_mqtt_gateway_info();
+$rb_lgwf = ($rb_lgw === null) ? 0 : (int) $rb_lgw['fassung'];
+$rb_wurzel = ro_mqtt_thema_saeubern($rb_cfg['mqtt_topic']);
+$rb_bliste = ro_befehle_liste();
+?>
+<?php /* U10: eine Legende je Reiter, oben, mit allen Farben des Reiters. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION_TOKEN')) ?></span>
+</div>
 
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S1_TITEL'))) ?></b><br>
+<?= ro_t('LOX.S1_TEXT') ?>
+<?php if (empty($rb_cfg['mqtt_enabled'])) { ?><div class="sm-warnung"><?= ro_t('LOX.S1_WARN_AUS') ?></div>
+<?php } else { ?><div class="sm-small"><?= rb_e(sprintf(ro_t('LOX.S1_ZUSTAND_EIN'), $rb_wurzel)) ?></div><?php } ?>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S2_TITEL'))) ?></b><br>
+<?php /* Entwurf sv 2.5: je Gateway-Fassung der passende Satz (Fassung aus general.json, ro_mqtt_gateway_info()).
+         Unter V1 das mitgebrachte Abo, unter V2 die Hakenliste; ist die Fassung nicht lesbar, steht beides da. */ ?>
+<?php if ($rb_lgwf <= 1) { ?>
+<div class="<?= $rb_lgwf === 1 ? 'sm-hinweis' : 'sm-warnung' ?>"><?= sprintf(ro_t('LOX.S2_V1'), '<span class="sm-mono">' . rb_e($rb_wurzel) . '/#</span>') ?></div>
+<?php } ?>
+<?php if ($rb_lgwf !== 1) {
+    $rb_haken = array();
+    foreach (ro_mqtt_namen_geraete() as $rb_hd) {
+        foreach (ro_mqtt_namen($rb_hd) as $rb_hz) { $rb_haken[] = $rb_hz; }
+    }
+    $rb_nc = 0; ?>
+<div class="sm-hinweis"><?= ro_t('LOX.S2_V2') ?></div>
+<?php if ($rb_lgwf === 0) { ?><div class="sm-small"><?= ro_t('LOX.S2_UNBEKANNT') ?></div><?php } ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('LOX.HAKEN_TITEL')) ?></h3>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:28%;"><?= rb_e(ro_t('LOX.HAKEN_SP_NAME')) ?></th><th style="width:26%;"><?= rb_e(ro_t('LOX.HAKEN_SP_THEMA')) ?></th><th style="width:10%;"><?= rb_e(ro_t('LOX.HAKEN_SP_NC')) ?></th><th><?= rb_e(ro_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($rb_haken as $rb_h) {
+    if ($rb_h['noncached']) { $rb_nc++; } ?>
+<tr><td><span class="sm-mono"><?= rb_e($rb_h['name']) ?></span></td><td><span class="sm-mono"><?= rb_e($rb_h['thema']) ?></span></td><td><?= $rb_h['noncached'] ? 'N' : '' ?></td><td><?= rb_e($rb_h['bedeutung']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('LOX.HAKEN_ANZAHL'), count($rb_haken), $rb_nc)) ?> <?= rb_e(ro_t('LOX.S2_NC_SATZ')) ?></div>
+<?php } ?>
+<div class="sm-small"><?= rb_e(ro_t('LOX.S2_RECONNECT')) ?></div>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S3_TITEL'))) ?></b><br>
+<?= ro_t('LOX.S3_TEXT') ?>
+<div class="sm-hinweis"><?= ro_t('LOX.S3_DIGITAL') ?> <?= ro_t('LOX.S3_RECHTE') ?> <?= ro_t('LOX.S3_MUSTER') ?></div>
+<?php
+/* Hausherr 19.10.2026 (Regeln/07 Abschnitt 4, R2_078): fuer Werte ueber das MQTT-Gateway KEINE Importvorlage - die
+ * LoxBerry-Anleitung verlangt einfache Virtuelle Eingaenge. Die Tabelle entsteht aus ro_mqtt_namen() (dieselbe
+ * Quelle wie Hakenliste und Selbstpruefung); der Knopf kopiert den Namen. Je eingerichtetem Roboter eine Tabelle. */
+foreach (ro_mqtt_namen_geraete() as $rb_nd) {
+    $rb_namen = ro_mqtt_namen($rb_nd); ?>
+<h3 class="sm-h3"><?= rb_e(sprintf(ro_t('LOX.NAMEN_ROBOTER'), $rb_nd)) ?></h3>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:34%;"><?= rb_e(ro_t('LOX.NAMEN_SP_NAME')) ?></th><th><?= rb_e(ro_t('LOX.SP_BEDEUTUNG')) ?></th><th style="width:20%;"><?= rb_e(ro_t('LOX.NAMEN_SP_EINHEIT')) ?></th><th style="width:10%;"><?= rb_e(ro_t('LOX.NAMEN_SP_ART')) ?></th></tr>
+<?php foreach ($rb_namen as $rb_nz) { ?>
+<tr><td style="white-space:nowrap;"><span class="sm-mono"><?= rb_e($rb_nz['name']) ?></span> <button data-role="none" type="button" style="margin-left:6px;padding:1px 8px;font-size:12px;border:1px solid #9aa5ab;border-radius:4px;background:#f2f4f5;color:#333;cursor:pointer;" data-name="<?= rb_e($rb_nz['name']) ?>" data-ok="<?= rb_e(ro_t('LOX.KOPIERT')) ?>" data-fehl="<?= rb_e(ro_t('LOX.KOPIE_FEHL')) ?>" onclick="return rbNameKopieren(this);"><?= rb_e(ro_t('LOX.KOPIEREN')) ?></button></td><td><?= rb_e($rb_nz['bedeutung']) ?></td><td><?= rb_e($rb_nz['bereich']) ?></td><td><?= rb_e(ro_t($rb_nz['text'] ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('LOX.NAMEN_ANZAHL'), count($rb_namen))) ?></div>
+<?php } ?>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('LOX.S3_ROBOTER2'), str_replace('_code', '_…', ro_mqtt_gateway_name(2, 'code')))) ?></div>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S4_TITEL'))) ?></b><br>
+<?= sprintf(ro_t('LOX.S4_TEXT'), '<span class="sm-mono">' . rb_e(ro_mqtt_gateway_name(1, 'status/zaehler')) . '</span>',
+    '<span class="sm-mono">' . rb_e(ro_mqtt_gateway_name(1, 'ok')) . '</span>') ?>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S5_TITEL'))) ?></b><br>
+<?= sprintf(ro_t('LOX.S5_TEXT'), (int) (ro_mqtt_udpport() > 0 ? ro_mqtt_udpport() : 11884)) ?>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('LOX.S5_ZUSTAND'), ro_t(!empty($rb_cfg['befehle_mqtt_ein']) ? 'WORT.JA' : 'WORT.NEIN'),
+    ro_t(!empty($rb_cfg['befehle_mqtt_steuern']) ? 'WORT.JA' : 'WORT.NEIN'))) ?></div>
+<?php if ($rb_bliste[0] === null) { ?>
+<div class="sm-warnung"><?= rb_e(sprintf(ro_t('BEFEHL.LISTE_FEHLT'), $rb_bliste[1])) ?></div>
+<?php } else {
+    $rb_bbsp = ro_befehle();
+    $rb_muster = false; ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_TITEL')) ?></th><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_THEMA')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_WERT')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_EINGREIFEND')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_SPERRE')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_QUITTUNG')) ?></th></tr>
+<?php foreach ($rb_bliste[0]['befehle'] as $rb_b) {
+    if ($rb_b['muster']) { $rb_muster = true; continue; }
+    if ($rb_b['art'] === 'auswahl') {
+        $rb_bw = sprintf(ro_t('BEFEHL.WERT_AUSWAHL'), implode(', ', $rb_b['werte']));
+    } elseif ($rb_b['art'] === 'text') {
+        $rb_bw = sprintf(ro_t('BEFEHL.WERT_TEXT'), (int) $rb_b['max_byte'],
+            isset($rb_bbsp[$rb_b['name']]) ? $rb_bbsp[$rb_b['name']][0] : '');
+    } else {
+        $rb_bw = ro_t('BEFEHL.WERT_PULS');
+    } ?>
+<tr><td><?= rb_e($rb_b['titel']) ?></td><td><span class="sm-mono"><?= rb_e($rb_b['thema']) ?></span></td><td><?= rb_e($rb_bw) ?></td><td><?= rb_e(ro_t($rb_b['eingreifend'] ? 'WORT.JA' : 'WORT.NEIN')) ?></td><td><?= rb_e(sprintf(ro_t('BEFEHL.SPERRE_S'), $rb_b['sperre_s'])) ?></td><td><?= rb_e(ro_t('BEFEHL.QUITT_AUSGEFUEHRT')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php if ($rb_muster) { ?><div class="sm-small"><?= rb_e(sprintf(ro_t('BEFEHL.MUSTER_HINWEIS'), $rb_wurzel)) ?></div><?php } ?>
+<div class="sm-small"><?= ro_t('LOX.VORLAGE_BEFEHLE_TEXT') ?></div>
+<div class="sm-knopfreihe" style="margin-top:6px;">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <?= rb_fmt() ?>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_befehle" value="1"><?= rb_e(ro_t('KNOPF.VORLAGE_BEFEHLE')) ?></button>
+  </form>
+</div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S6_TITEL'))) ?></b><br>
+<?php /* X-8 (02.10.2026, Entscheidung 36) und Welle Bild 10 VOLL (1.1.19): drei Seiten aus dem LoxBerry-Plugins
+         Musterprojekt, je Seite Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link.
+         Gruppe 2 (1.1.22): die Tabellen sind wortgleich zu Musterprojekt/baustein_listen.txt (Abschnitte
+         "Saugroboter" 50, "Saugroboter Wartung" 43, "Saugroboter Steuerung" 42 Zeilen); jede Zeile steht ganz in
+         [BAUSTEIN] Z<seite>_<nr> ("Typ | Name | Parameter | Eingaenge"; "%" als "%%", Ausgabe ueber sprintf). Die
+         Eingaenge heissen wie das MQTT-Gateway sie benennt, die Befehle wie am gemeinsamen Ausgang "LoxBerry
+         MQTT-Gateway" des Musterprojekts. Ein anderes Praefix als "saugrobo" wird in Namen, Themen und Texten
+         eingesetzt ($rb_px). Jede Zelle ist fertiges, maskiertes HTML. */
+$rb_px_w = $rb_wurzel;
+$rb_px = function ($s) use ($rb_px_w) {
+    if ($rb_px_w === 'saugrobo') { return $s; }
+    return str_replace(array('saugrobo/', 'saugrobo_'), array($rb_px_w . '/', str_replace('/', '_', $rb_px_w) . '_'), $s);
+};
+/* Kasten- und Hinweistexte: erst vsprintf, dann Praefix, dann maskieren - eingesetzte Namen kommen nie roh heraus. */
+$rb_bs_k = function ($schluessel, $argumente = array()) use ($rb_px) {
+    return rb_e($rb_px(vsprintf((string) ro_t('BAUSTEIN.' . $schluessel), $argumente)));
+};
+/* Eine Tabellenzeile in vier Zellen; die Zahl der Zellen prueft der Bau (bau_g2.py) und die Selbstpruefung nicht. */
+$rb_bs_zeile = function ($seite, $nr) use ($rb_px) {
+    $c = array_pad(explode(' | ', $rb_px(sprintf((string) ro_t(sprintf('BAUSTEIN.Z%d_%02d', $seite, $nr))))), 4, '');
+    return array($nr, rb_e($c[0]), rb_e($c[1]), rb_e($c[2]), rb_e(implode(' | ', array_slice($c, 3))));
+};
+/* Der Name einer Zeile (Spalte 2) - fuer die Kaesten, unmaskiert und noch mit dem Grundpraefix: $rb_bs_k setzt das
+ * Praefix genau einmal ein und maskiert. */
+$rb_bs_name = function ($seite, $nr) {
+    $c = explode(' | ', sprintf((string) ro_t(sprintf('BAUSTEIN.Z%d_%02d', $seite, $nr))));
+    return isset($c[1]) ? $c[1] : '';
+};
+$rb_bs_seiten = array(
+    array('kopf' => 'BL_WERTE', 'seite' => 'Saugroboter', 'bild' => 'einbindung_loxone_werte.png', 'nr' => 1, 'zeilen' => 50,
+      'schritte' => array(
+        array('S1_SCHRITT1', array(ro_t('LOX.S3_TITEL'))),
+        array('S1_SCHRITT2', array()),
+        array('S1_SCHRITT3', array($rb_bs_name(1, 21))),
+        array('S1_SCHRITT4', array()),
+        array('S1_SCHRITT5', array()),
+        array('S1_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S1_SCHRITT7', array()),
+        array('S1_SCHRITT8', array()),
+        array('S1_SCHRITT9', array()),
+        array('S1_SCHRITT10', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_MELDUNGEN'), ro_t('EINST.PUSH_AKTIV'))),
+        array('S1_SCHRITT11', array(ro_t('REITER.MQTT'), ro_t('BEFEHL.L_ANNEHMEN'), ro_t('BEFEHL.L_STEUERN'))),
+        array('S1_SCHRITT12', array(ro_t('REITER.TEST'), ro_t('TEST.K_PTEST'))),
+        array('S1_SCHRITT13', array()),
+      ),
+      'hinweise' => array(
+        array('S1_H1', array($rb_bs_name(1, 21))),
+        array('S1_H2', array()),
+        array('S1_H3', array()),
+        array('S1_H4', array()),
+        array('S1_H5', array()),
+        array('S1_H5_EN', array()),
+        array('S1_H6', array()),
+        array('S1_H7', array($rb_bs_name(1, 4))),
+        array('S1_H8', array($rb_bs_name(1, 5), ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_SPRACHAUSGABE'))),
+        array('S1_H9', array('saugrobo_2_', 'saugrobo')),   // Grundpraefix; $rb_bs_k setzt das eingestellte ein
+        array('S1_H10', array()),
+      )),
+    array('kopf' => 'BL_WARTUNG', 'seite' => 'Saugroboter Wartung', 'bild' => 'einbindung_loxone_wartung.png', 'nr' => 2, 'zeilen' => 43,
+      'schritte' => array(
+        array('S2_SCHRITT1', array()),
+        array('S2_SCHRITT2', array($rb_bs_name(2, 26))),
+        array('S2_SCHRITT3', array($rb_bs_name(2, 43))),
+        array('S2_SCHRITT4', array($rb_bs_name(2, 16), $rb_bs_name(2, 36))),
+        array('S2_SCHRITT5', array()),
+        array('S2_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S2_SCHRITT7', array()),
+        array('S2_SCHRITT8', array()),
+        array('S2_SCHRITT9', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.WARN_STUNDEN'), ro_t('EINST.WARN_PROZENT'))),
+        array('S2_SCHRITT10', array()),
+      ),
+      'hinweise' => array(
+        array('S2_H1', array()),
+        array('S2_H2', array()),
+        array('S2_H3', array($rb_bs_name(2, 16))),
+        array('S2_H4', array()),
+        array('S2_H5', array()),
+      )),
+    array('kopf' => 'BL_STEUERUNG', 'seite' => 'Saugroboter Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'nr' => 3, 'zeilen' => 42,
+      'schritte' => array(
+        array('S3_SCHRITT1', array()),
+        array('S3_SCHRITT2', array($rb_bs_name(3, 1), $rb_bs_name(3, 2), $rb_bs_name(3, 3), $rb_bs_name(3, 4))),
+        array('S3_SCHRITT3', array()),
+        array('S3_SCHRITT4', array()),
+        array('S3_SCHRITT5', array()),
+        array('S3_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
+        array('S3_SCHRITT7', array()),
+        array('S3_SCHRITT8', array(ro_t('REITER.MQTT'), ro_t('BEFEHL.L_ANNEHMEN'), ro_t('BEFEHL.L_STEUERN'))),
+      ),
+      'hinweise' => array(
+        array('S3_H1', array()),
+        array('S3_H2', array(ro_t('REITER.TEST'), ro_t('TEST.H_RAEUME'), $rb_bs_name(3, 26), $rb_bs_name(3, 28))),
+        array('S3_H3', array()),
+        array('S3_H4', array(ro_t('REITER.TEST'), ro_t('TEST.H_FAEHIGKEITEN'))),
+        array('S3_H5', array($rb_bs_name(1, 21))),
+        array('S3_H6', array()),
+      )),
+);
+?>
+<?= ro_t('BAUSTEIN.TEXT') ?>
+<?php foreach ($rb_bs_seiten as $rb_bs_s) { ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('LOX.' . $rb_bs_s['kopf'])) ?></h3>
+<div class="sm-hinweis"><b><?= $rb_bs_k('SCHRITTE_TITEL') ?></b>
+<ol class="sm-schritte">
+<?php foreach ($rb_bs_s['schritte'] as $rb_bs_x) { ?>
+<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th>#</th><th><?= rb_e(ro_t('BAUSTEIN.T_TYP')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_NAME')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_PARAM')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_VERB')) ?></th></tr>
+<?php for ($rb_bs_i = 1; $rb_bs_i <= $rb_bs_s['zeilen']; $rb_bs_i++) {
+    $rb_bs_r = $rb_bs_zeile($rb_bs_s['nr'], $rb_bs_i); ?>
+<tr><td><?= (int) $rb_bs_r[0] ?></td><td><?= $rb_bs_r[1] ?></td><td><span class="sm-mono"><?= $rb_bs_r[2] ?></span></td><td><?= $rb_bs_r[3] ?></td><td><?= $rb_bs_r[4] ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-warnung"><b><?= $rb_bs_k('HINWEISE_TITEL') ?></b>
+<ul class="sm-schritte">
+<?php foreach ($rb_bs_s['hinweise'] as $rb_bs_x) { ?>
+<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= rb_e($rb_bs_s['bild']) ?>" alt="<?= rb_e(sprintf(ro_t('LOX.BILD_ALT'), $rb_bs_s['seite'])) ?>" loading="lazy">
+<figcaption><?= rb_e(sprintf(ro_t('LOX.BILD_UNTERSCHRIFT'), $rb_bs_s['seite'])) ?></figcaption>
+</figure>
+<div class="sm-small"><?= ro_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S7_TITEL'))) ?></b><br>
+<?= ro_t('LOX.SCHRITT5_TEXT') ?>
+<span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?></span>
+</div>
+
+<details class="sm-http">
+<summary><b><?= rb_e(ro_t('LOX.H_HTTP')) ?></b></summary>
+<div class="sm-hinweis"><?= ro_t('LOX.HTTP_TEXT') ?></div>
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT1')) ?></b>
 <table class="sm-tbl">
 <tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
@@ -1225,11 +1532,6 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
 <div class="sm-warnung"><?= ro_t('LOX.TOKEN_NOETIG') ?></div>
 </div>
 
-<?php /* U10: eine Legende je Reiter, oben, mit allen Farben des Reiters. */ ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION_TOKEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
-</div>
 <div class="sm-step"><b><?= rb_e(ro_t('LOX.H_TOKEN')) ?></b>
 <table class="sm-tbl">
 <tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
@@ -1270,320 +1572,7 @@ foreach (ro_mqtt_themen($rb_cfg['mqtt_topic'], 1) as $rb_thema => $rb_tf) { ?>
   </div>
 </form>
 
-<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT4')) ?></b><br>
-<?php /* X-8 (02.10.2026, Entscheidung 36): Komplette Baustein-Liste in EINER
-         nummerierten Tabelle, eine Zeile je Baustein. Typ, Name, Parameter und
-         Verbindung stehen in [BAUSTEIN] der Sprachdateien. Vorlagen-Titel,
-         Adressen und Befehlstitel kommen aus DENSELBEN Funktionen wie die
-         Importvorlagen: ro_vorlage(1) und ro_vo_vorlage(1) werden gerufen und
-         ihre XML gelesen, nicht abgeschrieben.
-         Welle Bild 10 VOLL (1.1.19): drei Listen statt einer, siehe unten. */
-$rb_bs_lesen = function ($xml) {
-    $w = function ($el, $attr) {
-        return preg_match('/\s' . $attr . '="([^"]*)"/', $el, $m)
-            ? html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8') : '';
-    };
-    $aus = array('titel' => '', 'adresse' => '', 'zyklus' => '', 'befehle' => array());
-    if (preg_match('/<(?:VirtualInHttp|VirtualOut)\s[^>]*>/', $xml, $m)) {
-        $aus['titel'] = $w($m[0], 'Title');
-        $aus['adresse'] = $w($m[0], 'Address');
-        $aus['zyklus'] = $w($m[0], 'PollingTime');
-    }
-    preg_match_all('/<(?:VirtualInHttpCmd|VirtualOutCmd)\s[^>]*>/', $xml, $mm);
-    foreach ($mm[0] as $el) {
-        $aus['befehle'][] = array('titel' => $w($el, 'Title'), 'check' => $w($el, 'Check'), 'ein' => $w($el, 'CmdOn'));
-    }
-    return $aus;
-};
-$rb_bs_xml = ro_vorlage(1);
-$rb_bs_vi = $rb_bs_lesen($rb_bs_xml[1]);
-$rb_bs_xml = ro_vo_vorlage(1);
-$rb_bs_vo = $rb_bs_lesen($rb_bs_xml[1]);
-$rb_bs_titel = array();
-$rb_bs_check = array();
-foreach ($rb_bs_vi['befehle'] as $rb_bs_b) {
-    if (preg_match('/;([A-Z0-9_]+)=/', $rb_bs_b['check'], $rb_bs_m)) {
-        $rb_bs_titel['F:' . $rb_bs_m[1]] = $rb_bs_b['titel'];
-        $rb_bs_check[$rb_bs_m[1]] = $rb_bs_b['check'];
-    }
-}
-foreach ($rb_bs_vo['befehle'] as $rb_bs_b) {
-    if (preg_match('/[?&]cmd=([^&]+)/', $rb_bs_b['ein'], $rb_bs_m)) {
-        $rb_bs_titel['A:' . rawurldecode($rb_bs_m[1])] = $rb_bs_b['titel'];
-    }
-}
-/* Welle Bild 10 VOLL (1.1.19, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll
- * das Maximum leicht uebernehmen koennen): drei Seiten aus dem LoxBerry-Plugins Musterprojekt,
- * dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
- * (Musterprojekt/baustein_listen.txt, Abschnitte "Saugroboter" 44, "Saugroboter Wartung" 42,
- * "Saugroboter Steuerung" 42 Zeilen). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie
- * diese Seite", Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Fuer Roboter 1 wie die
- * Vorlagen-Knoepfe ohne Auswahl. Bis 1.1.18 stand hier eine Seite mit 21 Zeilen.
- * Namen aus den Vorlagen ($rb_bs_f: Eingangsbefehl zum Feld, $rb_bs_a: Ausgangsbefehl zu
- * ?cmd=) und die Vorlagentitel im Typ kommen aus ro_vorlage(1) / ro_vo_vorlage(1), oben
- * gelesen - nicht abgeschrieben. Texte aus [BAUSTEIN]; jede Zelle ist fertiges, maskiertes HTML.
- * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
-$rb_bs_a = function ($cmd) use ($rb_bs_titel) {
-    return isset($rb_bs_titel['A:' . $cmd]) ? $rb_bs_titel['A:' . $cmd] : '{A:' . $cmd . '}';
-};
-$rb_bs_f = function ($feld) use ($rb_bs_titel) {
-    return isset($rb_bs_titel['F:' . $feld]) ? $rb_bs_titel['F:' . $feld] : '{F:' . $feld . '}';
-};
-/* Erst vsprintf auf den Sprachtext, dann maskieren: eingesetzte Titel kommen nie roh heraus. */
-$rb_bs_k = function ($schluessel, $argumente = array()) {
-    $s = (string) ro_t('BAUSTEIN.' . $schluessel);
-    return rb_e($argumente ? vsprintf($s, $argumente) : $s);
-};
-$rb_bs_m = '&mdash;';
-$rb_bs_ein = function ($nr) use ($rb_bs_k) { return $rb_bs_k('E_EIN', array($nr)); };
-$rb_bs_aus = function ($pin, $nr) use ($rb_bs_k) {
-    return $pin === '' ? $rb_bs_k('E_AUSGANG_NUR', array($nr)) : $rb_bs_k('E_AUSGANG', array($pin, $nr));
-};
-/* Befehl aus der Eingangsvorlage: Typ mit Vorlagentitel, Name = Titel des Befehls zum Feld. */
-$rb_bs_vi_z = function ($nr, $feld, $param) use ($rb_bs_k, $rb_bs_f, $rb_bs_vi, $rb_bs_m) {
-    return array($nr, $rb_bs_k('TYP_VI', array($rb_bs_vi['titel'])), rb_e($rb_bs_f($feld)),
-                 $param === '' ? $rb_bs_m : $rb_bs_k($param), $rb_bs_m);
-};
-/* Befehl aus der Ausgangsvorlage: Name = Titel des Befehls zu ?cmd=. */
-$rb_bs_vo_z = function ($nr, $cmd, $param, $verb) use ($rb_bs_k, $rb_bs_a, $rb_bs_vo, $rb_bs_m) {
-    return array($nr, $rb_bs_k('TYP_VO', array($rb_bs_vo['titel'])), rb_e($rb_bs_a($cmd)),
-                 $param === '' ? $rb_bs_m : $rb_bs_k($param), $verb);
-};
-/* Uebriger Baustein: Typ-Schluessel, Name <S>_NAME, Parameter <S>_PARAM. */
-$rb_bs_zl = function ($nr, $typ, $s, $param, $verb) use ($rb_bs_k, $rb_bs_m) {
-    return array($nr, $rb_bs_k($typ), $rb_bs_k($s . '_NAME'), $param === '' ? $rb_bs_m : $rb_bs_k($param), $verb);
-};
-$rb_bs_seiten = array(
-    array('kopf' => 'BL_WERTE', 'seite' => 'Saugroboter', 'bild' => 'einbindung_loxone_werte.png', 'zeilen' => array(
-    $rb_bs_vi_z(1, 'CODE', 'S1_01_PARAM'),
-    $rb_bs_vi_z(2, 'BATT', 'S1_02_PARAM'),
-    $rb_bs_vi_z(3, 'FEHLER', 'S1_03_PARAM'),
-    $rb_bs_vi_z(4, 'MATWARN', 'S1_04_PARAM'),
-    $rb_bs_vi_z(5, 'ANN', 'S1_05_PARAM'),
-    $rb_bs_vi_z(6, 'PUSH', 'S1_06_PARAM'),
-    $rb_bs_vi_z(7, 'OK', 'S1_07_PARAM'),
-    $rb_bs_vi_z(8, 'ZAEHLER', 'S1_08_PARAM'),
-    $rb_bs_zl(9, 'T_KONSTANTE', 'S1_09', 'S1_09_PARAM', $rb_bs_m),
-    $rb_bs_zl(10, 'T_STATUS', 'S1_10', 'S1_10_PARAM', 'V1 = #1, V2 = #2'),
-    $rb_bs_zl(11, 'T_UND', 'S1_11', '', 'I1 = #5, I2 = #6'),
-    $rb_bs_zl(12, 'T_BENACHR', 'S1_12', 'S1_12_PARAM', $rb_bs_ein(11)),
-    $rb_bs_zl(13, 'T_BENACHR', 'S1_13', 'S1_13_PARAM', $rb_bs_ein(4)),
-    $rb_bs_zl(14, 'T_NICHT', 'S1_14', '', 'I = #7'),
-    $rb_bs_zl(15, 'T_VALID', 'S1_15', 'S1_15_PARAM', 'V = #8, En = #9'),
-    $rb_bs_zl(16, 'T_ODER', 'S1_16', '', 'I1 = #14, I2 = ' . $rb_bs_aus('E', 15)),
-    $rb_bs_zl(17, 'T_ODER', 'S1_17', '', 'I1 = #3, I2 = #16'),
-    $rb_bs_zl(18, 'T_EVZ', 'S1_18', 'S1_18_PARAM', $rb_bs_ein(17)),
-    $rb_bs_zl(19, 'T_BENACHR', 'S1_19', 'S1_19_PARAM', $rb_bs_ein(18)),
-    $rb_bs_zl(20, 'T_VTASTE', 'S1_20', 'S1_20_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(21, 'start', '', $rb_bs_ein(43)),
-    $rb_bs_vi_z(22, 'LAEDT', 'S1_22_PARAM'),
-    $rb_bs_zl(23, 'T_STATUS', 'S1_23', 'S1_23_PARAM', 'V1 = #22, V2 = #2'),
-    $rb_bs_vi_z(24, 'PTEST', 'S1_24_PARAM'),
-    $rb_bs_zl(25, 'T_BENACHR', 'S1_25', 'S1_25_PARAM', $rb_bs_ein(24)),
-    $rb_bs_vi_z(26, 'ALTER', 'S1_26_PARAM'),
-    $rb_bs_vi_z(27, 'AUDIO', 'S1_27_PARAM'),
-    $rb_bs_zl(28, 'T_STATUS', 'S1_28', 'S1_28_PARAM', 'V1 = #26, V2 = #6, V3 = #27'),
-    $rb_bs_zl(29, 'T_VSCHALTER', 'S1_29', 'S1_29_PARAM', $rb_bs_m),
-    $rb_bs_zl(30, 'T_VEIN', 'S1_30', 'S1_30_PARAM', $rb_bs_m),
-    $rb_bs_zl(31, 'T_NICHT', 'S1_31', '', 'I = #30'),
-    $rb_bs_zl(32, 'T_EVZ', 'S1_32', 'S1_32_PARAM', $rb_bs_ein(31)),
-    $rb_bs_zl(33, 'T_IMPULS', 'S1_33', 'S1_33_PARAM', $rb_bs_m),
-    $rb_bs_zl(34, 'T_IMPULS', 'S1_34', 'S1_34_PARAM', $rb_bs_m),
-    $rb_bs_zl(35, 'T_GLEICH', 'S1_35', 'S1_35_PARAM', 'V1 = #1'),
-    $rb_bs_zl(36, 'T_ODER', 'S1_36', '', 'I1 = ' . $rb_bs_aus('Q', 34) . ', I2 = #35'),
-    $rb_bs_zl(37, 'T_RS', 'S1_37', 'S1_37_PARAM', 'S = ' . $rb_bs_aus('Q', 33) . ', R = #36'),
-    $rb_bs_zl(38, 'T_KLEINER', 'S1_38', 'S1_38_PARAM', 'V1 = #1'),
-    $rb_bs_zl(39, 'T_UND', 'S1_39', '', 'I1 = #38, I2 = #7'),
-    $rb_bs_zl(40, 'T_UND', 'S1_40', '', 'I1 = #29, I2 = #32'),
-    $rb_bs_zl(41, 'T_UND', 'S1_41', '', 'I1 = #39, I2 = #40'),
-    $rb_bs_zl(42, 'T_UND', 'S1_42', '', 'I1 = #41, I2 = ' . $rb_bs_aus('', 37)),
-    $rb_bs_zl(43, 'T_ODER', 'S1_43', 'S1_43_PARAM', 'I1 = #20, I2 = #42'),
-    $rb_bs_zl(44, 'T_STATUS', 'S1_44', 'S1_44_PARAM', 'V1 = #29, V2 = ' . $rb_bs_aus('', 37) . ', V3 = #32'),
-    ),
-      'schritte' => array(
-        array('S1_SCHRITT1', array(ro_t('LOX.H_VORLAGE'), ro_t('KNOPF.VORLAGE_VI'), ro_t('KNOPF.VORLAGE_VO'))),
-        array('S1_SCHRITT2', array($rb_bs_vi['titel'])),
-        array('S1_SCHRITT3', array($rb_bs_a('start'), $rb_bs_vo['titel'])),
-        array('S1_SCHRITT4', array()),
-        array('S1_SCHRITT5', array()),
-        array('S1_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
-        array('S1_SCHRITT7', array()),
-        array('S1_SCHRITT8', array()),
-        array('S1_SCHRITT9', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_MELDUNGEN'), ro_t('EINST.PUSH_AKTIV'))),
-        array('S1_SCHRITT10', array(ro_t('REITER.TEST'), ro_t('TEST.K_PTEST'))),
-        array('S1_SCHRITT11', array()),
-      ),
-      'hinweise' => array(
-        array('S1_H1', array($rb_bs_a('start'))),
-        array('S1_H2', array()),
-        array('S1_H3', array()),
-        array('S1_H4', array()),
-        array('S1_H5', array()),
-        array('S1_H5_EN', array()),
-        array('S1_H6', array()),
-        array('S1_H7', array($rb_bs_f('MATWARN'))),
-        array('S1_H8', array($rb_bs_f('ANN'), ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.H_SPRACHAUSGABE'))),
-        array('S1_H9', array(ro_t('LOX.VORLAGE_ROBOTER'))),
-      )),
-    array('kopf' => 'BL_WARTUNG', 'seite' => 'Saugroboter Wartung', 'bild' => 'einbindung_loxone_wartung.png', 'zeilen' => array(
-    $rb_bs_vi_z(1, 'FILTER', 'S2_01_PARAM'),
-    $rb_bs_vi_z(2, 'FILTER2', 'S2_02_PARAM'),
-    $rb_bs_vi_z(3, 'BHAUPT', 'S2_03_PARAM'),
-    $rb_bs_vi_z(4, 'BSEITE', 'S2_04_PARAM'),
-    $rb_bs_vi_z(5, 'BSEITE2', 'S2_05_PARAM'),
-    $rb_bs_vi_z(6, 'SENSOR', 'S2_06_PARAM'),
-    $rb_bs_vi_z(7, 'RAEDER', 'S2_07_PARAM'),
-    $rb_bs_vi_z(8, 'MOP', 'S2_08_PARAM'),
-    $rb_bs_zl(9, 'T_STATUS', 'S2_09', 'S2_09_PARAM', 'V1 = #1, V2 = #2, V3 = #3, V4 = #4, V5 = #5, V6 = #6, V7 = #7, V8 = #8'),
-    $rb_bs_vi_z(10, 'DOCKFILTER', 'S2_10_PARAM'),
-    $rb_bs_vi_z(11, 'DOCKBUERSTE', 'S2_11_PARAM'),
-    $rb_bs_vi_z(12, 'DOCKBEHAELTER', 'S2_12_PARAM'),
-    $rb_bs_vi_z(13, 'REINIGER', 'S2_13_PARAM'),
-    $rb_bs_zl(14, 'T_STATUS', 'S2_14', 'S2_14_PARAM', 'V1 = #10, V2 = #11, V3 = #12, V4 = #13'),
-    $rb_bs_zl(15, 'T_VTASTE', 'S2_15', 'S2_15_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(16, 'reset', 'S2_16_PARAM', $rb_bs_ein(15)),
-    $rb_bs_vi_z(17, 'DOCK', 'S2_17_PARAM'),
-    $rb_bs_zl(18, 'T_STATUS', 'S2_18', 'S2_18_PARAM', 'V1 = #17'),
-    $rb_bs_zl(19, 'T_GLEICH', 'S2_19', 'S2_19_PARAM', 'V1 = #17'),
-    $rb_bs_zl(20, 'T_EVZ', 'S2_20', 'S2_20_PARAM', $rb_bs_ein(19)),
-    $rb_bs_zl(21, 'T_BENACHR', 'S2_21', 'S2_21_PARAM', $rb_bs_ein(20)),
-    $rb_bs_vi_z(22, 'BEHAELTER', 'S2_22_PARAM'),
-    $rb_bs_vi_z(23, 'WASSERTANK', 'S2_23_PARAM'),
-    $rb_bs_vi_z(24, 'WISCHER', 'S2_24_PARAM'),
-    $rb_bs_zl(25, 'T_STATUS', 'S2_25', 'S2_25_PARAM', 'V1 = #22, V2 = #23, V3 = #24'),
-    $rb_bs_vi_z(26, 'FEHLER', 'S2_26_PARAM'),
-    $rb_bs_vi_z(27, 'FSTUFE', 'S2_27_PARAM'),
-    $rb_bs_vi_z(28, 'FTEIL', 'S2_28_PARAM'),
-    $rb_bs_zl(29, 'T_STATUS', 'S2_29', 'S2_29_PARAM', 'V1 = #26, V2 = #27'),
-    $rb_bs_zl(30, 'T_STATUS', 'S2_30', 'S2_30_PARAM', 'V1 = #28'),
-    $rb_bs_vi_z(31, 'EVENT', 'S2_31_PARAM'),
-    $rb_bs_vi_z(32, 'EVTYP', 'S2_32_PARAM'),
-    $rb_bs_vi_z(33, 'EVMUELL', 'S2_33_PARAM'),
-    $rb_bs_zl(34, 'T_STATUS', 'S2_34', 'S2_34_PARAM', 'V1 = #31, V2 = #32, V3 = #33'),
-    $rb_bs_zl(35, 'T_VTASTE', 'S2_35', 'S2_35_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(36, 'evquittieren', '', $rb_bs_ein(35)),
-    $rb_bs_vi_z(37, 'FLAECHE', 'S2_37_PARAM'),
-    $rb_bs_vi_z(38, 'DAUER', 'S2_38_PARAM'),
-    $rb_bs_vi_z(39, 'FLAECHEG', 'S2_39_PARAM'),
-    $rb_bs_vi_z(40, 'DAUERG', 'S2_40_PARAM'),
-    $rb_bs_vi_z(41, 'ANZAHLG', 'S2_41_PARAM'),
-    $rb_bs_zl(42, 'T_STATUS', 'S2_42', 'S2_42_PARAM', 'V1 = #37, V2 = #38, V3 = #39, V4 = #40, V5 = #41'),
-    ),
-      'schritte' => array(
-        array('S2_SCHRITT1', array()),
-        array('S2_SCHRITT2', array($rb_bs_vi['titel'], $rb_bs_f('FEHLER'))),
-        array('S2_SCHRITT3', array($rb_bs_vo['titel'], $rb_bs_a('reset'), $rb_bs_a('evquittieren'))),
-        array('S2_SCHRITT4', array()),
-        array('S2_SCHRITT5', array(ro_t('BAUSTEIN.T_VERB'))),
-        array('S2_SCHRITT6', array()),
-        array('S2_SCHRITT7', array()),
-        array('S2_SCHRITT8', array(ro_t('REITER.EINSTELLUNGEN'), ro_t('EINST.WARN_STUNDEN'), ro_t('EINST.WARN_PROZENT'))),
-        array('S2_SCHRITT9', array()),
-      ),
-      'hinweise' => array(
-        array('S2_H1', array()),
-        array('S2_H2', array()),
-        array('S2_H3', array($rb_bs_a('reset'))),
-        array('S2_H4', array()),
-      )),
-    array('kopf' => 'BL_STEUERUNG', 'seite' => 'Saugroboter Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'zeilen' => array(
-    $rb_bs_vi_z(1, 'CODE', 'S3_01_PARAM'),
-    $rb_bs_vi_z(2, 'SAUGST', 'S3_02_PARAM'),
-    $rb_bs_vi_z(3, 'WASSER', 'S3_03_PARAM'),
-    $rb_bs_vi_z(4, 'MODUS', 'S3_04_PARAM'),
-    $rb_bs_zl(5, 'T_STATUS', 'S3_05', 'S3_05_PARAM', 'V1 = #2'),
-    $rb_bs_zl(6, 'T_STATUS', 'S3_06', 'S3_06_PARAM', 'V1 = #3'),
-    $rb_bs_zl(7, 'T_STATUS', 'S3_07', 'S3_07_PARAM', 'V1 = #4'),
-    $rb_bs_zl(8, 'T_VTASTE', 'S3_08', 'S3_08_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(9, 'stop', '', $rb_bs_ein(8)),
-    $rb_bs_zl(10, 'T_VTASTE', 'S3_10', 'S3_10_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(11, 'pause', '', $rb_bs_ein(10)),
-    $rb_bs_zl(12, 'T_VTASTE', 'S3_12', 'S3_12_PARAM', $rb_bs_m),
-    $rb_bs_zl(13, 'T_VEIN', 'S3_13', 'S3_13_PARAM', $rb_bs_m),
-    $rb_bs_zl(14, 'T_VSCHALTER', 'S3_14', 'S3_14_PARAM', $rb_bs_m),
-    $rb_bs_zl(15, 'T_GLEICH', 'S3_15', 'S3_15_PARAM', 'V1 = #1'),
-    $rb_bs_zl(16, 'T_FLANKE', 'S3_16', 'S3_16_PARAM', $rb_bs_ein(13)),
-    $rb_bs_zl(17, 'T_UND', 'S3_17', '', 'I1 = #14, I2 = #15'),
-    $rb_bs_zl(18, 'T_UND', 'S3_18', '', 'I1 = #17, I2 = ' . $rb_bs_aus('On', 16)),
-    $rb_bs_zl(19, 'T_ODER', 'S3_19', 'S3_19_PARAM', 'I1 = #12, I2 = #18'),
-    $rb_bs_vo_z(20, 'home', '', $rb_bs_ein(19)),
-    $rb_bs_zl(21, 'T_VTASTE', 'S3_21', 'S3_21_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(22, 'locate', '', $rb_bs_ein(21)),
-    $rb_bs_zl(23, 'T_VTASTE', 'S3_23', 'S3_23_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(24, 'segments', 'S3_24_PARAM', $rb_bs_ein(23)),
-    $rb_bs_zl(25, 'T_VTASTE', 'S3_25', 'S3_25_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(26, 'zone', 'S3_26_PARAM', $rb_bs_ein(25)),
-    $rb_bs_zl(27, 'T_VTASTE', 'S3_27', 'S3_27_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(28, 'goto', 'S3_28_PARAM', $rb_bs_ein(27)),
-    $rb_bs_zl(29, 'T_VTASTE', 'S3_29', 'S3_29_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(30, 'fan', 'S3_30_PARAM', $rb_bs_ein(29)),
-    $rb_bs_zl(31, 'T_VTASTE', 'S3_31', 'S3_31_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(32, 'wasser', 'S3_32_PARAM', $rb_bs_ein(31)),
-    $rb_bs_zl(33, 'T_VTASTE', 'S3_33', 'S3_33_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(34, 'modus', 'S3_34_PARAM', $rb_bs_ein(33)),
-    $rb_bs_zl(35, 'T_VTASTE', 'S3_35', 'S3_35_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(36, 'ruhezeit', 'S3_36_PARAM', $rb_bs_ein(35)),
-    $rb_bs_zl(37, 'T_VTASTE', 'S3_37', 'S3_37_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(38, 'absaugen', '', $rb_bs_ein(37)),
-    $rb_bs_zl(39, 'T_VTASTE', 'S3_39', 'S3_39_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(40, 'wischwaschen', '', $rb_bs_ein(39)),
-    $rb_bs_zl(41, 'T_VTASTE', 'S3_41', 'S3_41_PARAM', $rb_bs_m),
-    $rb_bs_vo_z(42, 'wischtrocknen', '', $rb_bs_ein(41)),
-    ),
-      'schritte' => array(
-        array('S3_SCHRITT1', array()),
-        array('S3_SCHRITT2', array($rb_bs_vi['titel'], $rb_bs_f('CODE'), $rb_bs_f('SAUGST'), $rb_bs_f('WASSER'), $rb_bs_f('MODUS'))),
-        array('S3_SCHRITT3', array($rb_bs_vo['titel'], implode(', ', array_map($rb_bs_a, array('stop', 'pause', 'home', 'locate', 'segments', 'zone', 'goto', 'fan', 'wasser', 'modus', 'ruhezeit', 'absaugen', 'wischwaschen', 'wischtrocknen'))))),
-        array('S3_SCHRITT4', array()),
-        array('S3_SCHRITT5', array()),
-        array('S3_SCHRITT6', array(ro_t('BAUSTEIN.T_VERB'))),
-        array('S3_SCHRITT7', array()),
-        array('S3_SCHRITT8', array(ro_t('LOX.H_TOKEN'))),
-      ),
-      'hinweise' => array(
-        array('S3_H1', array()),
-        array('S3_H2', array(ro_t('REITER.TEST'), ro_t('TEST.H_RAEUME'), $rb_bs_a('zone'), $rb_bs_a('goto'))),
-        array('S3_H3', array()),
-        array('S3_H4', array(ro_t('REITER.TEST'), ro_t('TEST.H_FAEHIGKEITEN'))),
-        array('S3_H5', array($rb_bs_a('start'))),
-      )),
-);
-?>
-<?= ro_t('BAUSTEIN.TEXT') ?>
-<?php foreach ($rb_bs_seiten as $rb_bs_s) { ?>
-<h3 class="sm-h3"><?= rb_e(ro_t('LOX.' . $rb_bs_s['kopf'])) ?></h3>
-<div class="sm-hinweis"><b><?= $rb_bs_k('SCHRITTE_TITEL') ?></b>
-<ol class="sm-schritte">
-<?php foreach ($rb_bs_s['schritte'] as $rb_bs_x) { ?>
-<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
-<?php } ?>
-</ol></div>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th>#</th><th><?= rb_e(ro_t('BAUSTEIN.T_TYP')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_NAME')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_PARAM')) ?></th><th><?= rb_e(ro_t('BAUSTEIN.T_VERB')) ?></th></tr>
-<?php foreach ($rb_bs_s['zeilen'] as $rb_bs_r) { ?>
-<tr><td><?= (int) $rb_bs_r[0] ?></td><td><?= $rb_bs_r[1] ?></td><td><span class="sm-mono"><?= $rb_bs_r[2] ?></span></td><td><?= $rb_bs_r[3] ?></td><td><?= $rb_bs_r[4] ?></td></tr>
-<?php } ?>
-</table>
-</div>
-<div class="sm-warnung"><b><?= $rb_bs_k('HINWEISE_TITEL') ?></b>
-<ul class="sm-schritte">
-<?php foreach ($rb_bs_s['hinweise'] as $rb_bs_x) { ?>
-<li><?= $rb_bs_k($rb_bs_x[0], $rb_bs_x[1]) ?></li>
-<?php } ?>
-</ul></div>
-<figure class="sm-bild">
-<img src="<?= rb_e($rb_bs_s['bild']) ?>" alt="<?= rb_e(sprintf(ro_t('LOX.BILD_ALT'), $rb_bs_s['seite'])) ?>" loading="lazy">
-<figcaption><?= rb_e(sprintf(ro_t('LOX.BILD_UNTERSCHRIFT'), $rb_bs_s['seite'])) ?></figcaption>
-</figure>
-<div class="sm-small"><?= ro_t('LOX.MUSTERPROJEKT') ?></div>
-<?php } ?>
-</div>
-
-<div class="sm-step"><b><?= rb_e(ro_t('LOX.SCHRITT5')) ?></b><br>
-<?= ro_t('LOX.SCHRITT5_TEXT') ?>
-<span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?></span>
-</div>
+</details>
 </div>
 
 <!-- ================= Test ================= -->
@@ -1723,6 +1712,20 @@ while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
     tabs.forEach(function (t) { t.addEventListener('click', function (e) { e.preventDefault(); activate(t.dataset.pane); }); });
     activate(<?= json_encode($rb_tab) ?>);
 })();
+/* Gruppe 2 (1.1.22): Namenstabelle in Schritt 3 - den Gateway-Namen in die Zwischenablage (Vorbild Marstek
+   1.1.25 mvNameKopieren). execCommand zuerst: navigator.clipboard gibt es nur in einem sicheren Kontext, der LoxBerry
+   laeuft ueblicherweise mit http im Heimnetz. */
+function rbNameKopieren(k) {
+    var a = k.getAttribute('data-name'), ok = false;
+    try {
+        var t = document.createElement('textarea');
+        t.value = a; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.left = '-9999px';
+        document.body.appendChild(t); t.select(); ok = document.execCommand('copy'); document.body.removeChild(t);
+    } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(a); ok = true; }
+    k.textContent = k.getAttribute(ok ? 'data-ok' : 'data-fehl');
+    return false;
+}
 </script>
 <?php
 if ($rb_frame) { LBWeb::lbfooter(); } else { echo '</body></html>'; }

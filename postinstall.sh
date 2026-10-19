@@ -166,4 +166,18 @@ else
     echo "<INFO> eingetragen werden - der Reiter MQTT nennt den Wert und misst,"
     echo "<INFO> welche Gateway-Fassung installiert ist."
 fi
+
+# Gruppe 2 (1.1.22): die Befehlsbruecke starten - nur bei einer Neuinstallation (bei einem Update steht die Marke,
+# dann startet postupgrade.sh sie, nachdem es die Marke abgeraeumt hat). Sie startet nur mit dem Haken "Befehle ueber
+# MQTT annehmen" (ab Werk aus) und nie als root; sonst holt es der Minutentakt (bb_waechter()) nach.
+if [ "$AKTUALISIERUNG" = "0" ]; then
+    BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+    if [ -f "$BBSH" ]; then
+        RO_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+        case "$RO_BB" in
+            *gestartet*|*laeuft*) echo "<OK> $RO_BB" ;;
+            *) echo "<INFO> Befehlsbruecke: $RO_BB" ;;
+        esac
+    fi
+fi
 exit 0

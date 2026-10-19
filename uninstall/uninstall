@@ -20,6 +20,15 @@
 #      Neustart von Broker oder Gateway bekaeme der Miniserver sie wieder -
 #      von einem Plugin, das es nicht mehr gibt.
 
+# ---------- Gruppe 2 (1.1.22): nur die EIGENE Deinstallation ----------
+# plugininstall.pl ruft beim Deinstallieren JEDES data/system/uninstall/<NAME>* auf und uebergibt als $2 den NAMEN
+# des deinstallierten Plugins (am Geraet gemessen 08.10.2026: zigbee2mqtt riss zigbee2mqttng mit). Gehoert der Name
+# nicht zu diesem Plugin, wird nichts angefasst - weder die Befehlsbruecke noch eine Datei (Entwurf sv 3.3).
+if [ -n "$2" ] && [ "$2" != "saugrobo" ]; then
+    echo "<INFO> Deinstallation von '$2' - betrifft Saugroboter (Valetudo) nicht, nichts getan."
+    exit 0
+fi
+
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="saugrobo"
 BASE="${5:-$LBHOMEDIR}"
@@ -64,6 +73,51 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde NICHTS geloescht."
     exit 1
+fi
+
+# ---------- Gruppe 2 (1.1.22): die Befehlsbruecke anhalten und ihre Zugangsdaten entfernen ----------
+# Vor dem Abraeumen der MQTT-Themen (Entwurf sv 3.3). Bauform vb_g1_bruecke_bau/beispiel/uninstall/uninstall (Entwurf
+# gemeinsam 2.9): stop beendet Dienst UND mosquitto_sub (auch ein verwaistes), danach argumentweise nachzaehlen, die
+# Optionsdateien (Broker-Kennwort) ueberschreiben, den Ordner data/plugins/<ordner>/befehle entfernen und
+# nachzaehlen. Im Broker bleibt nichts: die Quittungen sind nicht retained.
+BBSH="$BASE/bin/plugins/$PDIR/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PDIR/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PDIR/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop
+fi
+BBREST=0
+for D in /proc/[0-9]*; do
+    mapfile -d '' -t BBA 2>/dev/null < "$D/cmdline" || continue
+    if [ "${#BBA[@]}" -eq 2 ] && [ "${BBA[1]}" = "$BBPHP" ] && [[ "${BBA[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${D#/proc/}" 2>/dev/null
+        BBREST=$((BBREST + 1))
+    fi
+done
+BBABOS=0
+for D in /proc/[0-9]*; do
+    read -r BBC 2>/dev/null < "$D/comm" || continue
+    [ "$BBC" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t BBE 2>/dev/null < "$D/environ" || continue
+    for BBX in "${BBE[@]}"; do
+        if [ "$BBX" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${D#/proc/}" 2>/dev/null; BBABOS=$((BBABOS + 1)); fi
+    done
+done
+[ "$BBREST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BBREST Dienst(e) erst mit kill -9 beendet."
+[ "$BBABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BBABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for BBF in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$BBF" ]; then
+            BBN=$(stat -c %s "$BBF" 2>/dev/null || echo 64)
+            head -c "$BBN" /dev/zero > "$BBF" 2>/dev/null
+        fi
+    done
+    rm -rf "$BBDIR"
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+else
+    echo "<OK> Befehlsbruecke angehalten, Zugangsdaten der Befehlsbruecke entfernt."
 fi
 
 # Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn

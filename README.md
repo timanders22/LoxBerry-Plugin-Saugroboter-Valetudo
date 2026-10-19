@@ -1,14 +1,43 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
-zusammengesuchter Textbruchstücke. Steuerbefehle laufen als einfache GET-Aufrufe,
-die Loxone direkt als virtuellen Ausgang senden kann (Valetudo verlangt sonst
-PUT mit JSON-Rumpf).
+zusammengesuchter Textbruchstücke. Die Werte gehen per MQTT an das
+MQTT-Gateway (Virtuelle Eingänge), Befehle über die Befehlsbrücke (zwei Haken,
+ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken
+bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.22
+
+Werte und Befehle über MQTT – der Weg des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt)
+(Gruppe 2 der MQTT-Umstellung). Der Weg über HTTP bleibt für bestehende Anlagen unverändert.
+
+* **MQTT ab Werk an** – nur bei einer neuen Installation. Eine bestehende Konfiguration behält ihre Einstellung.
+* **Reiter „Einbindung in Loxone“ neu:** MQTT einschalten, das MQTT-Gateway (Fassung 1: das Plugin bringt sein Abo
+  mit; Fassung 2: Hakenliste mit 46 Datenpunkten, drei davon „Noncached“), **Namenstabelle** mit Kopierknopf (je Wert
+  ein Virtueller Eingang bzw. Virtueller Texteingang, Name genau wie das MQTT-Gateway ihn vergibt – eine Vorlage für
+  Werte gibt es nicht mehr), Ausfallerkennung am Lebenszeichen `saugrobo_status_zaehler`, Befehle, die drei
+  Baustein-Listen und die Gegenprobe. Die bisherigen HTTP-Schritte mit Token und Vorlagen stehen zugeklappt darunter.
+* **Befehle über MQTT (Befehlsbrücke):** `saugrobo/befehl/<name>` (Roboter 2: `saugrobo/befehl/2/<name>`), Antwort
+  auf `…/quittung`. Zwei Haken im Reiter MQTT, beide ab Werk aus: „Befehle über MQTT annehmen“ und „Eingreifende
+  Befehle über MQTT annehmen“ (15 der 17 Befehle greifen ein; frei sind nur „piepsen lassen“ und „Ereignis
+  quittieren“). Derselbe Auftrag binnen 5 s wird abgelehnt, dieselbe Wartung binnen 60 s; Saugstärke, Wischwasser,
+  Betriebsart und Ruhezeit prüft weiter die 60-s-Bremse des Plugins. Neue Vorlage `VQ_saugroboter_mqtt.xml`
+  (Knopf „Vorlage MQTT-Befehle“). Das Lebenszeichen der Brücke steht auf `saugrobo/status/befehle` (1 läuft, 0 aus,
+  -1 gestört).
+* **-1 statt 0**, wenn das Gerät keinen Akkustand (`BATT`/`batt`) oder keine Reinigungsbilanz (Fläche, Dauer,
+  Gesamtwerte) liefert – über MQTT und HTTP. Wer in eigener Logik 0 als „leer“ las, sieht jetzt -1. Bereits
+  importierte HTTP-Eingänge behalten MinVal 0; wer -1 sehen will, stellt MinVal am Eingang auf -1.
+* **Musterprojekt-Seiten:** „Saugroboter“ (50 Zeilen, neu: Akku-Mindeststand für die Automatik, Reinigungsdauer
+  heute, letzte Meldung als Text), „Saugroboter Wartung“ (43, Fehlertext) und „Saugroboter Steuerung“ (42), mit neuen
+  Bildern. Wer die Seiten schon gebaut hat: Eingänge nach der Namenstabelle anlegen und die Befehle am Ausgang
+  „LoxBerry MQTT-Gateway“ neu verbinden.
+* Text zu `status/ts` berichtigt: daraus in Loxone kein Alter rechnen (Loxone rechnet in Ortszeit); die
+  Ausfallerkennung nimmt `status/zaehler`.
 
 ## Neu in 1.1.21
 

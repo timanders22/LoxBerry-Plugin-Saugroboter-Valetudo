@@ -109,15 +109,8 @@ function ro_token_lage() {
 }
 function ro_token_ok() { return ro_token_lage() === 1; }
 
-/** Der Parameter ?p= - eng gefasst, bevor er irgendwohin geht. */
-function ro_param() {
-    $p = isset($_GET['p']) && is_string($_GET['p']) ? (string) $_GET['p'] : '';
-    if ($p === '') { return ''; }
-    if (strlen($p) > 64) { return false; }
-    // Alles, was die Befehle brauchen: Ziffern, Buchstaben, Komma, Doppelpunkt,
-    // Bindestrich, Unterstrich, Schraegstrich - und sonst nichts.
-    return preg_match('#^[A-Za-z0-9,:_/\-]+$#', $p) ? $p : false;
-}
+/* Der Parameter ?p= prueft seit 1.1.22 ro_param_pruefen() in robo_lib.php (bis 1.1.21 ro_param() hier) -
+ * dieselbe Pruefung fuer den HTTP-Weg und die Befehlsbruecke. */
 
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
@@ -168,50 +161,16 @@ if (isset($_GET['cmd'])) {
         echo "CMD;OK=0;ERR=TOKEN\n";
         exit;
     }
-    $cmd = is_string($_GET['cmd']) ? strtolower(trim((string) $_GET['cmd'])) : '';
-    if (!preg_match('/^[a-z]{1,20}$/', $cmd) || !isset(ro_befehle()[$cmd])) {
-        http_response_code(400);
-        echo "CMD;OK=0;ERR=BEFEHL\n";
-        exit;
+    /* Gruppe 2 (1.1.22): der Befehlsteil steht jetzt in ro_befehl_ausfuehren() (robo_lib.php) - dieselbe Funktion
+     * ruft die Befehlsbruecke fuer MQTT-Befehle. Pruefungen, Antwortzeilen, HTTP-Codes und Protokoll sind
+     * unveraendert: Befehl gegen ro_befehle() (400 ERR=BEFEHL), ?p= eng gefasst (400 ERR=PARAMETER, frueher
+     * ro_param() hier), Gleichwert-Unterdrueckung C4 (503 GRUND=BREMSE_MERKER bzw. 200 UNVERAENDERT=1), ro_command(). */
+    $ro_e = ro_befehl_ausfuehren(is_string($_GET['cmd']) ? (string) $_GET['cmd'] : '', $dev,
+        (isset($_GET['p']) && is_string($_GET['p'])) ? (string) $_GET['p'] : '', 'http');
+    if ($ro_e['http'] !== 200) {
+        http_response_code($ro_e['http']);
     }
-    $p = ro_param();
-    if ($p === false) {
-        http_response_code(400);
-        echo 'CMD;OK=0;BEFEHL=' . $cmd . ";ERR=PARAMETER\n";
-        exit;
-    }
-    /* C4 (X-7): Gleichwert-Unterdrueckung fuer Sollwerte, siehe Kopf und
-     * robo_lib.php. Erst hier, hinter Token, Befehl und Parameterpruefung:
-     * ein abgewiesener Aufruf merkt nichts. */
-    $gw_wert = ro_gleichwert_wert($cmd, $p);
-    $gw_schl = $dev . '|' . $cmd;
-    $gw_marke = '';
-    if ($gw_wert !== null) {
-        list($gw_urteil, $gw_seit, $gw_marke) = ro_gleichwert_pruefen($gw_schl, $gw_wert);
-        if ($gw_urteil === 'MERKER') {
-            ro_log_if_changed('gleichwert', 'Endpunkt: der Merker der Gleichwert-Unterdrueckung ('
-                . ro_gleichwert_datei() . ') laesst sich nicht oeffnen, sperren oder schreiben - '
-                . 'Sollwert-Befehle werden mit 503 abgewiesen, bis das behoben ist.');
-            http_response_code(503);
-            echo 'CMD;OK=0;BEFEHL=' . $cmd . ";GRUND=BREMSE_MERKER\n";
-            exit;
-        }
-        if ($gw_urteil === 'UNVERAENDERT') {
-            echo 'CMD;OK=1;BEFEHL=' . $cmd . ';UNVERAENDERT=1;SEIT_S=' . (int) $gw_seit . "\n";
-            exit;
-        }
-    }
-    list($ok, $info) = ro_command($cmd, $dev, $p);
-    if ($gw_marke !== '' && (int) $ok !== 1) {
-        // Nicht angekommen: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
-        ro_gleichwert_vergessen($gw_schl, $gw_marke);
-    }
-    /* $info kommt aus ro_command() und ist entweder "HTTP <n>" oder einer
-     * von wenigen festen Saetzen. Trotzdem wird es gesaeubert: eine
-     * Antwortzeile, die ein Semikolon oder einen Zeilenumbruch aus einer
-     * fremden Quelle traegt, zerfaellt fuer den Miniserver in zwei. */
-    $info = preg_replace('/[^A-Za-z0-9 _\.\-]/', ' ', (string) $info);
-    echo 'CMD;OK=' . $ok . ';BEFEHL=' . $cmd . ';INFO=' . $info . "\n";
+    echo $ro_e['zeile'];
     exit;
 }
 

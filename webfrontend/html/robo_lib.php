@@ -245,8 +245,10 @@ function ro_vorgaben()
     'cache_sec' => 20,           // Status-Cache (schuetzt den Roboter)
     'warn_hours' => 10,          // Warnschwelle Verbrauchsmaterial in Stunden
     'warn_prozent' => 10,        // Warnschwelle fuer Teile, die Prozent melden
-    'mqtt_enabled' => 0,
+    'mqtt_enabled' => 1,         // Gruppe 2 (1.1.22, E1): ab Werk an - nur fuer neue Installationen (ro_config())
     'mqtt_topic' => 'saugrobo',
+    'befehle_mqtt_ein' => 0,     // Befehlsbruecke: "Befehle ueber MQTT annehmen", ab Werk aus
+    'befehle_mqtt_steuern' => 0, // zweiter Haken: "Eingreifende Befehle ueber MQTT annehmen", ab Werk aus (E4)
     'notify' => array(),
     'tts' => array(),
     'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
@@ -381,6 +383,10 @@ function ro_config($erzeugen = true) {
 
     ro_cfg_zustand($lage);
     $cfg = is_array($daten) ? $daten : array();
+    /* Gruppe 2 (1.1.22, Entwurf sv E1): MQTT ist ab Werk an - aber nur fuer eine NEUE Installation. Eine
+     * Konfiguration mit Inhalt, die den Schluessel nicht kennt, stammt aus einer Fassung, in der MQTT ab Werk aus
+     * war: sie behaelt "aus". Leer oder {} zaehlt wie eine neue Installation (Bauart Abfuhrkalender 1.4.25). */
+    if ($cfg && !array_key_exists('mqtt_enabled', $cfg)) { $cfg['mqtt_enabled'] = 0; }
     $cfg += ro_vorgaben();
     if (!is_array($cfg['robots'])) { $cfg['robots'] = array(); }
     // Migration: Einzel-IP aus einer aelteren Fassung.
@@ -1082,10 +1088,11 @@ function ro_state($dev = 1, $force = false) {
     // C3: der letzte erfolgreich gemessene Zustand (fuer Ausfall und Teilausfall).
     $vorher = ro_gemessen_lesen($dev, $r);
     $st = array('ok' => 0, 'name' => $r ? $r['name'] : '-', 'code' => 8, 'text' => 'unbekannt',
-                'batterie' => 0, 'laedt' => 0,
+                // Gruppe 2 (1.1.22, -1-Regel, Entwurf sv E2/E3): ohne Messung -1 statt 0 - Akku und Reinigungsbilanz.
+                'batterie' => -1, 'laedt' => 0,
                 'fehler' => 0, 'fehlertext' => '', 'fstufe' => -1, 'fteil' => -1,
-                'flaeche' => 0, 'dauer' => 0, 'letzte' => 0,
-                'flaeche_gesamt' => 0, 'dauer_gesamt' => 0, 'anzahl_gesamt' => 0,
+                'flaeche' => -1, 'dauer' => -1, 'letzte' => 0,
+                'flaeche_gesamt' => -1, 'dauer_gesamt' => -1, 'anzahl_gesamt' => -1,
                 'buerste_haupt' => -1, 'buerste_seite' => -1, 'buerste_seite2' => -1,
                 'filter' => -1, 'filter2' => -1, 'sensor' => -1, 'raeder' => -1, 'mop' => -1,
                 'dock_buerste' => -1, 'dock_filter' => -1, 'dock_behaelter' => -1, 'reiniger' => -1,
@@ -1137,7 +1144,8 @@ function ro_state($dev = 1, $force = false) {
         }
         $b = ro_attr($j['attributes'], 'BatteryStateAttribute');
         if ($b) {
-            $st['batterie'] = (int) (isset($b['level']) ? $b['level'] : 0);
+            // Gruppe 2 (1.1.22, E2): ohne "level" meldet das Geraet keinen Akkustand - -1, nicht 0 ("leer").
+            $st['batterie'] = (int) (isset($b['level']) ? $b['level'] : -1);
             $st['laedt'] = (isset($b['flag']) && $b['flag'] === 'charging') ? 1 : 0;
         }
         // Valetudo: AttachmentStateAttribute, type = dustbin | watertank | mop
@@ -1431,7 +1439,9 @@ function ro_command($cmd, $dev = 1, $param = '') {
             return array(0, 'unbekannter Befehl');
     }
     $ok = ($code >= 200 && $code < 300) ? 1 : 0;
-    ro_log('Befehl "' . $cmd . ($param !== '' ? ' ' . $param : '') . '" an ' . $r['name'] . ' -> HTTP ' . $code . ($ok ? '' : ' FEHLER ' . substr($body, 0, 120)));
+    // Gruppe 2 (1.1.22): ein Befehl ueber die Befehlsbruecke traegt "(MQTT)" (ro_befehl_quelle(), Entwurf sv 3.3).
+    ro_log('Befehl "' . $cmd . ($param !== '' ? ' ' . $param : '') . '" an ' . $r['name'] . ' -> HTTP ' . $code . ($ok ? '' : ' FEHLER ' . substr($body, 0, 120))
+           . (ro_befehl_quelle() === 'mqtt' ? ' (MQTT)' : ''));
     if ($ok) {
         // Der Zustand ist nach einem Befehl veraltet - sonst zeigt die
         // Oberflaeche bis zu cache_sec Sekunden lang den alten.
@@ -2753,7 +2763,9 @@ function ro_mqtt_themen($praefix = null, $dev = 1)
     foreach (ro_mqtt_langform() as $lang => $kurz) {
         $f = $felder[strtoupper($kurz)];
         $aus[$prefix . '/' . $lang] = array(
-            'bedeutung' => $f[4] . ($f[3] !== '' ? ' [' . $f[3] . ']' : '') . ' = ' . $prefix . '/' . $kurz,
+            // Gruppe 2 (1.1.22, E12): die Langform nur fuer Vorlagen vor 1.1.10 - nicht neu anlegen.
+            'bedeutung' => $f[4] . ($f[3] !== '' ? ' [' . $f[3] . ']' : '') . ' = ' . $prefix . '/' . $kurz
+                         . ' – ' . ro_t('MQTT.LANGFORM_ALT'),
             'retain' => ro_mqtt_retain($lang) ? 1 : 0,
         );
     }
@@ -2766,8 +2778,10 @@ function ro_mqtt_themen($praefix = null, $dev = 1)
  *
  * ALTER und ZAEHLER sind ausgenommen, und das ist kein Versehen:
  *
- *   1. Ueber MQTT gibt es kein "Alter", nur einen Zeitstempel. Der Miniserver
- *      rechnet selbst - <praefix>/status/ts steht dafuer da.
+ *   1. Ueber MQTT gibt es kein "Alter", nur einen Zeitstempel - und daraus
+ *      rechnet Loxone KEIN Alter (Loxone rechnet in Ortszeit, ts ist UTC;
+ *      Gruppe 1, E9/E10). Die Ausfallerkennung nimmt <praefix>/status/zaehler
+ *      (Gruppe 2, 1.1.22; Entwurf sv 2.4).
  *   2. Vor allem aber: diese Liste ist auch die SIGNATUR des Cron-Laufs.
  *      Steht ALTER darin, aendert sie sich jede Sekunde, der
  *      Doppelt-senden-Filter greift nie, und der Cron schickt jede Minute
@@ -2823,6 +2837,319 @@ function ro_mqtt_werte($st, $dev = 1)
         if (array_key_exists($kurz, $m)) { $m[$lang] = $m[$kurz]; }
     }
     return $m;
+}
+
+/* ================= Gruppe 2 (1.1.22): MQTT-Weg fuer Werte und Befehle =====================
+ *
+ * Hausherr 18.10.2026 (Bauvorschrift Gruppe 1): Werte UND Befehle zwischen Plugin und Loxone gehen ueber MQTT;
+ * Musterprojekt, Vorlagen und Haus nutzen nur MQTT, die HTTP-Wege bleiben fuer bestehende Anlagen. Gateway V1 und
+ * V2 werden beide unterstuetzt. Hausherr 19.10.2026 (Nachtrag 2): fuer Gateway-Werte gibt es KEINE Importvorlage -
+ * die LoxBerry-Anleitung zum Gateway verlangt einfache Virtuelle Eingaenge (Regeln/07 R2_078); der Reiter
+ * "Einbindung in Loxone" zeigt dafuer die Namenstabelle. Entwurf: Musterprojekt/entwurf_gruppe2_sv.txt,
+ * Abschnitte 2 und 3; Entscheidungen Musterprojekt/ENTSCHEIDUNGEN_GRUPPE2_MQTT.md.
+ */
+
+/**
+ * Der Name, den das MQTT-Gateway aus einem Thema bildet (Regeln/07 Abschnitt 1; Gateway V2 build_vi_name, am Geraet
+ * gelesen 18.10.2026): "/", "%" und Leerzeichen werden "_". EINE Funktion fuer Namenstabelle, Hakenliste,
+ * Baustein-Listen und Selbstpruefung - ein Eingang, dessen Name nicht genau so heisst, bekommt nie einen Wert.
+ * $thema ohne Praefix ('code', 'status/zaehler'); die Themen unter status/ haengen immer an der Wurzel
+ * (ro_mqtt_lebenszeichen()), alle anderen am Praefix des Roboters (Roboter n: <praefix>/n).
+ */
+function ro_mqtt_gateway_name($dev, $thema, $praefix = null)
+{
+    $wurzel = ro_mqtt_thema_saeubern($praefix === null ? ro_config()['mqtt_topic'] : $praefix);
+    $vor = strpos((string) $thema, 'status/') === 0 ? $wurzel : ro_mqtt_praefix($wurzel, $dev);
+    return str_replace(array('/', '%', ' '), '_', $vor . '/' . $thema);
+}
+
+/**
+ * Die Werte, die ueber das MQTT-Gateway nach Loxone gehen - EINE Liste fuer die Namenstabelle (Schritt 3), die
+ * Hakenliste fuer Gateway V2 (Schritt 2) und die Selbstpruefung (Entwurf sv 2.5). Reihenfolge der Hakenliste des
+ * Entwurfs: die Felder aus ro_felder() (ohne ALTER und ZAEHLER, ro_mqtt_ausgenommen()), beim ersten Roboter das
+ * Lebenszeichen status/zaehler, status/ok und status/befehle (sendet die Befehlsbruecke), danach die vier Texte.
+ * Nicht darin: status/ts (in Loxone kein Alter daraus rechnen, E13), die sechs Langformen (nur fuer Vorlagen vor
+ * 1.1.10, E12), die Befehls- und Quittungsthemen.
+ * "Noncached" (N, nur Gateway V2) brauchen die Werte, die jede Runde mit demselben Wert kommen und nach einem
+ * Neustart des Miniservers sonst bis zur naechsten Aenderung auf 0 stuenden: ok, status/ok, status/befehle.
+ * Rueckgabe Liste array('thema', 'name', 'bedeutung', 'bereich', 'text' (bool), 'digital' (bool), 'noncached').
+ */
+function ro_mqtt_namen($dev = 1, $praefix = null)
+{
+    $dev = max(1, min(9, (int) $dev));
+    $wurzel = ro_mqtt_thema_saeubern($praefix === null ? ro_config()['mqtt_topic'] : $praefix);
+    $aus = array();
+    $dazu = function ($thema, $bedeutung, $bereich, $text, $digital, $nc) use (&$aus, $dev, $wurzel) {
+        $vor = strpos($thema, 'status/') === 0 ? $wurzel : ro_mqtt_praefix($wurzel, $dev);
+        $aus[] = array('thema' => $vor . '/' . $thema, 'name' => ro_mqtt_gateway_name($dev, $thema, $wurzel),
+                       'bedeutung' => (string) $bedeutung, 'bereich' => (string) $bereich, 'text' => (bool) $text,
+                       'digital' => (bool) $digital, 'noncached' => (bool) $nc);
+    };
+    foreach (ro_felder() as $name => $f) {
+        if (ro_mqtt_ausgenommen($name)) { continue; }
+        $bereich = empty($f[0]) ? '0/1' : $f[1] . ' … ' . $f[2] . ($f[3] !== '' ? ' ' . $f[3] : '');
+        $dazu(strtolower($name), $f[4], $bereich, false, empty($f[0]), $name === 'OK');
+    }
+    if ($dev === 1) {
+        $dazu('status/zaehler', ro_t('MQTT.T_ZAEHLER'), '0 … 999', false, false, false);
+        $dazu('status/ok', ro_t('MQTT.T_OK'), '0/1', false, true, true);
+        $dazu('status/befehle', ro_t('MQTT.T_BEFEHLE'), '-1 … 1', false, false, true);
+    }
+    foreach (array('status' => 'MQTT.T_STATUSTEXT', 'fehlertext' => 'MQTT.T_FEHLERTEXT',
+                   'ereignistext' => 'MQTT.T_EREIGNISTEXT', 'meldung' => 'MQTT.T_MELDUNG') as $k => $s) {
+        $dazu($k, ro_t($s), ro_t('LOX.ART_TEXT'), true, false, false);
+    }
+    return $aus;
+}
+
+/** Die Roboternummern fuer Namenstabelle und Hakenliste: die eingerichteten, sonst Roboter 1. */
+function ro_mqtt_namen_geraete()
+{
+    $n = array_keys(ro_robots());
+    sort($n);
+    return $n ? $n : array(1);
+}
+
+/* ---------------- Befehlsbruecke (gemeinsames Modul, bin/befehlsbruecke.php) ---------------- */
+
+/** Der bin-Ordner mit der Befehlsbruecke: installiert <wurzel>/bin/plugins/<ordner>, im ausgepackten Archiv (und in
+ *  den Pruefstandskopien) bin/ neben webfrontend/. '' = nicht vorhanden. */
+function ro_bin_dir()
+{
+    $p = ro_paths();
+    if ($p['lbhome'] !== '') {
+        $d = $p['lbhome'] . '/bin/plugins/' . $p['plugin'];
+        if (is_file($d . '/befehlsbruecke.php')) { return $d; }
+    }
+    $d = dirname(dirname(__DIR__)) . '/bin';
+    return is_file($d . '/befehlsbruecke.php') ? $d : '';
+}
+
+/** Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN) und die Zuordnung der Linie holen und pruefen.
+ *  Rueckgabe array(Tabelle oder null, Fehlertext). */
+function ro_befehle_tabelle()
+{
+    $bin = ro_bin_dir();
+    if ($bin === '') { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    if (!function_exists('bb_zuordnung_laden')) {
+        if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+        require_once $bin . '/befehlsbruecke.php';
+    }
+    list($z, $fehler) = bb_zuordnung_laden($bin . '/befehle_zuordnung.php');
+    if ($z === null) { return array(null, $fehler); }
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) { return array(null, $fehl[0]); }
+    return array($z, '');
+}
+
+/**
+ * Die Befehlsbruecke nach dem Speichern im Reiter MQTT sofort starten bzw. anhalten (befehlsbruecke.sh start|stop).
+ * Der Waechter im Minutentakt (bb_waechter() in bin/cron.php) startet hoechstens alle 600 s neu (Neustart-Bremse
+ * der Stammfassung) - ohne den Direktstart liefe die Bruecke nach dem Einschalten bis zu zehn Minuten nicht (Bauart
+ * fer_bruecke_schalten() aus FerienFeiertage 1.2.27). Gestartet wird nur mit beiden Voraussetzungen (Haken und MQTT,
+ * dazu ein eingerichteter Roboter); angehalten nur, was laeuft.
+ * Rueckgabe array(rc, Ausgabe, 'start'|'stop'|''); rc 0 = erledigt oder nichts zu tun.
+ */
+function ro_bruecke_schalten()
+{
+    list($z, $fehler) = ro_befehle_tabelle();
+    if ($z === null) { return array(1, $fehler, ''); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, 'keine LoxBerry-Installation erkannt', ''); }
+    $e = bb_einstellungen($z);
+    if (is_array($e) && $e['annehmen']) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, $aus, 'start');
+    }
+    if (bb_dienste()) {
+        list($rc, $aus) = bb_sh($p, 'stop');
+        return array($rc, $aus, 'stop');
+    }
+    return array(0, '', '');
+}
+
+/** Die Befehlsliste aus bb_liste() - EINE Quelle fuer Reiter, Vorlage und Musterprojekt (Entwurf gemeinsam 2.6).
+ *  Rueckgabe array(Liste oder null, Fehlertext). */
+function ro_befehle_liste()
+{
+    list($z, $fehler) = ro_befehle_tabelle();
+    if ($z === null) { return array(null, $fehler); }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/**
+ * Die Vorlage der MQTT-Befehle (eigener Ausgang "Saugroboter MQTT-Befehle" an den UDP-Eingang des Gateways,
+ * bb_vorlage()). Entwurf sv E7: fuer die fuenf Textbefehle (segments, zone, goto, reset, ruhezeit) schreibt
+ * bb_vorlage() nur einen Kommentar; die Linie ergaenzt sie mit dem Beispielwert aus ro_befehle() Spalte 0 - sonst
+ * fehlten in der Vorlage fuenf der 17 Befehle. Rueckgabe array(name, inhalt) oder null.
+ */
+function ro_vorlage_befehle()
+{
+    list($l) = ro_befehle_liste();
+    if ($l === null) { return null; }
+    $port = ro_mqtt_udpport();
+    $xml = bb_vorlage($l, ro_host(), $port > 0 ? $port : 11884);
+    $bsp = ro_befehle();
+    foreach ($l['befehle'] as $b) {
+        if ($b['art'] !== 'text' || $b['muster'] || !isset($bsp[$b['name']]) || $bsp[$b['name']][0] === '') { continue; }
+        $kom = '<!-- Text ' . bb_xml($b['name']) . ': selbst anlegen, Befehl bei Ein: publish ' . bb_xml($b['thema'])
+             . ' <fester Text>, hoechstens ' . (int) $b['max_byte'] . ' Byte -->';
+        $neu = bb_vorlage_befehl($b['titel'], 'text bis ' . (int) $b['max_byte'] . ' Byte, Beispielwert - im Befehl '
+             . 'aendern' . ($b['eingreifend'] ? ', eingreifend' : '') . ', nie retain',
+             'publish ' . $b['thema'] . ' ' . $bsp[$b['name']][0], '', false);
+        $xml = str_replace("\t" . $kom, $neu, $xml);
+    }
+    return array('VQ_saugroboter_mqtt.xml', $xml);
+}
+
+/** Zustand der Befehlsbruecke fuer die Reiter MQTT und Test (Entwurf gemeinsam 2.11).
+ *  Rueckgabe array(1 = laeuft | 0 = sollte laufen und steht oder defekt | 2 = aus, Text). */
+function ro_bruecke_zustand()
+{
+    list($z, $fehler) = ro_befehle_tabelle();
+    if ($z === null) {
+        return array(0, sprintf(ro_t(ro_bin_dir() === '' ? 'BEFEHL.Z_FEHLT' : 'BEFEHL.Z_DEFEKT'), $fehler));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) { return array(2, ro_t('BEFEHL.Z_AUS')); }
+    if ($soll !== 0) { return array(0, sprintf(ro_t('BEFEHL.Z_DEFEKT'), $grund)); }
+    $zu = bb_zustand_lesen();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : -1;
+    if (!bb_dienste() || $alter < 0 || $alter > BB_WACHE_GRENZE || empty($zu['abo'])) {
+        $warum = (is_array($zu) && !empty($zu['fehler'])) ? ' (' . $zu['fehler'] . ')' : '';
+        return array(0, sprintf(ro_t('BEFEHL.Z_STEHT'), $warum));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $letzter = '';
+    if (isset($zu['letzter']) && is_array($zu['letzter']) && isset($zu['letzter']['name'])) {
+        $letzter = sprintf(ro_t('BEFEHL.Z_LETZTER'), (string) $zu['letzter']['name'],
+            (string) (isset($zu['letzter']['ergebnis']) ? $zu['letzter']['ergebnis'] : ''),
+            max(0, time() - (int) (isset($zu['letzter']['zeit']) ? $zu['letzter']['zeit'] : time())));
+    }
+    return array(1, sprintf(ro_t('BEFEHL.Z_LAEUFT'), date('d.m.Y H:i', (int) (isset($zu['start']) ? $zu['start'] : 0)),
+        (int) (isset($zl['angenommen']) ? $zl['angenommen'] : 0), (int) (isset($zl['abgelehnt']) ? $zl['abgelehnt'] : 0),
+        $letzter));
+}
+
+/** Die Einrichtungspruefung der Befehlsbruecke (dasselbe wie "befehlsbruecke.php --pruefen", im selben Prozess
+ *  ueber bb_pruefen()). Rueckgabe array(1 ohne [FEHL] | 0, Text). */
+function ro_bruecke_pruefen()
+{
+    list($z, $fehler) = ro_befehle_tabelle();
+    if (!function_exists('bb_pruefen')) { return array(0, $fehler); }
+    ob_start();
+    $rc = bb_pruefen();
+    $aus = (string) ob_get_clean();
+    $fehl = array();
+    foreach (explode("\n", $aus) as $l) {
+        if (strpos($l, '[FEHL]') === 0) { $fehl[] = trim(substr($l, 6)); }
+    }
+    if ($rc === 0 && !$fehl) {
+        return array(1, $z !== null ? sprintf(ro_t('PRUEF.BRUECKE_OK'), count($z['befehle'])) : '');
+    }
+    return array(0, implode('; ', $fehl));
+}
+
+/** Der Parameter ?p= (HTTP) bzw. der Wert eines Textbefehls (MQTT) - eng gefasst, bevor er irgendwohin geht. Aus
+ *  robo.php ro_param() hierher gezogen (Entwurf sv 3.2), Wirkung unveraendert: '' bleibt '', mehr als 64 Zeichen
+ *  oder ein Zeichen ausserhalb [A-Za-z0-9,:_/-] ergibt false. */
+function ro_param_pruefen($p)
+{
+    $p = is_string($p) ? $p : '';
+    if ($p === '') { return ''; }
+    if (strlen($p) > 64) { return false; }
+    // Alles, was die Befehle brauchen: Ziffern, Buchstaben, Komma, Doppelpunkt,
+    // Bindestrich, Unterstrich, Schraegstrich - und sonst nichts.
+    return preg_match('#^[A-Za-z0-9,:_/\-]+$#', $p) ? $p : false;
+}
+
+/** Woher kommt der laufende Befehl ('http' oder 'mqtt')? Nur fuer die Protokollzeile von ro_command(). */
+function ro_befehl_quelle($setzen = null)
+{
+    static $quelle = 'http';
+    if ($setzen !== null) { $quelle = ($setzen === 'mqtt') ? 'mqtt' : 'http'; }
+    return $quelle;
+}
+
+/**
+ * Einen Steuerbefehl ausfuehren - der Befehlsteil des Endpunkts robo.php (bis 1.1.21 dort Z. 171-215), herausgezogen
+ * OHNE die Wirkung des HTTP-Wegs zu aendern (Entwurf sv 3.3): dieselbe Reihenfolge der Pruefungen (Befehl gegen
+ * ro_befehle(), Parameter, Gleichwert-Bremse, ro_command(), Merker vergessen), dieselben Antwortzeilen, HTTP-Codes
+ * und Protokollzeilen. robo.php prueft vorher das Token und gibt Zeile und Code aus; die Befehlsbruecke ruft
+ * dieselbe Funktion mit Quelle 'mqtt' (bin/befehle_zuordnung.php) - ins Protokoll kommt dann "(MQTT)".
+ * Rueckgabe array('http' => Code, 'zeile' => Antwortzeile mit Zeilenende, 'ok' => 0|1).
+ */
+function ro_befehl_ausfuehren($cmd, $dev = 1, $p = '', $quelle = 'http')
+{
+    $raus = function ($http, $zeile) {
+        return array('http' => (int) $http, 'zeile' => $zeile,
+                     'ok' => ((int) $http === 200 && strpos($zeile, ';OK=1') !== false) ? 1 : 0);
+    };
+    $dev = max(1, (int) $dev);
+    $cmd = is_string($cmd) ? strtolower(trim($cmd)) : '';
+    if (!preg_match('/^[a-z]{1,20}$/', $cmd) || !isset(ro_befehle()[$cmd])) {
+        return $raus(400, "CMD;OK=0;ERR=BEFEHL\n");
+    }
+    $p = ro_param_pruefen($p);
+    if ($p === false) {
+        return $raus(400, 'CMD;OK=0;BEFEHL=' . $cmd . ";ERR=PARAMETER\n");
+    }
+    /* C4 (X-7): Gleichwert-Unterdrueckung fuer Sollwerte, siehe ro_gleichwert_*(). Erst hier, hinter Token, Befehl
+     * und Parameterpruefung: ein abgewiesener Aufruf merkt nichts. */
+    $gw_wert = ro_gleichwert_wert($cmd, $p);
+    $gw_schl = $dev . '|' . $cmd;
+    $gw_marke = '';
+    if ($gw_wert !== null) {
+        list($gw_urteil, $gw_seit, $gw_marke) = ro_gleichwert_pruefen($gw_schl, $gw_wert);
+        if ($gw_urteil === 'MERKER') {
+            ro_log_if_changed('gleichwert', 'Endpunkt: der Merker der Gleichwert-Unterdrueckung ('
+                . ro_gleichwert_datei() . ') laesst sich nicht oeffnen, sperren oder schreiben - '
+                . 'Sollwert-Befehle werden mit 503 abgewiesen, bis das behoben ist.');
+            return $raus(503, 'CMD;OK=0;BEFEHL=' . $cmd . ";GRUND=BREMSE_MERKER\n");
+        }
+        if ($gw_urteil === 'UNVERAENDERT') {
+            return $raus(200, 'CMD;OK=1;BEFEHL=' . $cmd . ';UNVERAENDERT=1;SEIT_S=' . (int) $gw_seit . "\n");
+        }
+    }
+    $vorher = ro_befehl_quelle();
+    ro_befehl_quelle($quelle);
+    try {
+        list($ok, $info) = ro_command($cmd, $dev, $p);
+    } finally {
+        ro_befehl_quelle($vorher);
+    }
+    if ($gw_marke !== '' && (int) $ok !== 1) {
+        // Nicht angekommen: nicht gemerkt, der naechste gleiche Befehl geht hinaus.
+        ro_gleichwert_vergessen($gw_schl, $gw_marke);
+    }
+    /* $info kommt aus ro_command() und ist entweder "HTTP <n>" oder einer von wenigen festen Saetzen. Trotzdem wird
+     * es gesaeubert: eine Antwortzeile, die ein Semikolon oder einen Zeilenumbruch aus einer fremden Quelle traegt,
+     * zerfaellt fuer den Miniserver in zwei. */
+    $info = preg_replace('/[^A-Za-z0-9 _\.\-]/', ' ', (string) $info);
+    return $raus(200, 'CMD;OK=' . $ok . ';BEFEHL=' . $cmd . ';INFO=' . $info . "\n");
+}
+
+/**
+ * Das Ergebnis von ro_befehl_ausfuehren() fuer die Quittung der Befehlsbruecke: array(bool ok, string grund).
+ * "angenommen" bei OK=1 - auch UNVERAENDERT=1 der Gleichwert-Bremse (Entwurf sv 3.3, wie Marstek); sonst der Grund
+ * aus der Antwortzeile (ERR, GRUND oder INFO, z. B. PARAMETER, BREMSE_MERKER, "HTTP 404", "Roboter nicht
+ * konfiguriert").
+ */
+function ro_befehl_quittung(array $e)
+{
+    if (!empty($e['ok'])) { return array(true, ''); }
+    $z = trim((string) (isset($e['zeile']) ? $e['zeile'] : ''));
+    foreach (array('ERR', 'GRUND', 'INFO') as $k) {
+        if (preg_match('/;' . $k . '=([^;]+)/', $z, $m)) { return array(false, trim($m[1])); }
+    }
+    return array(false, 'Roboter antwortet nicht');
+}
+
+/** Gruppe 2 (1.1.22): Schluessel, die eine Sicherung aus einer Fassung vor 1.1.22 noch nicht kennt - sie duerfen in
+ *  der Datei fehlen und gelten dann mit ihrer Vorgabe (aus). Bauart awm_spaet_schluessel() (Abfuhrkalender 1.4.25). */
+function ro_spaet_schluessel()
+{
+    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern');
 }
 
 /* ---------------- Sprachausgabe ----------------
@@ -2966,8 +3293,11 @@ function ro_events_check($zustaende = null) {
         // Reinigung beendet
         if (!empty($cfg['notify']['fertig']) && isset($prev['code']) && (int) $prev['code'] === 2
             && ro_reinigung_beendet($st['code'])) {
-            $meldungen['fertig'] = $st['name'] . ' ist fertig. ' . str_replace('.', ',', (string) $st['flaeche'])
-                         . ' Quadratmeter in ' . (int) $st['dauer'] . ' Minuten.';
+            /* Gruppe 2 (1.1.22, -1-Regel): ohne Reinigungsbilanz vom Geraet (-1) nur "ist fertig." - sonst sagte die
+             * Ansage "-1 Quadratmeter in -1 Minuten". */
+            $meldungen['fertig'] = ($st['flaeche'] < 0 || $st['dauer'] < 0) ? $st['name'] . ' ist fertig.'
+                : $st['name'] . ' ist fertig. ' . str_replace('.', ',', (string) $st['flaeche'])
+                  . ' Quadratmeter in ' . (int) $st['dauer'] . ' Minuten.';
         }
         // Fehler
         if (!empty($cfg['notify']['fehler']) && $st['code'] === 9 && (!isset($prev['code']) || (int) $prev['code'] !== 9)) {
@@ -3160,16 +3490,17 @@ function ro_felder() {
     $f = array(
         'OK'       => array(0, 0, 1,     '',      '1 = Roboter erreichbar', 0, 'Erreichbar'),
         'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 8 unbekannt, 9 Fehler', 1, 'Status'),
-        'BATT'     => array(1, 0, 100,   '%',     'Batterie in Prozent', 0, 'Batterie'),
+        'BATT'     => array(1, -1, 100,  '%',     'Batterie in Prozent (-1 = meldet das Gerät nicht)', 0, 'Batterie'),
         'LAEDT'    => array(0, 0, 1,     '',      '1 = lädt gerade', 1, 'Lädt'),
         'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)', 1, 'Fehlercode'),
         'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer', 1, 'Fehlerschwere'),
         'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station', 1, 'Fehler: Teil'),
-        'FLAECHE'  => array(1, 0, 1000,  'm2',    'letzte Reinigung: Fläche', 1, 'Reinigung Fläche'),
-        'DAUER'    => array(1, 0, 600,   'min',   'letzte Reinigung: Dauer', 1, 'Reinigung Dauer'),
-        'FLAECHEG' => array(1, 0, 10000000, 'm2', 'Gesamtwerte: Fläche', 1, 'Gesamt Fläche'),
-        'DAUERG'   => array(1, 0, 100000, 'h',    'Gesamtwerte: Stunden', 1, 'Gesamt Stunden'),
-        'ANZAHLG'  => array(1, 0, 100000, '',     'Gesamtwerte: Anzahl Reinigungen', 1, 'Gesamt Reinigungen'),
+        // Gruppe 2 (1.1.22, E3): die Reinigungsbilanz meldet -1, wenn das Geraet sie nicht liefert.
+        'FLAECHE'  => array(1, -1, 1000, 'm2',    'letzte Reinigung: Fläche (-1 = meldet das Gerät nicht)', 1, 'Reinigung Fläche'),
+        'DAUER'    => array(1, -1, 600,  'min',   'letzte Reinigung: Dauer (-1 = meldet das Gerät nicht)', 1, 'Reinigung Dauer'),
+        'FLAECHEG' => array(1, -1, 10000000, 'm2', 'Gesamtwerte: Fläche (-1 = meldet das Gerät nicht)', 1, 'Gesamt Fläche'),
+        'DAUERG'   => array(1, -1, 100000, 'h',   'Gesamtwerte: Stunden (-1 = meldet das Gerät nicht)', 1, 'Gesamt Stunden'),
+        'ANZAHLG'  => array(1, -1, 100000, '',    'Gesamtwerte: Anzahl Reinigungen (-1 = meldet das Gerät nicht)', 1, 'Gesamt Reinigungen'),
         'FILTER'   => array(1, -1, 10000, 'h',    'Filter: Reststunden bis zum Wechsel (-1 = nicht verfügbar)', 1, 'Filter Rest'),
         'FILTER2'  => array(1, -1, 10000, 'h',    'Zweitfilter: Reststunden (-1 = nicht verfügbar)', 1, 'Zweitfilter Rest'),
         'BHAUPT'   => array(1, -1, 10000, 'h',    'Hauptbürste: Reststunden (-1 = nicht verfügbar)', 1, 'Hauptbürste Rest'),
@@ -3607,6 +3938,11 @@ function ro_wert_pruefen($schluessel, $wert)
         case 'mqtt_enabled':
             return ((is_int($wert) || is_string($wert)) && in_array((string) $wert, array('0', '1'), true))
                    ? '' : ro_t('GRUND.NULL_EINS');
+        case 'befehle_mqtt_ein':
+        case 'befehle_mqtt_steuern':
+            // Gruppe 2 (1.1.22): die beiden Haken der Befehlsbruecke - wie mqtt_enabled 0 oder 1.
+            return ((is_int($wert) || is_string($wert)) && in_array((string) $wert, array('0', '1'), true))
+                   ? '' : ro_t('GRUND.NULL_EINS');
         case 'mqtt_topic':
             return (is_string($wert) && preg_match('#^[\w\-]+(/[\w\-]+)*\z#', $wert))
                    ? '' : ro_t('GRUND.THEMA');
@@ -3788,7 +4124,8 @@ function ro_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(ro_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        // Gruppe 2 (1.1.22): die Haken der Befehlsbruecke darf eine aeltere Sicherung nicht kennen (ro_spaet_schluessel()).
+        if (!array_key_exists($fk, $daten) && !in_array($fk, ro_spaet_schluessel(), true)) {
             $fehlend[] = $fk;
         }
     }
@@ -4326,6 +4663,32 @@ function ro_selbsttest($opt = array())
             $add('PRUEF.RUHEZEIT', 2, '');
         }
     }
+
+    /* Gruppe 2 (1.1.22): die Befehlsbruecke - laeuft sie, und ist sie richtig eingerichtet (dasselbe wie
+     * "befehlsbruecke.php --pruefen")? Entwurf sv 3.3, Reiter Test. */
+    list($bzs, $bzt) = ro_bruecke_zustand();
+    $add('PRUEF.BRUECKE', $bzs, $bzt);
+    list($bps, $bpt) = ro_bruecke_pruefen();
+    $add('PRUEF.BRUECKE_EINRICHTUNG', $bps, $bpt);
+
+    /* Gruppe 2 (1.1.22): Ist jeder Name der Namenstabelle ein Name, unter dem das Gateway wirklich einen Wert
+     * schickt (Bauart B58 Abfuhrkalender)? Die Gegenseite wird HIER aus den gesendeten Themen gebildet - nicht ueber
+     * ro_mqtt_gateway_name(), sonst traefe ein Fehler dort beide Seiten gleich und die Zeile bliebe gruen. */
+    $nt_wurzel = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
+    $nt_soll = array();
+    $nt_lang = ro_mqtt_langform();
+    foreach (array_keys(ro_mqtt_werte(ro_state(1), 1)) as $k) {
+        if (!isset($nt_lang[$k])) { $nt_soll[] = strtr($nt_wurzel . '/' . $k, array('/' => '_', '%' => '_', ' ' => '_')); }
+    }
+    foreach (array('status/zaehler', 'status/ok', 'status/befehle') as $k) {
+        $nt_soll[] = strtr($nt_wurzel . '/' . $k, array('/' => '_', '%' => '_', ' ' => '_'));
+    }
+    $nt_ist = array();
+    foreach (ro_mqtt_namen(1) as $nt_z) { $nt_ist[] = $nt_z['name']; }
+    sort($nt_soll); sort($nt_ist);
+    $nt_ab = array_merge(array_diff($nt_ist, $nt_soll), array_diff($nt_soll, $nt_ist));
+    $add('PRUEF.NAMEN', $nt_ab ? 0 : 1, $nt_ab ? sprintf(ro_t('PRUEF.NAMEN_AB'), implode(', ', $nt_ab))
+                                               : sprintf(ro_t('PRUEF.NAMEN_OK'), count($nt_ist)));
 
     return $z;
 }

@@ -232,4 +232,18 @@ echo "<INFO> ihre zurueckbehaltenen Werte aus Fassungen vor 1.1.10 raeumt der Mi
 echo "<INFO> aus dem Broker, bis der Broker es bestaetigt. Ist der Roboter nicht erreichbar,"
 echo "<INFO> gehen nur ok 0 und code 8 (fluechtig) hinaus; die uebrigen Werte bleiben auf"
 echo "<INFO> dem letzten gemessenen Stand, ueber MQTT wie am Endpunkt."
+
+# Gruppe 2 (1.1.22): die Befehlsbruecke wieder starten. Erst die Marke weg (sonst sagt befehlsbruecke.sh
+# "Aktualisierung im Gang" und startet nicht; der trap oben raeumt sie ohnehin ab), dann start - startet nur mit Haken
+# "Befehle ueber MQTT annehmen" und nie als root; sonst holt es der Minutentakt (bb_waechter()) binnen einer Minute
+# nach.
+rm -f "$MARKE" 2>/dev/null
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    RO_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+    case "$RO_BB" in
+        *gestartet*|*laeuft*) echo "<OK> $RO_BB" ;;
+        *) echo "<INFO> Befehlsbruecke: $RO_BB (der Minutentakt versucht es erneut)" ;;
+    esac
+fi
 exit 0

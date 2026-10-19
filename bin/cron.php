@@ -158,6 +158,24 @@ foreach (array_merge(glob(ro_tmpdir() . '/mqtt_sig_*.txt') ?: array(),
     @unlink($ro_g);
 }
 
+/* Gruppe 2 (1.1.22): der Waechter der Befehlsbruecke (Bauvorschrift Gruppe 1, Nachtrag 19.10.2026: Linien mit
+ * PHP-Minutentakt rufen bb_waechter(); Entwurf sv 3.3: nach dem MQTT-Block). Er misst das Erzeugnis der Bruecke
+ * (zustand.json), sendet <praefix>/status/befehle (1 laeuft, 0 aus, -1 gestoert; nie retained) und startet hoechstens
+ * alle 600 s neu. befehlsbruecke.sh schliesst die geerbten Deskriptoren - die Sperre dieses Takts (cron.lock) erbt
+ * der Dienst nicht (Brueckenfall F12J). Ins Protokoll nur ein Wechsel des Zustands. */
+$ro_bb = __DIR__ . '/befehlsbruecke.php';
+if (is_file($ro_bb)) {
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $ro_bb;
+    list($ro_bbs, $ro_bbt) = bb_waechter();
+    if ($ro_bbs !== null) {
+        ro_log_if_changed('befehlsbruecke', 'Befehlsbruecke: '
+            . ($ro_bbs === -1 ? $ro_bbt : ($ro_bbs === 1 ? 'laeuft' : 'aus (Haken)')));
+    }
+}
+
 echo "OK\n";
 
 flock($ro_lock, LOCK_UN);
