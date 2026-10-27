@@ -99,22 +99,8 @@ fi
 chmod 600 "$CF" 2>/dev/null
 chmod 600 "$BK" 2>/dev/null
 
-# Traegt eine Konfigurationsdatei INHALT? Lesbares JSON-Objekt UND ein nicht
-# leeres Aktionstoken - dieselbe Frage, nach der ro_config() in
-# webfrontend/html/robo_lib.php seit 1.1.4 aus der Zweitschrift heilt (das
-# Token ist das Geheimnis, ohne das jede in Loxone eingetragene Adresse auf
-# 403 laeuft). Bis 1.1.9 wurde hier nach der FORM entschieden (leer oder genau
-# "{}") und eine kaputte oder leere Zweitschrift kopiert und als
-# "wiederhergestellt" gemeldet (in WSL gemessen,
-# Pruefung-Saugroboter-Valetudo-1.1.10, Faelle N1a, N1b, N3). Ohne PHP gilt
-# eine Datei als ohne Inhalt.
-ro_hat_inhalt() {
-    [ -s "$1" ] || return 1
-    command -v php >/dev/null 2>&1 || return 1
-    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
-        if (!is_array($d)) { exit(1); }
-        exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
-}
+# Gruppe 28 (1.1.23, S6): hier stand ro_hat_inhalt() - in diesem Skript nie aufgerufen; benutzt wird sie nur in
+# postupgrade.sh (dort unveraendert).
 # I1: Aktualisierung oder Neuinstallation - das sagt allein die Marke (kein
 # Altersvergleich, Entscheidung 1).
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"

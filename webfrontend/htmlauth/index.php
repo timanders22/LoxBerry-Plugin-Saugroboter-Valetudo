@@ -104,6 +104,7 @@ $rb_fmt = ro_formtoken($rb_cfg);
 $rb_meldungen = array();
 $rb_fehler = array();
 $rb_saved = false;
+$rb_cloud = null;
 
 /* ---------- PRG: Umleitung nach jedem POST (U1, Durchgang 01.10.2026) ----------
  *
@@ -163,7 +164,9 @@ function rb_eingabe_felder($formular)
         return array('mqtt_enabled', 'mqtt_topic', 'befehle_mqtt_ein', 'befehle_mqtt_steuern');
     }
     if ($formular === 'settings') {
-        return array_merge(array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'cache_sec', 'warn_hours',
+        // Gruppe 28 (1.1.23): dazu r_typ und r_token_loeschen - der Token selbst (r_token) reist NIE mit (N11).
+        return array_merge(array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'r_typ', 'r_token_loeschen',
+                     'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis'),
                      ansage_x2_felder(array('modi' => ro_tts_wege())));    // Nr. 36 b, Stufe 2: ohne Sprechtoken
@@ -341,6 +344,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         }
     }
     $rb_saved = !empty($rb_flash['saved']);
+    // Gruppe 28 (1.1.23): das Ergebnis des Cloud-Abrufs (ohne Token) - nur fuer die Anzeige im Reiter Einstellungen.
+    $rb_cloud = (isset($rb_flash['cloud']) && is_array($rb_flash['cloud']) && isset($rb_flash['cloud']['lage'], $rb_flash['cloud']['zeile']))
+        ? $rb_flash['cloud'] : null;
     if (isset($rb_flash['tab']) && is_string($rb_flash['tab']) && in_array($rb_flash['tab'], $rb_reiterliste, true)) {
         $rb_tab = $rb_flash['tab'];
     }
@@ -426,8 +432,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
         $rb_fehler[] = ro_t('TEXT.SICH_ZU_GROSS');
     } else {
         $rb_erg = array_pad(ro_sicherung_lesen(
-            (string) @file_get_contents($_FILES['ro_sicherung']['tmp_name'])), 4, array());
-        list($rb_neu, $rb_mangel, $rb_n, $rb_beh) = $rb_erg;
+            (string) @file_get_contents($_FILES['ro_sicherung']['tmp_name'])), 5, array());
+        list($rb_neu, $rb_mangel, $rb_n, $rb_beh, $rb_spaet) = $rb_erg;
         if ($rb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
@@ -437,6 +443,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
             if (is_array($rb_beh) && in_array('aktionstoken', $rb_beh, true)) {
                 $rb_meldungen[] = rb_e(ro_t('TEXT.SICH_TOKEN_BEHALTEN'));
             }
+            // Gruppe 28 (1.1.23, N7): Spaetschluessel, die die Sicherung nicht kannte, gelten weiter wie eingestellt.
+            foreach ((array) $rb_spaet as $rb_sp) { $rb_meldungen[] = rb_e((string) $rb_sp); }
         } else {
             $rb_fehler[] = ro_t('TEXT.SICH_SCHREIBFEHLER');
         }
@@ -445,13 +453,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
 }
 
 // --- Protokoll leeren ---
+/* Gruppe 28 (1.1.23, S4; Entscheidung 1, Regeln/04 :289): ein Haekchen zur Bestaetigung, sonst passiert nichts; geleert
+ * werden robo.log UND cron.log und befehle_start.log (beide zeigt der Reiter), je mit gepruefter Rueckgabe. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
-    @mkdir(dirname($rb_logfile), 0775, true);
-    if (@file_put_contents($rb_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n") !== false) {
-        $rb_meldungen[] = rb_e(ro_t('TEXT.LOG_GELEERT'));
-    } else {
-        $rb_fehler[] = rb_e(ro_t('TEXT.LOG_NICHT_GELEERT') . ' ' . $rb_logfile);
+    if (empty($_POST['clearlog_ok'])) {
+        rb_umleiten('tab-log', array('fehler' => array(rb_e(ro_t('TEXT.LOG_HAKEN_FEHLT')))));
     }
+    @mkdir(dirname($rb_logfile), 0775, true);
+    $rb_lweg = array(); $rb_lbleibt = array();
+    if (@file_put_contents($rb_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n") !== false) {
+        $rb_lweg[] = basename($rb_logfile);
+    } else {
+        $rb_lbleibt[] = basename($rb_logfile);
+    }
+    foreach (array('cron.log', 'befehle_start.log') as $rb_ld) {
+        $rb_lf = dirname($rb_logfile) . '/' . $rb_ld;
+        if (!is_file($rb_lf)) { continue; }
+        if (@file_put_contents($rb_lf, '') !== false) { $rb_lweg[] = $rb_ld; } else { $rb_lbleibt[] = $rb_ld; }
+    }
+    if ($rb_lweg) { $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.LOG_GELEERT_DATEIEN'), implode(', ', $rb_lweg))); }
+    if ($rb_lbleibt) { $rb_fehler[] = rb_e(sprintf(ro_t('TEXT.LOG_NICHT_GELEERT_DATEIEN'), implode(', ', $rb_lbleibt))); }
     rb_umleiten('tab-log', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
 }
 
@@ -512,6 +533,96 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
         $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ' ' . ansage_kennung_text($rb_ar['kennung'], $rb_ak));
     }
     rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
+}
+
+/* --- Gruppe 28 (1.1.23, E-E12): Reiter Einbindung - den HTTP-Lesezweig fuer Loxone an- oder abschalten (endpunkt_ein).
+ * Neuinstallation aus, Update an (Lese-Regel, postupgrade.sh); ?selftest, ?cmd und ?ptest bleiben in jedem Fall offen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['endpunkt_save'])) {
+    $rb_neu = ro_config();
+    $rb_neu['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (ro_config_speichern($rb_neu)) {
+        rb_umleiten('tab-loxone', array('saved' => 1, 'meldungen' => array(rb_e(ro_t(
+            $rb_neu['endpunkt_ein'] ? 'LOX.ENDPUNKT_AN' : 'LOX.ENDPUNKT_AUS')))));
+    }
+    rb_umleiten('tab-loxone', array('fehler' => array(rb_e(ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile))));
+}
+
+/* --- Gruppe 28 (1.1.23, Entscheidung "Token-Beschaffung"): Token aus der Xiaomi-Cloud holen ---
+ * Nur POST, nur mit Formularmerkmal (Wachposten oben), nur im angemeldeten Bereich. Das Kennwort lebt nur in diesem
+ * einen Aufruf: es wird gelesen, an xc_abruf() (Stammmodul xiaomi_cloud.php, ueber ro_xc()) gegeben und danach in $_POST und der Kopie ueberschrieben - nie
+ * gespeichert, nie protokolliert, nie in einer Meldung, nie in den Eingaben nach einer Beanstandung (X-2). Ergebnis
+ * (Liste ohne Token, Zweitfaktor-Link) reist mit der Umleitung; die Auswahl selbst liegt 0600 im data-Ordner. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['cloud_holen']) || isset($_POST['cloud_code_senden'])
+        || isset($_POST['cloud_captcha_senden']) || isset($_POST['cloud_weg']))) {
+    $rb_czeile = (isset($_POST['cloud_zeile']) && is_string($_POST['cloud_zeile']) && preg_match('/^[1-5]\z/', $_POST['cloud_zeile']))
+        ? (int) $_POST['cloud_zeile'] : 1;
+    $rb_cfilter = ro_xc();   // Stammmodul laden, Ablage data-Ordner, Filter xiaomi.vacuum.* (nur WLAN mit Token)
+    if (isset($_POST['cloud_captcha_senden'])) {
+        // Nachbau 26.10. spaet: Captcha-Loesung des Hausherrn + Kennwort (erneut, nie gespeichert) - EIN Versuch je Bild.
+        $rb_closung = (isset($_POST['cloud_captcha']) && is_string($_POST['cloud_captcha'])) ? trim($_POST['cloud_captcha']) : '';
+        $rb_cpass = (isset($_POST['cloud_pass']) && is_string($_POST['cloud_pass'])) ? $_POST['cloud_pass'] : '';
+        $_POST['cloud_pass'] = '';
+        $rb_cerg = xc_captcha_loesen($rb_closung, $rb_cpass);
+        $rb_cpass = str_repeat("\0", strlen($rb_cpass));
+        $rb_cpass = '';
+        $rb_closung = '';
+    } elseif (isset($_POST['cloud_weg'])) {
+        // Zweitfaktor: der Hausherr waehlt, wohin Xiaomi den Code schickt (Mail oder SMS).
+        $rb_cweg = (is_string($_POST['cloud_weg']) && in_array($_POST['cloud_weg'], array('mail', 'sms'), true)) ? $_POST['cloud_weg'] : '';
+        $rb_cerg = xc_code_anfordern($rb_cweg);
+    } elseif (isset($_POST['cloud_code_senden'])) {
+        $rb_ccode = (isset($_POST['cloud_code']) && is_string($_POST['cloud_code'])) ? trim($_POST['cloud_code']) : '';
+        $rb_cerg = xc_abruf('', '', 'de', $rb_czeile, $rb_cfilter, $rb_ccode);
+        $rb_ccode = '';
+    } else {
+        $rb_ckonto = (isset($_POST['cloud_konto']) && is_string($_POST['cloud_konto'])) ? trim($_POST['cloud_konto']) : '';
+        $rb_cpass = (isset($_POST['cloud_pass']) && is_string($_POST['cloud_pass'])) ? $_POST['cloud_pass'] : '';
+        $rb_creg = (isset($_POST['cloud_region']) && is_string($_POST['cloud_region'])) ? $_POST['cloud_region'] : 'de';
+        $_POST['cloud_pass'] = '';
+        if ($rb_ckonto === '' || $rb_cpass === '') {
+            $rb_cerg = array('lage' => 'LEER');
+        } else {
+            $rb_cerg = xc_abruf($rb_ckonto, $rb_cpass, $rb_creg, $rb_czeile, $rb_cfilter);
+        }
+        $rb_cpass = str_repeat("\0", strlen($rb_cpass));
+        $rb_cpass = '';
+    }
+    $rb_clage = isset($rb_cerg['lage']) ? (string) $rb_cerg['lage'] : 'ANTWORT';
+    // Ins Protokoll nur die Lage - nie Konto, Kennwort, Code, Sitzung oder Token.
+    ro_log('Token-Abruf aus der Xiaomi-Cloud: ' . $rb_clage
+           . (isset($rb_cerg['geraete']) ? ' (' . count($rb_cerg['geraete']) . ' Saugroboter)' : ''));
+    $rb_cflash = array('cloud' => array('lage' => $rb_clage, 'zeile' => $rb_czeile));
+    if ($rb_clage === 'ok') {
+        $rb_cflash['cloud']['geraete'] = $rb_cerg['geraete'];
+        $rb_cflash['meldungen'] = array(rb_e(sprintf(ro_t('CLOUD.M_GEFUNDEN'), count($rb_cerg['geraete']),
+            implode(', ', $rb_cerg['regionen']))));
+    } elseif ($rb_clage === 'ZWEITFAKTOR') {
+        $rb_cflash['cloud']['link'] = (string) $rb_cerg['link'];
+        $rb_cflash['meldungen'] = array(rb_e(ro_t('CLOUD.M_ZWEITFAKTOR')));
+    } elseif ($rb_clage === 'CODE_GESENDET') {
+        $rb_cflash['meldungen'] = array(rb_e(ro_t($rb_cerg['weg'] === 'sms' ? 'CLOUD.M_CODE_SMS' : 'CLOUD.M_CODE_MAIL')));
+    } elseif ($rb_clage === 'CAPTCHA' || $rb_clage === 'CAPTCHA_FALSCH') {
+        $rb_cflash[$rb_clage === 'CAPTCHA' ? 'meldungen' : 'fehler'] = array(rb_e(ro_t($rb_clage === 'CAPTCHA' ? 'CLOUD.M_CAPTCHA' : 'CLOUD.M_CAPTCHA_FALSCH')));
+    } elseif ($rb_clage === 'KEINE') {
+        $rb_cflash['fehler'] = array(rb_e(sprintf(ro_t('CLOUD.F_KEINE'), implode(', ', $rb_cerg['regionen']))));
+    } else {
+        $rb_ck = 'CLOUD.F_' . preg_replace('/[^A-Z]/', '', $rb_clage);
+        $rb_cflash['fehler'] = array(rb_e(ro_t($rb_ck) !== $rb_ck ? ro_t($rb_ck) : ro_t('CLOUD.F_ANTWORT')));
+    }
+    unset($rb_cerg);
+    rb_umleiten('tab-settings', $rb_cflash);
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cloud_nehmen'])) {
+    $rb_ci = (isset($_POST['cloud_wahl']) && is_string($_POST['cloud_wahl']) && preg_match('/^\d{1,3}\z/', $_POST['cloud_wahl']))
+        ? (int) $_POST['cloud_wahl'] : -1;
+    $rb_cz = (isset($_POST['cloud_zeile']) && is_string($_POST['cloud_zeile']) && preg_match('/^[1-5]\z/', $_POST['cloud_zeile']))
+        ? (int) $_POST['cloud_zeile'] : 1;
+    list($rb_cok, $rb_cart, $rb_cnr) = $rb_ci < 0 ? array(0, 'WAHL', $rb_cz) : ro_token_uebernehmen($rb_ci, $rb_cz);
+    ro_log('Token aus der Xiaomi-Cloud fuer Roboter ' . (int) $rb_cnr . ': ' . ($rb_cok ? 'uebernommen' : $rb_cart));
+    if ($rb_cok) {
+        rb_umleiten('tab-settings', array('saved' => 1, 'meldungen' => array(rb_e(sprintf(ro_t('CLOUD.M_UEBERNOMMEN'), (int) $rb_cnr)))));
+    }
+    rb_umleiten('tab-settings', array('fehler' => array(rb_e(ro_t('CLOUD.F_UEB_' . $rb_cart)))));
 }
 
 /* --- MQTT speichern (eigener Reiter seit 1.0.10, Hausstandard) ---
@@ -607,7 +718,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_alt = ro_robots();
     $rb_nr_feld = (isset($_POST['r_nr']) && is_array($_POST['r_nr'])) ? $_POST['r_nr'] : array();
     $rb_vergeben = array();
-    for ($rb_i = 0; $rb_i < 2; $rb_i++) {
+    $rb_zpos = array();   // Gruppe 28 (S3): Zeilenposition -> Geraetenummer
+    // Nachbau 27.10.: bis zu RO_ROBOTER_MAX (5) Zeilen; leere Zeilen bleiben still ungenutzt.
+    for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
         /* DIE GERAETENUMMER REIST MIT DER ZEILE, NICHT MIT DER POSITION.
          *
          * An ihr haengen virtueller Eingang, MQTT-Thema und Endpunktadresse.
@@ -617,11 +730,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
          * also ebenfalls ueber die Position - gemessen am 04.09.2026 ging es
          * dabei still verloren, sobald die erste Zeile schon ohne Adresse
          * dastand. Beides haengt jetzt am versteckten Feld r_nr[]. */
-        $rb_nr = (isset($rb_nr_feld[$rb_i]) && is_string($rb_nr_feld[$rb_i]) && preg_match('/^[1-9]\z/', $rb_nr_feld[$rb_i]))
+        $rb_nr = (isset($rb_nr_feld[$rb_i]) && is_string($rb_nr_feld[$rb_i]) && preg_match('/^[1-5]\z/', $rb_nr_feld[$rb_i]))
             ? (int) $rb_nr_feld[$rb_i] : 0;
         // Kam die Nummer wirklich aus dem Formular? Nur dann darf ueber sie
         // ein Kennwort geerbt werden (siehe weiter unten).
-        $rb_nr_echt = ($rb_nr >= 1 && $rb_nr <= 9 && !in_array($rb_nr, $rb_vergeben, true));
+        $rb_nr_echt = ($rb_nr >= 1 && $rb_nr <= RO_ROBOTER_MAX && !in_array($rb_nr, $rb_vergeben, true));
         if (!$rb_nr_echt) {
             $rb_nr = 1;
             while (in_array($rb_nr, $rb_vergeben, true)) { $rb_nr++; }
@@ -633,8 +746,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             continue;
         }
         // Eine Zeile ohne Adresse ist ungenutzt (so steht es am Feld).
-        if ($rb_ip === '') { continue; }
+        if ($rb_ip === '') {
+            /* Gruppe 28 (1.1.23, S2; Entscheidung 1): eine Zeile OHNE Adresse, aber mit Inhalt (Name, Port ausser
+             * 80/54321, Benutzer, Kennwort, Token) wuerde still verworfen - beanstanden. Eine ganz leere Zeile bleibt
+             * still ungenutzt. */
+            $rb_lp = $rb_zeile('r_port', $rb_i);
+            $rb_inhalt = (string) $rb_zeile('r_name', $rb_i) !== '' || (string) $rb_zeile('r_user', $rb_i) !== ''
+                || !in_array((string) $rb_lp, array('', '80', '54321'), true)
+                || (isset($_POST['r_pass'][$rb_i]) && is_string($_POST['r_pass'][$rb_i]) && $_POST['r_pass'][$rb_i] !== '')
+                || (isset($_POST['r_token'][$rb_i]) && is_string($_POST['r_token'][$rb_i]) && trim($_POST['r_token'][$rb_i]) !== '');
+            if ($rb_inhalt) {
+                $rb_hw[] = rb_e(sprintf(ro_t('TEXT.ADRESSE_FEHLT'), $rb_nr));
+                rb_bean('r_ip', $rb_i);
+            }
+            continue;
+        }
         $rb_vergeben[] = $rb_nr;
+        $rb_zpos[$rb_i] = $rb_nr;
         /* U2 (Nr. 16): eine ungueltige Adresse SPERRT das Speichern. Bis
          * 1.1.11 wurde sie gemeldet ("der bisherige Eintrag bleibt stehen" -
          * auch wenn es keinen gab), und der Rest wurde gespeichert. */
@@ -676,18 +804,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             rb_bean('r_pass', $rb_i);
             $rb_pw_roh = '';
         }
+        /* Gruppe 28 (1.1.23, S2; Entscheidung 1): Kennwort eingetippt UND "loeschen" angehakt ist ein Widerspruch -
+         * beanstanden, nichts speichern. Bis 1.1.22 gewann still der Haken. */
+        if ($rb_pw_roh !== '' && $rb_loeschen) {
+            $rb_hw[] = rb_e(sprintf(ro_t('TEXT.KENNWORT_UND_LOESCHEN'), $rb_nr));
+            rb_bean('r_pass', $rb_i);
+            rb_bean('r_pass_loeschen', $rb_i);
+        }
         $rb_pw = $rb_pw_roh;
         if ($rb_pw === '' && $rb_nr_echt && !$rb_loeschen && isset($rb_alt[$rb_nr]['pass'])) {
             $rb_pw = (string) $rb_alt[$rb_nr]['pass'];
         }
         if ($rb_loeschen) { $rb_pw = ''; }
+        /* Gruppe 28 (1.1.23, E-E1/E-E3): Geraetetyp und Token. Der Token: Passwortfeld, nie vorbefuellt, nie in den
+         * Eingaben nach einer Beanstandung (N11 - r_token steht in keiner Liste von rb_eingabe_felder()); Leerraum
+         * weg, Grossbuchstaben klein, nur 32 Hex; ein leeres Feld behaelt den alten Token (nur ueber eine echte
+         * Geraetenummer, wie das Kennwort); Token UND "loeschen" zugleich ist ein Widerspruch. Kein Token in einer
+         * Meldung. */
+        $rb_typ = $rb_zeile('r_typ', $rb_i);
+        if ($rb_typ === '') { $rb_typ = 'valetudo'; }
+        if ($rb_typ === null || !in_array($rb_typ, ro_robot_typen(), true)) {
+            $rb_hw[] = $rb_wert(sprintf(ro_t('EINST.ROBOTER_FELD'), $rb_nr, ro_t('EINST.TYP')), ro_t('GRUND.TYP'));
+            rb_bean('r_typ', $rb_i);
+            $rb_typ = 'valetudo';
+        }
+        $rb_tok_roh = (isset($_POST['r_token']) && is_array($_POST['r_token']) && isset($_POST['r_token'][$rb_i]))
+            ? $_POST['r_token'][$rb_i] : '';
+        $rb_tok_loeschen = (isset($_POST['r_token_loeschen']) && is_array($_POST['r_token_loeschen'])
+            && !empty($_POST['r_token_loeschen'][$rb_i]));
+        $rb_tok_alt = ($rb_nr_echt && isset($rb_alt[$rb_nr]['token'])) ? (string) $rb_alt[$rb_nr]['token'] : '';
+        $rb_tok = $rb_tok_alt;
+        if (!is_string($rb_tok_roh) || preg_match('/[\x00-\x1F\x7F]/', $rb_tok_roh)) {
+            $rb_hw[] = $rb_wert(sprintf(ro_t('EINST.ROBOTER_FELD'), $rb_nr, ro_t('EINST.TOKEN')), ro_t('TEXT.SICH_STEUERZEICHEN'));
+            rb_bean('r_token', $rb_i);
+        } else {
+            $rb_tok_roh = strtolower(trim($rb_tok_roh));
+            if ($rb_tok_roh !== '' && $rb_tok_loeschen) {
+                $rb_hw[] = rb_e(sprintf(ro_t('TEXT.TOKEN_UND_LOESCHEN'), $rb_nr));
+                rb_bean('r_token', $rb_i);
+                rb_bean('r_token_loeschen', $rb_i);
+            } elseif ($rb_tok_loeschen) {
+                $rb_tok = '';
+            } elseif ($rb_tok_roh !== '') {
+                if (preg_match('/^[0-9a-f]{32}\z/', $rb_tok_roh)) {
+                    $rb_tok = $rb_tok_roh;
+                } else {
+                    $rb_hw[] = $rb_wert(sprintf(ro_t('EINST.ROBOTER_FELD'), $rb_nr, ro_t('EINST.TOKEN')), ro_t('GRUND.MIOT_TOKEN'));
+                    rb_bean('r_token', $rb_i);
+                }
+            }
+        }
+        $rb_tok_roh = '';
         $rb_neu['robots'][] = array(
             'nr' => $rb_nr,
             'name' => (string) $rb_name,
             'ip' => $rb_ip,
             'port' => (int) $rb_port,
             'user' => (string) $rb_user,
-            'pass' => $rb_pw);
+            'pass' => $rb_pw,
+            'typ' => $rb_typ,
+            'token' => $rb_tok);
+    }
+    /* Gruppe 28 (1.1.23, S3): zwei Zeilen mit derselben Adresse fragten denselben Roboter doppelt ab - beanstanden.
+     * Valetudo: gleiche IP und Port; Xiaomi: gleiche IP (Port fest 54321). */
+    $rb_adr = array();
+    foreach ($rb_neu['robots'] as $rb_ri => $rb_rz) {
+        $rb_ak = $rb_rz['typ'] === 'miot' ? 'miot|' . strtolower($rb_rz['ip'])
+                                          : strtolower($rb_rz['ip']) . ':' . (int) $rb_rz['port'];
+        if (isset($rb_adr[$rb_ak])) {
+            $rb_hw[] = rb_e(sprintf(ro_t('TEXT.ADRESSE_DOPPELT'), (int) $rb_neu['robots'][$rb_adr[$rb_ak]]['nr'], (int) $rb_rz['nr']));
+            foreach ($rb_zpos as $rb_zi => $rb_znr) {
+                if ($rb_znr === (int) $rb_rz['nr'] || $rb_znr === (int) $rb_neu['robots'][$rb_adr[$rb_ak]]['nr']) { rb_bean('r_ip', $rb_zi); }
+            }
+        } else {
+            $rb_adr[$rb_ak] = $rb_ri;
+        }
     }
     foreach (array('cache_sec' => array(5, 300, 'EINST.CACHE'), 'warn_hours' => array(0, 200, 'EINST.WARN_STUNDEN'),
                    'warn_prozent' => array(0, 100, 'EINST.WARN_PROZENT')) as $rb_k => $rb_b) {
@@ -760,6 +951,11 @@ $rb_host = ro_host();
 
 /** Restlaufzeit anzeigen: Strich, wenn das Geraet den Wert nicht liefert. */
 function rb_h($h, $einheit = 'h') { return $h < 0 ? '&ndash;' : (int) $h . '&nbsp;' . $einheit; }
+/** Nachbau 27.10. (T12): Reststunden und - meldet der Roboter ihn - der Restanteil: "120 h (67 %)". */
+function rb_hp(array $s, $k) {
+    $p = isset($s[$k . '_pct']) ? (int) $s[$k . '_pct'] : -1;
+    return rb_h(isset($s[$k]) ? $s[$k] : -1) . ($p >= 0 ? ' (' . $p . '&nbsp;%)' : '');
+}
 /** Ja / Nein / Strich fuer die dreiwertigen Felder. */
 function rb_jn($v) {
     $v = (int) $v;
@@ -777,7 +973,7 @@ function rb_fmt() {
 $rb_frame = class_exists('LBWeb', false);
 if ($rb_frame) {
     LBWeb::lbheader(ro_t('TEXT.TITEL') . ' ' . ro_pluginversion(),
-        'https://wiki.loxberry.de/', 'help.html');
+        'https://wiki.loxberry.de/plugins/saugrobo/start', 'help.html');   // Gruppe 28 (1.1.23, S10): eigene Wiki-Seite
 } else {
     echo '<!DOCTYPE html><html lang="' . rb_e(ro_sprache()) . '"><head><meta charset="utf-8">'
        . '<title>' . rb_e(ro_t('TEXT.TITEL')) . '</title></head><body>';
@@ -929,6 +1125,11 @@ $rb_kalt = $rb_klauf['ts'] > 0 ? time() - (int) $rb_klauf['ts'] : -1; ?>
     <td><?= $rb_kalt < 0 ? rb_e(ro_t('TEXT.KOPF_NOCH_KEIN_LAUF'))
         : rb_e(date('d.m.Y H:i:s', (int) $rb_klauf['ts'])
                . ($rb_kalt < 3600 ? ' ' . sprintf(ro_t('TEXT.KOPF_VOR_S'), $rb_kalt) : '')) ?></td></tr>
+<?php /* Nachbau 27.10. (Minutenbudget): Dauer der Abfragen und ausgelassene Roboter aus lauf.json. */ ?>
+<?php if ($rb_kalt >= 0 && $rb_klauf['dauer_ms'] >= 0) { ?><tr><td><?= rb_e(ro_t('TEXT.KOPF_DAUER')) ?></td>
+    <td><?= rb_e(sprintf(ro_t('TEXT.KOPF_DAUER_TEXT'), number_format($rb_klauf['dauer_ms'] / 1000, 1, ro_sprache() === 'de' ? ',' : '.', ''), RO_LAUF_FRIST)) ?></td></tr><?php } ?>
+<?php if ($rb_kalt >= 0 && $rb_klauf['verspaetet']) { ?><tr><td><?= rb_e(ro_t('TEXT.KOPF_VERSPAETET')) ?></td>
+    <td><b><?= rb_e(sprintf(ro_t('TEXT.KOPF_VERSPAETET_TEXT'), implode(', ', $rb_klauf['verspaetet']), RO_LAUF_FRIST)) ?></b></td></tr><?php } ?>
 <tr><td><?= rb_e(ro_t('TEXT.KOPF_ROBOTER')) ?></td>
     <td><?= rb_e(sprintf(ro_t('TEXT.KOPF_ROBOTER_ZAHL'), count($rb_robots), $rb_kok)) ?></td></tr>
 <tr><td><?= rb_e(ro_t('REITER.MQTT')) ?></td>
@@ -937,22 +1138,23 @@ $rb_kalt = $rb_klauf['ts'] > 0 ? time() - (int) $rb_klauf['ts'] : -1; ?>
 
 <?php foreach ($rb_states as $rb_k => $rb_s) { ?>
 <div class="sm-alert <?= $rb_s['fehler'] ? 'sm-warn' : 'sm-info' ?>">
-<b><?= rb_e($rb_s['name']) ?></b>:
+<b><?= rb_e($rb_s['name']) ?></b><?= (isset($rb_s['typ']) && $rb_s['typ'] === 'miot') ? ' (' . rb_e(ro_t('EINST.TYP_MIOT')) . ')' : '' ?>:
 <?php if ($rb_s['ok']) { ?>
 <b><?= rb_e($rb_s['text']) ?></b> &middot; <?= rb_e(ro_t('TEXT.BATTERIE')) ?> <?= $rb_s['batterie'] < 0 ? '&ndash;' : (int) $rb_s['batterie'] . '&nbsp;%' ?><?= $rb_s['laedt'] ? ' (' . rb_e(ro_t('TEXT.LAEDT')) . ')' : '' ?>
 <?= $rb_s['fehler'] ? ' &middot; <b>' . rb_e(ro_t('TEXT.FEHLER_KURZ')) . ' ' . (int) $rb_s['fehler'] . '</b> ' . rb_e($rb_s['fehlertext']) : '' ?><br>
 <?= rb_e(ro_t('TEXT.LETZTE_REINIGUNG')) ?> <?= $rb_s['flaeche'] < 0 ? '&ndash;' : rb_e($rb_s['flaeche']) . '&nbsp;m&sup2; ' . rb_e(ro_t('WORT.IN')) . ' ' . (int) $rb_s['dauer'] . '&nbsp;min' ?><?= $rb_s['letzte'] ? ' (' . rb_e(date('d.m.Y H:i', $rb_s['letzte'])) . ')' : '' ?><br>
-<?= rb_e(ro_t('TEXT.GESAMT')) ?> <?= $rb_s['anzahl_gesamt'] < 0 ? '&ndash;' : rb_e($rb_s['flaeche_gesamt']) . '&nbsp;m&sup2;, ' . rb_e($rb_s['dauer_gesamt']) . '&nbsp;h, ' . (int) $rb_s['anzahl_gesamt'] . ' ' . rb_e(ro_t('TEXT.REINIGUNGEN')) ?><br>
-<?= rb_e(ro_t('TEXT.VERBRAUCHSMATERIAL')) ?> <?= rb_e(ro_t('TEXT.FILTER')) ?> <?= rb_h($rb_s['filter']) ?> &middot; <?= rb_e(ro_t('TEXT.HAUPTBUERSTE')) ?> <?= rb_h($rb_s['buerste_haupt']) ?> &middot; <?= rb_e(ro_t('TEXT.SEITENBUERSTE')) ?> <?= rb_h($rb_s['buerste_seite']) ?> &middot; <?= rb_e(ro_t('TEXT.SENSOREN')) ?> <?= rb_h($rb_s['sensor']) ?><?php
-if ($rb_s['mop'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.WISCHBEZUG')) . ' ' . rb_h($rb_s['mop']); }
+<?= rb_e(ro_t('TEXT.GESAMT')) ?> <?= $rb_s['anzahl_gesamt'] < 0 ? '&ndash;' : rb_e($rb_s['flaeche_gesamt']) . '&nbsp;m&sup2;, ' . ($rb_s['dauer_gesamt'] < 0 ? '&ndash;' : rb_e($rb_s['dauer_gesamt'])) . '&nbsp;h'
+    . (isset($rb_s['dauer_gesamt_einheit']) && $rb_s['dauer_gesamt_einheit'] !== 's' ? ' (' . rb_e(ro_t($rb_s['dauer_gesamt_einheit'] === 'ms' ? 'TEXT.GESAMT_MS' : 'TEXT.GESAMT_UNPLAUSIBEL')) . ')' : '') . ', ' . (int) $rb_s['anzahl_gesamt'] . ' ' . rb_e(ro_t('TEXT.REINIGUNGEN')) ?><br>
+<?= rb_e(ro_t('TEXT.VERBRAUCHSMATERIAL')) ?> <?= rb_e(ro_t('TEXT.FILTER')) ?> <?= rb_hp($rb_s, 'filter') ?> &middot; <?= rb_e(ro_t('TEXT.HAUPTBUERSTE')) ?> <?= rb_hp($rb_s, 'buerste_haupt') ?> &middot; <?= rb_e(ro_t('TEXT.SEITENBUERSTE')) ?> <?= rb_hp($rb_s, 'buerste_seite') ?> &middot; <?= rb_e(ro_t('TEXT.SENSOREN')) ?> <?= rb_h($rb_s['sensor']) ?><?php
+if ($rb_s['mop'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.WISCHBEZUG')) . ' ' . rb_hp($rb_s, 'mop'); }
 if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEUTEL')) . ' ' . rb_h($rb_s['dock_behaelter'], '%'); }
 ?>
 <?= $rb_s['material_warn'] ? ' &rarr; <b>' . rb_e(ro_t('TEXT.WARTUNG_FAELLIG')) . '</b>' : '' ?><br>
-<?= rb_e(ro_t('TEXT.ANBAUTEILE')) ?> <?= rb_e(ro_t('TEXT.BEHAELTER')) ?> <?= rb_jn($rb_s['behaelter']) ?> &middot; <?= rb_e(ro_t('TEXT.WASSERTANK')) ?> <?= rb_jn($rb_s['wassertank']) ?> &middot; <?= rb_e(ro_t('TEXT.WISCHMODUL')) ?> <?= rb_jn($rb_s['wischer']) ?>
+<?= rb_e(ro_t('TEXT.ANBAUTEILE')) ?> <?= rb_e(ro_t('TEXT.BEHAELTER')) ?> <?= rb_jn($rb_s['behaelter']) ?> &middot; <?= rb_e(ro_t('TEXT.WASSERTANK')) ?> <?= rb_jn($rb_s['wassertank']) ?> &middot; <?= rb_e(ro_t('TEXT.WISCHMODUL')) ?> <?= rb_jn($rb_s['wischer']) ?><?= (isset($rb_s['wasserstufe']) && (int) $rb_s['wasserstufe'] >= 0) ? ' &middot; ' . rb_e(ro_t('TEXT.WASSERSTUFE')) . ' ' . rb_e(ro_stufe_name($rb_s['wasserstufe'])) : '' ?>
 <?php if ($rb_s['event'] > 0) { ?><br><b><?= rb_e(ro_t('TEXT.EREIGNIS')) ?></b> <?= rb_e($rb_s['evtext']) ?> (<?= (int) $rb_s['event'] ?>)<?php } ?>
 <?php $rb_meld = ro_meldung_lesen($rb_k); if ($rb_meld !== '') { ?><br><?= rb_e(ro_t('TEXT.LETZTE_MELDUNG')) ?> <?= rb_e($rb_meld) ?><?php } ?>
 <?php } else { ?>
-<b><?= rb_e(ro_t('TEXT.KEINE_VERBINDUNG')) ?></b> <?= rb_e(ro_t('TEXT.ADRESSE_PRUEFEN')) ?>
+<b><?= rb_e(ro_t('TEXT.KEINE_VERBINDUNG')) ?></b> <?= !empty($rb_s['grund']) ? rb_e(ro_ausfall_grund_anzeige($rb_s['grund'])) : rb_e(ro_t('TEXT.ADRESSE_PRUEFEN')) ?>
 <?php } ?>
 </div>
 <?php } ?>
@@ -1007,7 +1209,7 @@ if ($rb_s['dock_behaelter'] >= 0) { echo ' &middot; ' . rb_e(ro_t('TEXT.STAUBBEU
 <h2><?= rb_e(ro_t('EINST.H_ROBOTER')) ?></h2>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th style="width:22%;"><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th style="width:90px;"><?= rb_e(ro_t('EINST.PORT')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.BENUTZER')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.KENNWORT')) ?></th></tr>
+<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th style="width:16%;"><?= rb_e(ro_t('EINST.NAME')) ?></th><th style="width:13%;"><?= rb_e(ro_t('EINST.TYP')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th style="width:80px;"><?= rb_e(ro_t('EINST.PORT')) ?></th><th style="width:12%;"><?= rb_e(ro_t('EINST.BENUTZER')) ?></th><th style="width:12%;"><?= rb_e(ro_t('EINST.KENNWORT')) ?></th><th style="width:15%;"><?= rb_e(ro_t('EINST.TOKEN')) ?></th></tr>
 <?php
 /* DIE GERAETENUMMER REIST ALS VERSTECKTES FELD MIT DER ZEILE.
  *
@@ -1024,30 +1226,48 @@ foreach (ro_robots() as $rb_nrv => $rb_rv) {
     $rb_zeilen[] = $rb_rv;
     $rb_belegt[] = $rb_nrv;
 }
-for ($rb_i = count($rb_zeilen); $rb_i < 2; $rb_i++) {
+for ($rb_i = count($rb_zeilen); $rb_i < RO_ROBOTER_MAX; $rb_i++) {   // Nachbau 27.10.: 5 Zeilen
     $rb_frei = 1;
     while (in_array($rb_frei, $rb_belegt, true)) { $rb_frei++; }
     $rb_belegt[] = $rb_frei;
     $rb_zeilen[] = array('nr' => $rb_frei);
 }
-for ($rb_i = 0; $rb_i < 2; $rb_i++) {
+for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
     $rb_r = (array) $rb_zeilen[$rb_i];
-    $rb_r += array('nr' => $rb_i + 1, 'name' => '', 'ip' => '', 'port' => 80, 'user' => '', 'pass' => ''); ?>
-<tr>
+    $rb_r += array('nr' => $rb_i + 1, 'name' => '', 'ip' => '', 'port' => 80, 'user' => '', 'pass' => '', 'typ' => 'valetudo', 'token' => '');
+    /* Gruppe 28 (1.1.23): der gespeicherte Port der Zeile (ro_robots() setzt beim Xiaomi-Treiber 54321 ein). */
+    foreach ((array) $rb_cfg['robots'] as $rb_roh) {
+        if (is_array($rb_roh) && isset($rb_roh['nr'], $rb_roh['port']) && (int) $rb_roh['nr'] === (int) $rb_r['nr']) { $rb_r['port'] = (int) $rb_roh['port']; }
+    }
+    $rb_rtyp = rb_w('r_typ', $rb_r['typ'], $rb_i);
+    if (!in_array($rb_rtyp, ro_robot_typen(), true)) { $rb_rtyp = 'valetudo'; } ?>
+<tr class="rb-zeile" data-typ="<?= rb_e($rb_rtyp) ?>">
 <td><?= (int) $rb_r['nr'] ?><input data-role="none" type="hidden" name="r_nr[<?= $rb_i ?>]" value="<?= (int) $rb_r['nr'] ?>"></td>
 <td><input data-role="none" type="text" name="r_name[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_name', $rb_r['name'], $rb_i)) ?>"<?= rb_m('r_name', $rb_i) ?> placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.NAME_BEISPIEL') : ro_t('EINST.LEER_UNGENUTZT')) ?>"></td>
+<td><select data-role="none" name="r_typ[<?= $rb_i ?>]" class="rb-typ"<?= rb_m('r_typ', $rb_i) ?>>
+<option value="valetudo"<?= $rb_rtyp === 'valetudo' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TYP_VALETUDO')) ?></option>
+<option value="miot"<?= $rb_rtyp === 'miot' ? ' selected' : '' ?>><?= rb_e(ro_t('EINST.TYP_MIOT')) ?></option>
+</select></td>
 <td><input data-role="none" type="text" name="r_ip[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_ip', $rb_r['ip'], $rb_i)) ?>"<?= rb_m('r_ip', $rb_i) ?> placeholder="<?= rb_e($rb_i === 0 ? ro_t('EINST.IP_BEISPIEL') : '') ?>"></td>
-<td><input data-role="none" type="number" name="r_port[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_port', (int) $rb_r['port'], $rb_i)) ?>"<?= rb_m('r_port', $rb_i) ?> min="1" max="65535"></td>
-<td><input data-role="none" type="text" name="r_user[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_user', $rb_r['user'], $rb_i)) ?>"<?= rb_m('r_user', $rb_i) ?> autocomplete="off"></td>
-<td><input data-role="none" type="password" name="r_pass[<?= $rb_i ?>]" value="" autocomplete="new-password"<?= rb_m('r_pass', $rb_i) ?> placeholder="<?= rb_e($rb_r['pass'] !== '' ? ro_t('EINST.GESETZT') : '') ?>">
+<td><input data-role="none" type="number" class="rb-nur-valetudo" name="r_port[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_port', (int) $rb_r['port'], $rb_i)) ?>"<?= rb_m('r_port', $rb_i) ?> min="1" max="65535">
+<div class="sm-small rb-nur-miot"><?= rb_e(ro_t('EINST.PORT_MIOT')) ?></div></td>
+<td><input data-role="none" type="text" class="rb-nur-valetudo" name="r_user[<?= $rb_i ?>]" value="<?= rb_e(rb_w('r_user', $rb_r['user'], $rb_i)) ?>"<?= rb_m('r_user', $rb_i) ?> autocomplete="off"></td>
+<td><input data-role="none" type="password" class="rb-nur-valetudo" name="r_pass[<?= $rb_i ?>]" value="" autocomplete="new-password"<?= rb_m('r_pass', $rb_i) ?> placeholder="<?= rb_e($rb_r['pass'] !== '' ? ro_t('EINST.GESETZT') : '') ?>">
 <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
-<input data-role="none" type="checkbox" name="r_pass_loeschen[<?= $rb_i ?>]" value="1"<?= rb_haken('r_pass_loeschen', false, $rb_i) ? ' checked' : '' ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?></label></td>
+<input data-role="none" type="checkbox" name="r_pass_loeschen[<?= $rb_i ?>]" value="1"<?= rb_haken('r_pass_loeschen', false, $rb_i) ? ' checked' : '' ?><?= rb_m('r_pass_loeschen', $rb_i) ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?></label></td>
+<?php /* Gruppe 28 (1.1.23, E-E3, N11): der Token - value bleibt IMMER leer (auch nach einer Beanstandung), der
+         Platzhalter sagt nur "gesetzt". */ ?>
+<td><input data-role="none" type="password" class="rb-nur-miot-feld" name="r_token[<?= $rb_i ?>]" value="" autocomplete="new-password" maxlength="64"<?= rb_m('r_token', $rb_i) ?> placeholder="<?= rb_e($rb_r['token'] !== '' ? ro_t('EINST.GESETZT') : ro_t('EINST.TOKEN_32HEX')) ?>">
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-top:4px;">
+<input data-role="none" type="checkbox" name="r_token_loeschen[<?= $rb_i ?>]" value="1"<?= rb_haken('r_token_loeschen', false, $rb_i) ? ' checked' : '' ?><?= rb_m('r_token_loeschen', $rb_i) ?>> <?= rb_e(ro_t('EINST.KENNWORT_LOESCHEN')) ?></label></td>
 </tr>
 <?php } ?>
 </table>
 </div>
 <div class="sm-small"><?= ro_t('EINST.ROBOTER_HINWEIS') ?></div>
 <div class="sm-small"><?= ro_t('EINST.ANMELDUNG_HINWEIS') ?></div>
+<div class="sm-small"><?= ro_t('EINST.MIOT_HINWEIS') ?></div>
+<div class="sm-small"><?= ro_t('EINST.TOKEN_HINWEIS') ?></div>
 
 <div class="sm-row">
     <div>
@@ -1109,12 +1329,153 @@ for ($rb_i = 0; $rb_i < 2; $rb_i++) {
          1.1.11 standen hier zwei, beide unter den Knoepfen. */ ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= rb_e(ro_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
 </div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<?php /* Gruppe 28 (1.1.23, Entscheidung "Token-Beschaffung"): Anleitung zum Token (aufklappbar) und der Abruf aus der
+         Xiaomi-Cloud im Plugin. Eigene Formulare (nie im Speichern-Formular): Konto, Kennwort (Passwortfeld, nie
+         vorbefuellt, nie zurueckgeschrieben), Region, Zielzeile. Das Ergebnis zeigt Name, Modell, IP und Region - nie
+         den Token. Ein Captcha umgeht das Plugin nicht: Bild von Xiaomi, Loesung tippt der Hausherr (Nachbau 26.10. spaet);
+         Zweitfaktor: Weg Mail/SMS waehlen, dann Code eintragen. */ ?>
+<?php ro_xc();   /* Stammmodul xiaomi_cloud.php fuer die Anzeige (Captcha, Zweitfaktor, Regionen) */ ?>
+<h2 id="xiaomi-token"><?= rb_e(ro_t('CLOUD.H_TOKEN')) ?></h2>
+<details class="sm-http"<?= $rb_cloud ? ' open' : '' ?>>
+<summary><b><?= rb_e(ro_t('CLOUD.ANLEITUNG_TITEL')) ?></b></summary>
+<div class="sm-hinweis"><?= ro_t('CLOUD.ANLEITUNG') ?></div>
+</details>
+<details class="sm-http"<?= $rb_cloud ? ' open' : '' ?>>
+<summary><b><?= rb_e(ro_t('CLOUD.ABRUF_TITEL')) ?></b></summary>
+<div class="sm-hinweis"><?= ro_t('CLOUD.ABRUF_TEXT') ?></div>
+<?php if ($rb_cloud && $rb_cloud['lage'] === 'ok' && !empty($rb_cloud['geraete']) && is_array($rb_cloud['geraete'])) { ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
+<?= rb_fmt() ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_MODELL')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_REGION')) ?></th></tr>
+<?php foreach ($rb_cloud['geraete'] as $rb_cg) {
+    if (!is_array($rb_cg) || !isset($rb_cg['i'])) { continue; } ?>
+<tr><td><input data-role="none" type="radio" name="cloud_wahl" value="<?= (int) $rb_cg['i'] ?>"<?= (int) $rb_cg['i'] === 0 ? ' checked' : '' ?>></td>
+<td><?= rb_e(isset($rb_cg['name']) ? $rb_cg['name'] : '') ?></td><td><span class="sm-mono"><?= rb_e(isset($rb_cg['modell']) ? $rb_cg['modell'] : '') ?></span><?= (isset($rb_cg['modell']) && !ro_miot_modell_bekannt($rb_cg['modell'])) ? ' <b>' . rb_e(ro_t('CLOUD.MODELL_UNGEPRUEFT')) . '</b>' : '' ?></td>
+<td><span class="sm-mono"><?= rb_e(isset($rb_cg['ip']) ? $rb_cg['ip'] : '') ?></span></td><td><?= rb_e(isset($rb_cg['region']) ? $rb_cg['region'] : '') ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('CLOUD.UEBERNEHMEN_TEXT'), (int) $rb_cloud['zeile'])) ?></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cloud_nehmen" value="1"><?= rb_e(sprintf(ro_t('CLOUD.K_UEBERNEHMEN'), (int) $rb_cloud['zeile'])) ?></button>
+</div>
+</form>
+<?php } elseif ($rb_cloud && in_array($rb_cloud['lage'], array('CAPTCHA', 'CAPTCHA_FALSCH'), true)
+                && ($rb_ccap = xc_lesen('captcha')) !== null && isset($rb_ccap['bild'], $rb_ccap['bildtyp'])
+                && in_array($rb_ccap['bildtyp'], array('image/png', 'image/jpeg', 'image/gif'), true)) {
+    /* Nachbau 26.10. spaet: das Captcha-Bild von Xiaomi unveraendert (data:-Adresse aus dem 0600-Zwischenzustand, kein
+     * Aufruf an Xiaomi aus dem Browser). Der Hausherr tippt die Zeichen und sein Kennwort erneut - EIN Versuch. */ ?>
+<div class="sm-warnung"><?= rb_e(ro_t('CLOUD.CAPTCHA_TEXT')) ?></div>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
+<?= rb_fmt() ?>
+<div class="sm-row"><div>
+<img src="data:<?= rb_e($rb_ccap['bildtyp']) ?>;base64,<?= rb_e(preg_replace('#[^A-Za-z0-9+/=]#', '', (string) $rb_ccap['bild'])) ?>" alt="<?= rb_e(ro_t('CLOUD.CAPTCHA_BILD')) ?>" style="max-width:100%;border:1px solid #ccc;background:#fff;">
+</div></div>
+<div class="sm-row">
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.CAPTCHA_LOESUNG')) ?></label>
+    <input data-role="none" type="text" name="cloud_captcha" value="" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="10">
+  </div>
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.KENNWORT')) ?></label>
+    <input data-role="none" type="password" name="cloud_pass" value="" autocomplete="new-password" maxlength="200">
+  </div>
+</div>
+<div class="sm-small"><?= rb_e(ro_t('CLOUD.KENNWORT_HINWEIS')) ?></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="cloud_captcha_senden" value="1"><?= rb_e(ro_t('CLOUD.K_CAPTCHA')) ?></button>
+</div>
+</form>
+<?php } elseif ($rb_cloud && in_array($rb_cloud['lage'], array('ZWEITFAKTOR', 'SENDEN', 'WEG'), true)
+                && ($rb_czf = xc_lesen('zweitfaktor')) !== null) {
+    /* Zweitfaktor, Schritt 1: der Hausherr waehlt, wohin Xiaomi den Code schickt (nur die Wege, die Xiaomi anbietet). */ ?>
+<div class="sm-warnung"><?= rb_e(ro_t('CLOUD.ZWEITFAKTOR_WAHL')) ?>
+<?php if (!empty($rb_czf['link']) && is_string($rb_czf['link']) && preg_match('#^https://#', $rb_czf['link'])) { ?>
+<br><a href="<?= rb_e($rb_czf['link']) ?>" target="_blank" rel="noopener noreferrer"><?= rb_e(ro_t('CLOUD.ZWEITFAKTOR_LINK')) ?></a>
+<?php } ?></div>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
+<?= rb_fmt() ?>
+<div class="sm-knopfreihe">
+<?php if (in_array(8, (array) $rb_czf['optionen'], true)) { ?>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="cloud_weg" value="mail"><?= rb_e(ro_t('CLOUD.K_WEG_MAIL')) ?></button>
+<?php } ?>
+<?php if (in_array(4, (array) $rb_czf['optionen'], true)) { ?>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="cloud_weg" value="sms"><?= rb_e(ro_t('CLOUD.K_WEG_SMS')) ?></button>
+<?php } ?>
+</div>
+</form>
+<?php } elseif ($rb_cloud && in_array($rb_cloud['lage'], array('CODE_GESENDET', 'CODE'), true)
+                && ($rb_czf = xc_lesen('zweitfaktor')) !== null && !empty($rb_czf['weg'])) {
+    /* Zweitfaktor, Schritt 2: den Code eintragen (10 Minuten ab Beginn, ein Versuch). */ ?>
+<div class="sm-warnung"><?= rb_e(ro_t('CLOUD.ZWEITFAKTOR_TEXT')) ?></div>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
+<?= rb_fmt() ?>
+<div class="sm-row"><div>
+<label><?= rb_e(ro_t('CLOUD.CODE')) ?></label>
+<input data-role="none" type="text" name="cloud_code" value="" inputmode="numeric" autocomplete="one-time-code" maxlength="12">
+</div></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="cloud_code_senden" value="1"><?= rb_e(ro_t('CLOUD.K_CODE')) ?></button>
+</div>
+</form>
+<?php } ?>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?= rb_fmt() ?>
+<div class="sm-row">
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.ZEILE')) ?></label>
+    <select data-role="none" name="cloud_zeile">
+<?php $rb_cwahl = false; /* Nachbau 27.10.: bei mehreren Xiaomi-Zeilen nur die erste vorgewaehlt */
+foreach ($rb_zeilen as $rb_cz) { $rb_cz = (array) $rb_cz;
+    $rb_csel = !$rb_cwahl && isset($rb_cz['typ']) && $rb_cz['typ'] === 'miot'; if ($rb_csel) { $rb_cwahl = true; } ?>
+      <option value="<?= (int) $rb_cz['nr'] ?>"<?= $rb_csel ? ' selected' : '' ?>><?= rb_e(sprintf(ro_t('CLOUD.ZEILE_N'), (int) $rb_cz['nr'], isset($rb_cz['name']) && $rb_cz['name'] !== '' ? $rb_cz['name'] : '-')) ?></option>
+<?php } ?>
+    </select>
+  </div>
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.REGION')) ?></label>
+    <select data-role="none" name="cloud_region">
+<?php foreach (array_merge(xc_regionen(), array('alle')) as $rb_cr) { ?>
+      <option value="<?= rb_e($rb_cr) ?>"><?= rb_e(ro_t('CLOUD.REGION_' . strtoupper($rb_cr))) ?></option>
+<?php } ?>
+    </select>
+  </div>
+</div>
+<div class="sm-row">
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.KONTO')) ?></label>
+    <input data-role="none" type="text" name="cloud_konto" value="" autocomplete="off" maxlength="100">
+  </div>
+  <div>
+    <label><?= rb_e(ro_t('CLOUD.KENNWORT')) ?></label>
+    <input data-role="none" type="password" name="cloud_pass" value="" autocomplete="new-password" maxlength="200">
+  </div>
+</div>
+<div class="sm-small"><?= rb_e(ro_t('CLOUD.KENNWORT_HINWEIS')) ?></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="cloud_holen" value="1"><?= rb_e(ro_t('CLOUD.K_HOLEN')) ?></button>
+</div>
+</form>
+</details>
 
 <h2><?= rb_e(ro_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= ro_t('EINST.SICH_ERKLAERUNG') ?></div>
@@ -1249,6 +1610,8 @@ $rb_bliste = ro_befehle_liste();
 <span><i class="sm-punkt sm-b-technik"></i> <?= rb_e(ro_t('LEGENDE.TECHNIK')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION_TOKEN')) ?></span>
 </div>
+<?php /* Gruppe 28 (1.1.23): der Speichern-Knopf des Lesezweigs ist ebenfalls orange - die Legende nennt beide Wirkungen
+         in einem Eintrag (Regeln/04: eine Legende je Reiter). */ ?>
 
 <div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S1_TITEL'))) ?></b><br>
 <?= ro_t('LOX.S1_TEXT') ?>
@@ -1324,7 +1687,7 @@ foreach (ro_mqtt_namen_geraete() as $rb_nd) {
     $rb_muster = false; ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_TITEL')) ?></th><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_THEMA')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_WERT')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_EINGREIFEND')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_SPERRE')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_QUITTUNG')) ?></th></tr>
+<tr><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_TITEL')) ?></th><th style="width:24%;"><?= rb_e(ro_t('BEFEHL.SP_THEMA')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_WERT')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_EINGREIFEND')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_SPERRE')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_QUITTUNG')) ?></th><th><?= rb_e(ro_t('BEFEHL.SP_T12')) ?></th></tr>
 <?php foreach ($rb_bliste[0]['befehle'] as $rb_b) {
     if ($rb_b['muster']) { $rb_muster = true; continue; }
     if ($rb_b['art'] === 'auswahl') {
@@ -1335,7 +1698,10 @@ foreach (ro_mqtt_namen_geraete() as $rb_nd) {
     } else {
         $rb_bw = ro_t('BEFEHL.WERT_PULS');
     } ?>
-<tr><td><?= rb_e($rb_b['titel']) ?></td><td><span class="sm-mono"><?= rb_e($rb_b['thema']) ?></span></td><td><?= rb_e($rb_bw) ?></td><td><?= rb_e(ro_t($rb_b['eingreifend'] ? 'WORT.JA' : 'WORT.NEIN')) ?></td><td><?= rb_e(sprintf(ro_t('BEFEHL.SPERRE_S'), $rb_b['sperre_s'])) ?></td><td><?= rb_e(ro_t('BEFEHL.QUITT_AUSGEFUEHRT')) ?></td></tr>
+<tr><td><?= rb_e($rb_b['titel']) ?></td><td><span class="sm-mono"><?= rb_e($rb_b['thema']) ?></span></td><td><?= rb_e($rb_bw) ?></td><td><?= rb_e(ro_t($rb_b['eingreifend'] ? 'WORT.JA' : 'WORT.NEIN')) ?></td><td><?= rb_e(sprintf(ro_t('BEFEHL.SPERRE_S'), $rb_b['sperre_s'])) ?></td><td><?= rb_e(ro_t('BEFEHL.QUITT_AUSGEFUEHRT')) ?></td><td><?php
+    /* Gruppe 28 (1.1.23, E-E7/E-E8): was der Treiber Xiaomi MIoT davon kann - aus EINER Liste (ro_miot_befehle()). */
+    $rb_mb = ro_miot_befehle();
+    echo rb_e(isset($rb_mb[$rb_b['name']]) ? ro_t($rb_mb[$rb_b['name']]['pruef'] === 'ja' ? 'WORT.JA' : 'WORT.UNGEPRUEFT') : ro_t('WORT.NEIN')); ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1381,7 +1747,7 @@ $rb_bs_name = function ($seite, $nr) {
     return isset($c[1]) ? $c[1] : '';
 };
 $rb_bs_seiten = array(
-    array('kopf' => 'BL_WERTE', 'seite' => 'Saugroboter', 'bild' => 'einbindung_loxone_werte.png', 'nr' => 1, 'zeilen' => 50,
+    array('kopf' => 'BL_WERTE', 'seite' => 'Saugroboter', 'bild' => 'einbindung_loxone_werte.png', 'nr' => 1, 'zeilen' => 52,   // Gruppe 28: #51/#52 (V1)
       'schritte' => array(
         array('S1_SCHRITT1', array(ro_t('LOX.S3_TITEL'))),
         array('S1_SCHRITT2', array()),
@@ -1484,9 +1850,27 @@ $rb_bs_seiten = array(
 </div>
 
 <div class="sm-step"><b><?= rb_e(sprintf(ro_t('LOX.SCHRITT_N'), ++$rb_schritt, ro_t('LOX.S7_TITEL'))) ?></b><br>
-<?= ro_t('LOX.SCHRITT5_TEXT') ?>
+<?php if (!empty($rb_cfg['endpunkt_ein'])) { ?><?= ro_t('LOX.SCHRITT5_TEXT') ?>
 <span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?></span>
+<?php } else { ?><?= rb_e(ro_t('TEST.LESEZWEIG_AUS')) ?><?php } ?>
 </div>
+
+<?php /* Gruppe 28 (1.1.23, E-E12; Entwurf 3.4): der HTTP-Lesezweig fuer Loxone - zugeklappt, offen bei endpunkt_ein 1. */ ?>
+<details class="sm-http"<?= !empty($rb_cfg['endpunkt_ein']) ? ' open' : '' ?>>
+<summary><b><?= rb_e(ro_t('LOX.H_ENDPUNKT')) ?></b></summary>
+<div class="sm-hinweis"><?= ro_t('LOX.ENDPUNKT_TEXT') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="endpunkt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<?= rb_fmt() ?>
+<label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1"<?= !empty($rb_cfg['endpunkt_ein']) ? ' checked' : '' ?>> <?= rb_e(ro_t('LOX.ENDPUNKT_HAKEN')) ?>
+</label>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.SPEICHERN')) ?></button>
+</div>
+</form>
+</details>
 
 <details class="sm-http">
 <summary><b><?= rb_e(ro_t('LOX.H_HTTP')) ?></b></summary>
@@ -1495,7 +1879,9 @@ $rb_bs_seiten = array(
 <table class="sm-tbl">
 <tr><th><?= rb_e(ro_t('WORT.EIGENSCHAFT')) ?></th><th><?= rb_e(ro_t('WORT.WERT')) ?></th></tr>
 <tr><td>URL</td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad()) ?></span></td></tr>
-<tr><td><?= rb_e(ro_t('LOX.ROBOTER2')) ?></td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('dev' => 2))) ?></span></td></tr>
+<?php for ($rb_ed = 2; $rb_ed <= RO_ROBOTER_MAX; $rb_ed++) { /* Nachbau 27.10.: Roboter 2 bis 5 */ ?>
+<tr><td><?= rb_e(sprintf(ro_t('LOX.ROBOTER2'), $rb_ed)) ?></td><td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('dev' => $rb_ed))) ?></span></td></tr>
+<?php } ?>
 <tr><td><?= rb_e(ro_t('LOX.ABFRAGEZYKLUS')) ?></td><td><?= rb_e(ro_t('LOX.30_SEKUNDEN')) ?></td></tr>
 </table>
 </div>
@@ -1555,8 +1941,8 @@ $rb_bs_seiten = array(
     <div>
       <label><?= rb_e(ro_t('LOX.VORLAGE_ROBOTER')) ?></label>
       <select data-role="none" name="vorlage_dev">
-        <option value="1">1</option><option value="2">2</option>
-      </select>
+<?php for ($rb_vd = 1; $rb_vd <= RO_ROBOTER_MAX; $rb_vd++) { ?>        <option value="<?= $rb_vd ?>"><?= $rb_vd ?></option>
+<?php } ?>      </select>
     </div>
     <div>
       <label style="min-height:0;"><?= rb_e(ro_t('LOX.VORLAGE_UMFANG')) ?></label>
@@ -1595,16 +1981,24 @@ foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) 
 <span><i class="sm-punkt sm-b-aktion"></i> <?= rb_e(ro_t('LEGENDE.AKTION')) ?></span>
 </div>
 
+<?php /* Gruppe 28 (1.1.23, E-E12): die Knoepfe des Lesezweigs (Zeile, JSON, Klartext) nur, wenn er an ist - sonst
+         antwortet robo.php 403 ENDPUNKT_AUS. */
+if (!empty($rb_cfg['endpunkt_ein'])) { ?>
 <h3 class="sm-h3"><?= rb_e(ro_t('TEST.ANSEHEN')) ?></h3>
 <div class="sm-knopfreihe">
 <a data-role="none" class="sm-btn sm-b-lesen" href="<?= rb_e(ro_endpunkt_pfad()) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ZEILE')) ?></a>
 <a data-role="none" class="sm-btn sm-b-lesen" href="<?= rb_e(ro_endpunkt_pfad(array('json' => 1))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_JSON')) ?></a>
 </div>
+<?php } else { ?>
+<div class="sm-small"><?= rb_e(ro_t('TEST.LESEZWEIG_AUS')) ?></div>
+<?php } ?>
 
 <h3 class="sm-h3"><?= rb_e(ro_t('TEST.TECHNIK')) ?></h3>
 <div class="sm-knopfreihe">
 <?php /* U13: mit Token - refresh ist seit 1.1.4 tokenpflichtig; ohne Token zeigte der Knopf den Zwischenspeicher. */ ?>
+<?php if (!empty($rb_cfg['endpunkt_ein'])) { ?>
 <a data-role="none" class="sm-btn sm-b-technik" href="<?= rb_e(ro_endpunkt_pfad(array('debug' => 1, 'refresh' => 1, 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_DEBUG')) ?></a>
+<?php } ?>
 <a data-role="none" class="sm-btn sm-b-technik" href="<?= rb_e(ro_endpunkt_pfad(array('selftest' => 1, 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_SELFTEST')) ?></a>
 <form method="post" action="index.php">
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -1616,12 +2010,6 @@ foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) 
 <h3 class="sm-h3"><?= rb_e(ro_t('TEST.LOEST_AUS')) ?></h3>
 <div class="sm-knopfreihe">
 <a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('ptest' => 1, 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_PTEST')) ?></a>
-<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'locate', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_LOCATE')) ?></a>
-<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'home', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_HOME')) ?></a>
-<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'stop', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_STOP')) ?></a>
-<?php if (ro_kann(1, 'AutoEmptyDockManualTriggerCapability')) { ?>
-<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'absaugen', 'token' => $rb_cfg['aktionstoken']))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ABSAUGEN')) ?></a>
-<?php } ?>
 <?php /* U14: Testansage ueber den eingestellten Ausgabeweg (auch Alexa-NG und Google-Lautsprecher). */ ?>
 <form method="post" action="index.php">
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -1629,6 +2017,34 @@ foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) 
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_testansage" value="1"><?= rb_e(ro_t('TEST.K_TESTANSAGE')) ?></button>
 </form>
 </div>
+
+<?php
+/* Gruppe 28 (1.1.23, S8): EIN Block je eingetragenem Roboter - Testknoepfe mit &dev=<n>, Zuruecksetzen mit reset_dev=<n>,
+ * Raumliste und Faehigkeiten dieses Roboters. Bis 1.1.22 zielte der Reiter fest auf Roboter 1. Beim Treiber Xiaomi MIoT
+ * statt Valetudo-Raumliste und -Faehigkeiten die Verbindungspruefung ohne Bewegung (E-E9; nur bei offenem Reiter Test,
+ * Regeln/04 :396-397) und die feste Faehigkeitsliste aus ro_miot_befehle(). */
+$rb_test_offen = ($rb_tab === 'tab-test');
+if (!$rb_robots) { ?>
+<div class="sm-alert sm-info"><?= rb_e(ro_t('TEXT.NOCH_KEIN_ROBOTER')) ?></div>
+<?php }
+foreach ($rb_robots as $rb_tn => $rb_tr) {
+    $rb_tst = isset($rb_states[$rb_tn]) ? $rb_states[$rb_tn] : ro_state($rb_tn);
+    $rb_tok = $rb_cfg['aktionstoken']; ?>
+<h2><?= rb_e(sprintf(ro_t('TEST.H_ROBOTER'), (int) $rb_tn, $rb_tr['name'], ro_t($rb_tr['typ'] === 'miot' ? 'EINST.TYP_MIOT' : 'EINST.TYP_VALETUDO'))) ?></h2>
+<?php if (!empty($rb_tst['grund'])) { ?>
+<div class="sm-warnung"><?= rb_e(ro_ausfall_grund_anzeige($rb_tst['grund'])) ?></div>
+<?php } ?>
+<div class="sm-knopfreihe">
+<?php if ($rb_tr['typ'] !== 'miot') { ?>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'locate', 'dev' => $rb_tn, 'token' => $rb_tok))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_LOCATE')) ?></a>
+<?php } ?>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'home', 'dev' => $rb_tn, 'token' => $rb_tok))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_HOME')) ?></a>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'stop', 'dev' => $rb_tn, 'token' => $rb_tok))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_STOP')) ?></a>
+<?php if ($rb_tr['typ'] !== 'miot' && ro_kann($rb_tn, 'AutoEmptyDockManualTriggerCapability')) { ?>
+<a data-role="none" class="sm-btn sm-b-aktion" href="<?= rb_e(ro_endpunkt_pfad(array('cmd' => 'absaugen', 'dev' => $rb_tn, 'token' => $rb_tok))) ?>" target="_blank"><?= rb_e(ro_t('TEST.K_ABSAUGEN')) ?></a>
+<?php } ?>
+</div>
+<?php if ($rb_tr['typ'] !== 'miot') { ?>
 <div class="sm-small"><?= rb_e(ro_t('TEST.PIEPSEN_HINWEIS')) ?></div>
 
 <h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_RESET')) ?></h3>
@@ -1639,30 +2055,29 @@ foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) 
                      'mop/all' => 'TEST.R_MOP') as $rb_teil => $rb_key) { ?>
 <form method="post" action="index.php">
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <input data-role="none" type="hidden" name="reset_dev" value="1">
+  <input data-role="none" type="hidden" name="reset_dev" value="<?= (int) $rb_tn ?>">
   <?= rb_fmt() ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_reset" value="<?= rb_e($rb_teil) ?>"><?= rb_e(ro_t($rb_key)) ?></button>
 </form>
 <?php } ?>
 </div>
 
-<?php $rb_seg = ro_segments(1); if ($rb_seg) { ?>
-<h2><?= rb_e(ro_t('TEST.H_RAEUME')) ?></h2>
+<?php $rb_seg = ro_segments($rb_tn); if ($rb_seg) { ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_RAEUME')) ?></h3>
 <table class="sm-tbl"><tr><th>ID</th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('TEST.AUFRUF')) ?></th></tr>
 <?php foreach ($rb_seg as $rb_id => $rb_nm) { ?>
 <tr><td><span class="sm-mono"><?= rb_e($rb_id) ?></span></td><td><?= rb_e($rb_nm) ?></td>
-<td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('cmd' => 'segments', 'p' => $rb_id, 'token' => $rb_cfg['aktionstoken']))) ?></span></td></tr>
+<td><span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('cmd' => 'segments', 'p' => $rb_id, 'dev' => $rb_tn, 'token' => $rb_tok))) ?></span></td></tr>
 <?php } ?></table>
 <?php /* U11 (Durchgang 01.10.2026): volle Adressen samt Token - Regeln/04 "Angezeigte
-         Adressen zum Abschreiben tragen jeden Parameter". Bis 1.1.11 stand hier
-         ?cmd=segments&p=.. ohne Pfad und Token; abgeschrieben ergab das 403. */ ?>
-<div class="sm-small"><?= rb_e(ro_t('TEST.MEHRERE_RAEUME')) ?> <span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('cmd' => 'segments', 'p' => implode(',', array_slice(array_keys($rb_seg), 0, 2)), 'token' => $rb_cfg['aktionstoken']))) ?></span></div>
+         Adressen zum Abschreiben tragen jeden Parameter". */ ?>
+<div class="sm-small"><?= rb_e(ro_t('TEST.MEHRERE_RAEUME')) ?> <span class="sm-mono">http://<?= rb_e($rb_host) ?><?= rb_e(ro_endpunkt_pfad(array('cmd' => 'segments', 'p' => implode(',', array_slice(array_keys($rb_seg), 0, 2)), 'dev' => $rb_tn, 'token' => $rb_tok))) ?></span></div>
 <?php } else { ?>
 <div class="sm-alert sm-info"><?= rb_e(ro_t('TEST.RAUMLISTE_FEHLT')) ?></div>
 <?php } ?>
 
-<?php $rb_caps = ro_capabilities(1); if ($rb_caps) { ?>
-<h2><?= rb_e(ro_t('TEST.H_FAEHIGKEITEN')) ?></h2>
+<?php $rb_caps = ro_capabilities($rb_tn); if ($rb_caps) { ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_FAEHIGKEITEN')) ?></h3>
 <div class="sm-small"><?= rb_e(ro_t('TEST.FAEHIGKEITEN_HINWEIS')) ?></div>
 <div class="sm-breit"><table class="sm-tbl"><tr><?php
 $rb_i = 0;
@@ -1674,13 +2089,52 @@ foreach ($rb_caps as $rb_c) {
 while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
 ?></tr></table></div>
 <?php } ?>
+<?php } else {
+    /* Treiber Xiaomi MIoT: Verbindung pruefen OHNE Bewegung (E-E9). Die Geraetekennung und der Token erscheinen nie. */ ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_MIOT_VERBINDUNG')) ?></h3>
+<?php if (!$rb_test_offen) { ?>
+<div class="sm-small"><?= rb_e(ro_t('TEST.MIOT_NUR_OFFEN')) ?></div>
+<?php } else {
+    $rb_d = ro_miot_diagnose($rb_tn);
+    $rb_zz = function ($ok) { return $ok === 1 ? '<span style="color:#4f7d17;">&#10003;</span>' : ($ok === 0 ? '<span style="color:#c62828;">&#10007;</span>' : '&ndash;'); }; ?>
+<table class="sm-tbl sm-pruef">
+<tr><td><?= $rb_zz((int) $rb_d['gruss'][0]) ?></td><td><?= rb_e(ro_t('TEST.MIOT_GRUSS')) ?></td><td><?= rb_e($rb_d['gruss'][0] ? sprintf(ro_t('TEST.MIOT_GRUSS_JA'), (int) $rb_d['gruss'][1]) : ro_t('TEST.MIOT_GRUSS_NEIN')) ?></td></tr>
+<tr><td><?= $rb_zz($rb_d['token'][0] ? 1 : ($rb_d['gruss'][0] || $rb_d['token'][1] === 'OPENSSL' || $rb_d['token'][1] === 'TOKEN_FEHLT' || $rb_d['token'][1] === 'TOKEN_FORM' ? 0 : 2)) ?></td><td><?= rb_e(ro_t('TEST.MIOT_TOKEN')) ?></td><td><?php
+    if ($rb_d['token'][0]) {
+        echo rb_e(sprintf(ro_t('TEST.MIOT_TOKEN_JA'), ro_t('MELDUNG.' . (isset($rb_d['status_schluessel']) ? $rb_d['status_schluessel'] : 'MIOT_STATUS_' . max(0, min(10, (int) $rb_d['token'][2])))),
+            (int) $rb_d['token'][3] < 0 ? '-' : (int) $rb_d['token'][3]));
+    } elseif ($rb_d['gruss'][0] && in_array($rb_d['token'][1], array('KEINE_ANTWORT', 'TOKEN'), true)) {
+        echo rb_e(ro_t('TEST.MIOT_TOKEN_FALSCH'));
+    } else {
+        echo rb_e(ro_ausfall_grund_anzeige($rb_d['token'][1] !== '' ? $rb_d['token'][1] : 'KEIN_GRUSS'));
+    } ?></td></tr>
+<tr><td><?= $rb_zz(2) ?></td><td><?= rb_e(ro_t('TEST.MIOT_RAEUME')) ?></td><td><?= $rb_d['raeume'] !== null ? '<span class="sm-mono">' . rb_e($rb_d['raeume']) . '</span> ' : '' ?><?= rb_e(ro_t('TEST.MIOT_RAEUME_HINWEIS')) ?></td></tr>
+<?php /* Nachbau 26.10. spaet: Warnung NUR fuer ein Modell ohne Tabelle (ro_miot_modell_bekannt()); die fuenf Werte roh. */ ?>
+<tr><td><?= $rb_zz($rb_d['modell'] === '' ? 2 : (!empty($rb_d['bekannt']) ? 1 : 0)) ?></td><td><?= rb_e(ro_t('TEST.MIOT_MODELL')) ?></td><td><?= rb_e($rb_d['modell'] === '' ? '-' : $rb_d['modell'] . ($rb_d['firmware'] !== '' ? ', Firmware ' . $rb_d['firmware'] : '')
+    . ($rb_d['modell'] !== '' && empty($rb_d['bekannt']) ? ' - ' . sprintf(ro_t('TEST.MIOT_MODELL_WARN'), $rb_d['modell']) : '')) ?></td></tr>
+<?php if (!empty($rb_d['roh'])) { ?>
+<tr><td><?= $rb_zz(2) ?></td><td><?= rb_e(ro_t('TEST.MIOT_ROH')) ?></td><td><span class="sm-mono"><?= rb_e($rb_d['roh']) ?></span></td></tr>
+<?php } ?>
+</table>
+<div class="sm-small"><?= rb_e(ro_t('TEST.MIOT_OHNE_BEWEGUNG')) ?></div>
+<?php } ?>
+<h3 class="sm-h3"><?= rb_e(ro_t('TEST.H_FAEHIGKEITEN')) ?></h3>
+<?php $rb_mk = array(); $rb_mn = array();
+foreach (array_keys(ro_befehle()) as $rb_bn) {
+    $rb_mb = ro_miot_befehle();
+    if (isset($rb_mb[$rb_bn])) { $rb_mk[] = $rb_bn . ($rb_mb[$rb_bn]['pruef'] !== 'ja' ? ' (' . ro_t('WORT.UNGEPRUEFT') . ')' : ''); }
+    else { $rb_mn[] = $rb_bn; }
+} ?>
+<div class="sm-small"><?= rb_e(sprintf(ro_t('TEST.MIOT_KANN'), implode(', ', $rb_mk))) ?><br><?= rb_e(sprintf(ro_t('TEST.MIOT_KANN_NICHT'), implode(', ', $rb_mn))) ?></div>
+<?php } ?>
+<?php } ?>
 </div>
 
 <!-- ================= Protokoll ================= -->
 <div class="sm-pane<?= $rb_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <?php /* Seit 1.1.4 zwei Dateien statt einer - der Bediener muss wissen, wo die
        * Fehlerausgabe der Schale steht. */ ?>
-<div class="sm-hinweis"><?= ro_t('LOG.CRON_DATEI') ?></div>
+<div class="sm-hinweis"><?= ro_t('LOG.CRON_DATEI') ?> <?= ro_t('LOG.BRUECKE_DATEI') ?></div>
 <h2><?= rb_e(ro_t('REITER.LOG')) ?></h2>
 <div class="sm-small" style="margin-bottom:8px;"><?= rb_e(ro_t('LOG.HINWEIS')) ?><br><?= rb_e(ro_t('LOG.DATEI')) ?> <span class="sm-mono"><?= rb_e($rb_logfile) ?></span></div>
 <?php if ($rb_loglines) { ?>
@@ -1696,6 +2150,8 @@ while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <?= rb_fmt() ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin-right:12px;">
+    <input data-role="none" type="checkbox" name="clearlog_ok" value="1"> <?= rb_e(ro_t('LOG.LEEREN_HAKEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= rb_e(ro_t('KNOPF.LOG_LEEREN')) ?></button>
 </form>
 </div>
@@ -1709,8 +2165,30 @@ while ($rb_i % 3 !== 0) { echo '<td></td>'; $rb_i++; }
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
         document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
-    tabs.forEach(function (t) { t.addEventListener('click', function (e) { e.preventDefault(); activate(t.dataset.pane); }); });
+    /* Gruppe 28 (1.1.23, S1; Form Docker D22/Beschattung B1): der Reiter Test ist ein ECHTER Seitenwechsel (der Link
+       index.php?form=test laedt neu) - nur dann fragt die Seite, was warten kann (eigener Endpunkt, Alexa-NG, SonoX,
+       Xiaomi-Verbindungspruefung). Die uebrigen Reiter schalten ohne Neuladen und ziehen die Adresse nach. */
+    tabs.forEach(function (t) {
+        t.addEventListener('click', function (e) {
+            if (t.dataset.pane === 'tab-test') { return; }
+            e.preventDefault();
+            activate(t.dataset.pane);
+            try { history.replaceState(null, '', 'index.php?form=' + t.dataset.pane.replace(/^tab-/, '')); } catch (x) {}
+        });
+    });
     activate(<?= json_encode($rb_tab) ?>);
+    /* Gruppe 28 (1.1.23, E-E1): je Roboterzeile die Felder des anderen Treibers grau (nur lesbar). Ohne JavaScript
+       bleiben alle Felder bedienbar - die Pruefung beim Speichern entscheidet (Regeln/04 :198). */
+    document.querySelectorAll('tr.rb-zeile').forEach(function (z) {
+        var s = z.querySelector('select.rb-typ');
+        function zeigen() {
+            var m = s.value === 'miot';
+            z.querySelectorAll('.rb-nur-valetudo').forEach(function (f) { f.readOnly = m; f.style.opacity = m ? '0.45' : ''; });
+            z.querySelectorAll('.rb-nur-miot-feld').forEach(function (f) { f.readOnly = !m; f.style.opacity = m ? '' : '0.45'; });
+            z.querySelectorAll('.rb-nur-miot').forEach(function (f) { f.style.display = m ? '' : 'none'; });
+        }
+        if (s) { s.addEventListener('change', zeigen); zeigen(); }
+    });
 })();
 /* Gruppe 2 (1.1.22): Namenstabelle in Schritt 3 - den Gateway-Namen in die Zwischenablage (Vorbild Marstek
    1.1.25 mvNameKopieren). execCommand zuerst: navigator.clipboard gibt es nur in einem sicheren Kontext, der LoxBerry

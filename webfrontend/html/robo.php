@@ -25,6 +25,9 @@
  * Merker nicht fuehren: HTTP 503, GRUND=BREMSE_MERKER.
  *
  * Weitere Aufrufe: ?debug=1  ?json=1  ?refresh=1&token=T
+ *   Gruppe 28 (1.1.23): der Lesezweig (Zeile, ?json, ?debug) nur mit endpunkt_ein = 1 (Reiter Einbindung;
+ *   Update an, Neuinstallation aus), sonst HTTP 403 CMD;OK=0;GRUND=ENDPUNKT_AUS. ?selftest, ?cmd und ?ptest
+ *   bleiben offen (Token). Ein Roboter mit Treiber Xiaomi MIoT liefert dieselben Felder (was er nicht meldet: -1).
  *   ?ptest=1&token=T     Test-Pushnachricht anstossen
  *   ?selftest=1&token=T  Token pruefen, ohne etwas auszuloesen
  *
@@ -69,7 +72,11 @@ require_once __DIR__ . '/robo_lib.php';
  * beim naechsten Ausbau nicht an einer Aufrufstelle vergessen. */
 ro_config_erzeugen_erlauben(false);
 
-$dev = isset($_GET['dev']) ? max(1, min(9, (int) $_GET['dev'])) : 1;
+/* Nachbau 27.10.: ?dev=1 bis RO_ROBOTER_MAX; darunter wie bisher 1, darueber eine nie vergebene Nummer ("Roboter
+ * nicht konfiguriert" bzw. OK=0;CODE=8 - nie die Werte eines anderen Roboters). */
+$dev = isset($_GET['dev']) ? (int) $_GET['dev'] : 1;
+if ($dev < 1) { $dev = 1; }
+if ($dev > RO_ROBOTER_MAX) { $dev = RO_ROBOTER_MAX + 1; }
 
 /**
  * Darf dieser Aufruf den Zwischenspeicher uebergehen?
@@ -111,23 +118,6 @@ function ro_token_ok() { return ro_token_lage() === 1; }
 
 /* Der Parameter ?p= prueft seit 1.1.22 ro_param_pruefen() in robo_lib.php (bis 1.1.21 ro_param() hier) -
  * dieselbe Pruefung fuer den HTTP-Weg und die Befehlsbruecke. */
-
-if (isset($_GET['json'])) {
-    header('Content-Type: application/json; charset=utf-8');
-    $st = ro_state($dev, ro_refresh_erlaubt());
-    /* Dieselbe Quelle wie die Zeile und wie MQTT. Bis 1.0.14 standen hier
-     * ro_ann_active() und ro_ptest_active() einzeln - audio und push fehlten
-     * in der JSON-Ansicht ersatzlos. Genau die Auseinanderentwicklung, die
-     * 1.0.13 mit ro_meldeflags() beenden sollte; der dritte Weg war
-     * uebersehen worden. */
-    $st = array_merge($st, ro_meldeflags($dev));
-    $st['alter'] = ro_lauf_alter();
-    $st['zaehler'] = ro_lauf_lesen()['zaehler'];
-    $st['meldung'] = ro_meldung_lesen($dev);
-    $st['raeume'] = ro_segments($dev, ro_refresh_erlaubt());
-    echo json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    exit;
-}
 
 header('Content-Type: text/plain; charset=utf-8');
 
@@ -201,12 +191,46 @@ if (isset($_GET['ptest'])) {
     exit;
 }
 
+/* ---------- Gruppe 28 (1.1.23, E-E12; Entwurf 3.4): endpunkt_ein - das Tor des LESEZWEIGS ----------
+ * Gesperrt wird nur, was Loxone liest: die Zeile ohne Parameter, ?json=1 und ?debug=1 (auch mit ?refresh=1). Die
+ * Zweige oben - ?selftest, ?cmd und ?ptest, je mit Pflichttoken - bleiben offen (der alte Befehlsweg, der Reiter Test).
+ * Neuinstallation: aus (Werte ueber MQTT, Befehle ueber die Bruecke); eine bestehende Anlage behaelt ihn (Lese-Regel in
+ * ro_config(), postupgrade.sh). ro_config(false): das Tor legt nichts an. Die Protokollzeile ist gebremst. */
+$ro_ecfg = ro_config(false);
+if (empty($ro_ecfg['endpunkt_ein'])) {
+    ro_log_if_changed('endpunkt_aus', 'Endpunkt: Lesezweig abgewiesen (endpunkt_ein = 0) - einschalten im Reiter Einbindung');
+    http_response_code(403);
+    echo "CMD;OK=0;GRUND=ENDPUNKT_AUS\n";
+    exit;
+}
+unset($ro_ecfg);
+
+/* ?json - seit 1.1.23 hinter ?ptest und dem Tor (Ausgabe unveraendert). */
+if (isset($_GET['json'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $st = ro_state($dev, ro_refresh_erlaubt());
+    /* Dieselbe Quelle wie die Zeile und wie MQTT. Bis 1.0.14 standen hier
+     * ro_ann_active() und ro_ptest_active() einzeln - audio und push fehlten
+     * in der JSON-Ansicht ersatzlos. Genau die Auseinanderentwicklung, die
+     * 1.0.13 mit ro_meldeflags() beenden sollte; der dritte Weg war
+     * uebersehen worden. */
+    $st = array_merge($st, ro_meldeflags($dev));
+    $st['alter'] = ro_lauf_alter();
+    $st['zaehler'] = ro_lauf_lesen()['zaehler'];
+    $st['meldung'] = ro_meldung_lesen($dev);
+    $st['raeume'] = ro_segments($dev, ro_refresh_erlaubt());
+    echo json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+    exit;
+}
+
 $st = ro_state($dev, ro_refresh_erlaubt());
 
 if (isset($_GET['debug'])) {
     $r = ro_robot($dev);
     $i = ro_robotinfo($dev);
-    echo 'DEBUG  Roboter ' . $dev . ': ' . ($r ? $r['name'] . ' (' . $r['ip'] . ':' . $r['port'] . ')' : 'nicht konfiguriert') . "\n";
+    echo 'DEBUG  Roboter ' . $dev . ': ' . ($r ? $r['name'] . ' (' . $r['ip'] . ':' . $r['port']
+        . ($r['typ'] === 'miot' ? ', Xiaomi MIoT' : '') . ')' : 'nicht konfiguriert') . "\n";
+    if (!empty($st['grund'])) { echo 'Grund: ' . $st['grund'] . "\n"; }
     if ($i && ($i['modell'] !== '' || $i['valetudo'] !== '')) {
         echo 'Geraet: ' . trim($i['hersteller'] . ' ' . $i['modell'])
            . ($i['valetudo'] !== '' ? '   Valetudo ' . $i['valetudo'] : '') . "\n";

@@ -66,6 +66,19 @@ ro_hat_inhalt() {
         exit((isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "") ? 0 : 1);' -- "$1" 2>/dev/null
 }
 
+# Gruppe 28 (1.1.23, S7; Pruefbericht): eine Kopie nach robo.json UNTEILBAR - Nebendatei mit umask 077 (0600 vor
+# dem Inhalt), Gegenprobe mit cmp, dann mv -f. Bis 1.1.22 "cp -p ... && chmod 600": ein gleichzeitiger Minutenlauf
+# konnte eine halbe Datei lesen (und sie als .kaputt beiseitelegen). Rueckgabe 0 = Ziel traegt die Quelle.
+ro_atomar_kopieren() {
+    ro_neu="$2.neu.$$"
+    if ( umask 077; cp "$1" "$ro_neu" ) 2>/dev/null && cmp -s "$1" "$ro_neu" && mv -f "$ro_neu" "$2"; then
+        chmod 600 "$2" 2>/dev/null
+        return 0
+    fi
+    rm -f "$ro_neu" 2>/dev/null
+    return 1
+}
+
 # I1 (Durchgang 01.10.2026, Entscheidung 1): die Marke von preupgrade.sh
 # (data/plugins/<ordner>.upgrade_laeuft) raeumt dieses Skript ab - per trap,
 # also auch, wenn es vorzeitig endet. Der Rueckgabewert bleibt der des
@@ -116,7 +129,7 @@ mkdir -p "$CDIR" "$LDIR" "$DDIR" 2>/dev/null
 if [ -f "$TMPDIR/robo.json" ]; then
     if ro_hat_inhalt "$TMPDIR/robo.json"; then
         if ! cmp -s "$TMPDIR/robo.json" "$CF"; then
-            cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
+            ro_atomar_kopieren "$TMPDIR/robo.json" "$CF"
         fi
         if cmp -s "$TMPDIR/robo.json" "$CF"; then
             echo "<OK> Konfiguration aus dem Upgrade uebernommen."
@@ -132,7 +145,7 @@ if [ -f "$TMPDIR/robo.json" ]; then
             echo "<WARNING> Die Konfiguration aus dem Upgrade liess sich nicht nach $CF schreiben."
         fi
     elif [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        cp -p "$TMPDIR/robo.json" "$CF" && chmod 600 "$CF" 2>/dev/null
+        ro_atomar_kopieren "$TMPDIR/robo.json" "$CF"
         echo "<INFO> Die Konfiguration aus dem Upgrade trug keine eingerichteten Einstellungen"
         echo "<INFO> (kein lesbares Objekt mit Aktionstoken); sie wurde unveraendert zurueckgelegt."
     fi
@@ -163,8 +176,11 @@ fi
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
         if ro_hat_inhalt "$BK"; then
-            cp -p "$BK" "$CF" && chmod 600 "$CF" 2>/dev/null
-            echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+            if ro_atomar_kopieren "$BK" "$CF"; then
+                echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
+            else
+                echo "<WARNING> Die Sicherung $PFOLDER.backup.json liess sich nicht nach $CF schreiben."
+            fi
         else
             echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
             echo "<WARNING> Objekt mit Aktionstoken) - sie wurde nicht uebernommen."
@@ -185,6 +201,44 @@ fi
 # "* * * * * loxberry cd / && for f in .../cron.01min/*") und Apache ebenfalls
 # (system/apache2/envvars: APACHE_RUN_USER=loxberry). Es liest und schreibt
 # also derselbe Benutzer - die Gruppenrechte wurden nie gebraucht.
+# ---------- Gruppe 28 (1.1.23): endpunkt_ein=1 fuer bestehende Anlagen (E-E12; Entwurf 3.4) ----------
+# Bis 1.1.22 antwortete robo.php ohne Schalter. Eine bestehende Anlage behaelt den HTTP-Lesezweig: in robo.json und
+# in der Zweitschrift wird endpunkt_ein=1 nachgetragen, wenn die Datei eingerichtet ist (ein Schluessel ausser den
+# Merkern _...) und den Schluessel noch nicht kennt - ueber eine Nebendatei (umask 077) mit Gegenprobe (gleich bis
+# auf den Schluessel), dann mv, 0600 (dieselbe Form wie S7; Bauart aWATTar 1.2.39). Scheitert es, gilt die
+# Lese-Regel in ro_config() (dieselbe Bedingung -> 1). Ein zweiter Lauf aendert nichts; "{}" bleibt (Neuinstallation:
+# endpunkt_ein 0).
+ro_endpunkt_nachtragen() {
+    [ -s "$1" ] || return 0
+    command -v php >/dev/null 2>&1 || { echo "<WARNING> php fehlt - endpunkt_ein in $(basename "$1") nicht nachgetragen; es gilt die Lese-Regel."; return 0; }
+    php -d allow_url_fopen=0 -r 'umask(077); $f = $argv[1]; $roh = (string) @file_get_contents($f); $d = json_decode($roh, true);
+        if (!is_array($d) || array_key_exists("endpunkt_ein", $d)) { exit(3); }
+        $ein = false;
+        foreach (array_keys($d) as $k) { $k = (string) $k; if (!($k !== "" && $k[0] === "_")) { $ein = true; break; } }
+        if (!$ein) { exit(3); }
+        $d["endpunkt_ein"] = 1;
+        $js = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($js === false) { exit(1); }
+        $neu = $f . ".neu";
+        if (@file_put_contents($neu, $js) !== strlen($js)) { @unlink($neu); exit(1); }
+        $g = json_decode((string) @file_get_contents($neu), true);
+        if (!is_array($g) || !isset($g["endpunkt_ein"]) || $g["endpunkt_ein"] !== 1) { @unlink($neu); exit(1); }
+        unset($g["endpunkt_ein"]);
+        if ($g !== json_decode($roh, true)) { @unlink($neu); exit(1); }
+        if (!@rename($neu, $f)) { @unlink($neu); exit(1); }
+        exit(0);' -- "$1" 2>/dev/null
+    ro_e=$?
+    if [ "$ro_e" = 0 ]; then
+        chmod 600 "$1" 2>/dev/null
+        echo "<INFO> Konfiguration ergaenzt ($(basename "$1")): endpunkt_ein=1 (bestehende Anlage - der HTTP-Lesezweig fuer Loxone bleibt erreichbar; abschalten im Reiter Einbindung)."
+    elif [ "$ro_e" != 3 ]; then
+        echo "<WARNING> endpunkt_ein liess sich in $(basename "$1") nicht nachtragen - es gilt die Lese-Regel (der Lesezweig bleibt erreichbar)."
+    fi
+    return 0
+}
+ro_endpunkt_nachtragen "$CF"
+ro_endpunkt_nachtragen "$BK"
+
 chmod 600 "$CF" 2>/dev/null
 chmod 600 "$BK" 2>/dev/null
 

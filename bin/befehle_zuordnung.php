@@ -14,7 +14,7 @@
  * (befehlsbruecke.php --pruefen). Wie der unangemeldete Endpunkt legt die Bruecke nichts an: einstellungen() liest
  * mit ro_config(false), tun() schaltet die Selbstheilung der Konfiguration fuer den Prozess ab.
  *
- * Die 17 Befehle (Entwurf sv 3.1/3.2) - Roboter 1 unter <praefix>/befehl/<name>, Roboter 2 bis 9 unter
+ * Die 17 Befehle (Entwurf sv 3.1/3.2) - Roboter 1 unter <praefix>/befehl/<name>, Roboter 2 bis 5 unter
  * <praefix>/befehl/<n>/<name> (Muster {nr}, Entwurf sv E16; die Bruecke abonniert genau ein Praefix):
  *   puls     start, stop, pause, home, locate, absaugen, wischwaschen, wischtrocknen, evquittieren (nur "1")
  *   auswahl  fan (off|min|low|medium|high|max|turbo), wasser (off|min|low|medium|high|max),
@@ -106,6 +106,6 @@ return array(
     'protokoll' => function ($stufe, $text) {
         ro_log(($stufe === 'INFO' ? '' : $stufe . ' ') . $text);
     },
-    'teile' => array('nr' => '[2-9]'),
+    'teile' => array('nr' => '[2-5]'),   // Nachbau 27.10.: bis zu 5 Roboter (RO_ROBOTER_MAX); bis zur Probe [2-9]
     'befehle' => $ro_befehle,
 );

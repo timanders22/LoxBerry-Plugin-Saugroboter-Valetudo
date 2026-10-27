@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
 
 Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
 mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
@@ -10,6 +10,56 @@ ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken
 bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.23
+
+* **Xiaomi ohne Valetudo – Treiber „Xiaomi MIoT“ (Xiaomi T12 = `xiaomi.vacuum.b106bk`, dazu `xiaomi.vacuum.c103`;
+  Belegung je Modell aus der MIoT-Spezifikation, andere Modelle mit Warnung).** Je Roboterzeile ein
+  **Gerätetyp** (Valetudo | Xiaomi; jede bestehende Zeile bleibt Valetudo). Der Xiaomi-Roboter wird im Heimnetz über
+  das miIO-Protokoll angesprochen (UDP 54321, AES-128 mit seinem Token, nur PHP mit openssl – kein python-miio, kein
+  Cloud-Weg im Betrieb). Dieselben MQTT-Themen und Befehle wie Valetudo: Zustand, Fehler, Akku, Betriebsart,
+  Saugstufe; **was der T12 nicht meldet, steht auf -1, was er nicht kann, quittiert das Plugin mit „nicht
+  unterstützt“** (Reiter Einbindung: Spalte „Xiaomi T12“). Befehle start, stop, home, fan, modus, segments (Raum-IDs
+  ungeprüft bis zum Gerätetest). Reiter Test: Verbindungsprüfung ohne Bewegung (Gruß, Token, Raum-IDs, Modell).
+* **Token:** Passwortfeld (32 Hex, nie angezeigt, nie im Protokoll, in der Sicherung wie das Kennwort), Haken
+  „löschen“. **„Token aus der Xiaomi-Cloud holen“** im Reiter Einstellungen (Mi-Home-Konto; Kennwort und Anmeldung
+  werden nicht gespeichert; ein Captcha zeigt das Plugin als Bild von Xiaomi zum Abtippen, einen Zweitfaktor per Mail
+  oder SMS fordert man im Plugin an und trägt den Code dort ein) – Ablauf nachgebaut nach dem
+  Xiaomi Cloud Tokens Extractor von Piotr Machowski (MIT); der Abruf steckt im gemeinsamen Modul `xiaomi_cloud.php`
+  (dasselbe wie im BLE-Scanner NG). Anleitung bei den Einstellungen und in der Hilfe.
+* **HTTP-Lesezweig nur mit `endpunkt_ein`** (Reiter Einbindung, „Bestehende Anlagen: HTTP-Endpunkt“): nach einem
+  Update an, bei einer Neuinstallation aus – sonst `robo.php` → HTTP 403 `CMD;OK=0;GRUND=ENDPUNKT_AUS`. Befehle mit
+  Token, `?ptest` und `?selftest` bleiben offen. Eine Sicherung aus 1.1.22 behält den geltenden Wert.
+* **Hausform:** Befehlsbrücke 1.0.1, Sprachmodul 1.1.4 (neu Sonos4Lox und SonoX als Ausgabeweg – SonoX schickt die
+  Ansagetexte an Google), `bin/healthcheck` (nur aus Dateien), `dpkg/apt` mit mosquitto-clients, Startmeldungen der
+  Brücke (`befehle_start.log`) im Reiter Logdateien.
+* **Korrekturen:** Reiter Test ist ein echter Seitenwechsel (Prüfungen, die warten, laufen dort zuverlässig); je
+  Roboter ein Testblock; Kennwort/Token und „löschen“ zugleich, eine Zeile ohne Adresse mit Inhalt und zwei Zeilen mit
+  derselben Adresse werden beanstandet; „Protokoll leeren“ mit Bestätigungshäkchen leert auch cron.log und
+  befehle_start.log; Meldungen und Ansagen aus der Sprachdatei (de/en, mit Umlauten); falsches Valetudo-Kennwort
+  heißt „Anmeldung abgewiesen“ statt „nicht erreichbar“; der Minutenlauf ruht während eines Updates; cron.log wird
+  gekappt; der Endpunkt liest bei fehlender robo.json die Zweitschrift (ohne zu schreiben); Hilfelink auf die eigene
+  Wiki-Seite.
+* **Musterprojekt (Seite „Saugroboter“):** Anwesenheit aus dem Haus (`haus_anwesenheit_jemand` vom BLE-Scanner NG)
+  statt Platzhalter, mit Lebenszeichen-Prüfung #51/#52 – schweigt die Quelle, saugt die Automatik nicht.
+* **Gesamtzeit (Valetudo):** liefert der Roboter die Gesamtzeit offenbar in Millisekunden (Anzeige „498443.5 h“ statt
+  498 h), rechnet das Plugin sie anhand der Anzahl der Reinigungen um und nennt das im Status; ein unplausibler Wert
+  steht auf -1.
+* **Bis zu fünf Roboter** (statt zwei), Valetudo und Xiaomi gemischt: fünf Zeilen im Reiter Einstellungen (leere
+  Zeilen bleiben ungenutzt), je Roboter eine Namenstabelle (`saugrobo_<n>_…`), Befehle `saugrobo/befehl/<n>/<name>`
+  (n = 2 bis 5), `robo.php?dev=1` bis `?dev=5`. Der Minutenlauf hält eine **Frist von 40 s** für die Abfragen ein:
+  reicht die Restzeit für den schlimmsten Fall eines Roboters nicht, wird er in diesem Lauf ausgelassen
+  („verspätet“ im Kopf, im Healthcheck und im Protokoll), der nächste Lauf beginnt mit einem anderen Roboter.
+  Eine Konfiguration mit zwei Zeilen bleibt unverändert.
+* **Xiaomi T12:** Verbrauchsmaterial (Seiten-/Hauptbürste, Filter, Wischbezug: Reststunden wie bei Valetudo, dazu
+  der Restanteil in % im Status), Dauer und Fläche der letzten Reinigung und das Wischwasser – über dieselben
+  MQTT-Themen wie bei Valetudo (`bseite`, `bhaupt`, `filter`, `mop`, `dauer`, `flaeche`, `wasser`).
+* **„Letzte Meldung“:** eine Fehlermeldung, die nicht mehr gilt (etwa aus einer früheren Fassung), wird abgelöst,
+  sobald der Roboter keinen Fehler mehr meldet – ohne neue Meldung.
+* **Xiaomi T12 beim Fahren:** die Fehlerwerte 2100 bis 2199 (gemessen: 2105 in der Station, 2108 beim Reinigen) sind
+  Hinweise, kein Fehler – der Zustand zeigt „reinigt (wischt)“, „pausiert“ oder „fährt zur Ladestation“ statt
+  „Fehler“; der Rohwert steht im Reiter Test. Andere Werte meldet das Plugin weiter als „MIoT-Fehler n“.
+* Rückweg: eine Sicherung aus 1.1.23 lässt sich in 1.1.22 nicht zurückspielen (unbekannte Felder typ/token).
 
 ## Neu in 1.1.22
 

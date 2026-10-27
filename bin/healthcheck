@@ -1,0 +1,51 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Saugroboter (Valetudo) - Anschluss an den LoxBerry-Healthcheck (Gruppe 28, 1.1.23, V5; Entwurf 3.5, E-E13;
+ * Bauart Docker NG 1.3.20 / Spotpreis aWATTar 1.2.39)
+ *
+ * LoxBerry ruft eine ausfuehrbare Datei bin/healthcheck des Plugins direkt und als Benutzer loxberry auf - einmal mit
+ * 'title', einmal mit 'check' (Regeln/02). Antwort: JSON mit desc, status, result, logfile; Status 3 Fehler, 4 Warnung,
+ * 5 in Ordnung, 6 Hinweis.
+ *
+ * NUR AUS DATEIEN (Pruefbericht V5: nicht aus ro_selbsttest()): lauf.json, state_N.json, zustand.json der
+ * Befehlsbruecke, Konfigurationslage. Kein Abruf beim Roboter, keine Xiaomi-Sitzung, kein Broker, nichts angelegt
+ * (ro_config_erzeugen_erlauben(false)). Die Stufen rechnet ro_gesundheit().
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$ro_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($ro_was === 'title') {
+    echo "Saugroboter\n";
+    exit(0);
+}
+
+// Installiert liegen bin/ und webfrontend/html/ in getrennten Baeumen, im ausgepackten Archiv nebeneinander - wie
+// bin/cron.php sagt es der Ablageort selbst.
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $ro_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/robo_lib.php';
+} else {
+    $ro_lib = dirname(__DIR__) . '/webfrontend/html/robo_lib.php';
+}
+if (!is_file($ro_lib)) {
+    echo json_encode(array(
+        'desc'   => 'Saugroboter',
+        'status' => 3,
+        'result' => 'Die Bibliothek robo_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.',
+    )) . "\n";
+    exit(0);
+}
+require_once $ro_lib;
+ro_config_erzeugen_erlauben(false);
+
+list($ro_status, $ro_text) = ro_gesundheit();
+
+echo json_encode(array(
+    'desc'    => 'Saugroboter',
+    'status'  => (int) $ro_status,
+    'result'  => (string) $ro_text,
+    'logfile' => ro_paths()['log'],
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);

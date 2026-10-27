@@ -68,6 +68,15 @@ if (in_array('--mqtt-leeren', $ro_argv, true)) {
 }
 ro_keine_wurzel_abbruch('cron.php');
 
+/* Gruppe 28 (1.1.23, S19; Pruefbericht p19): waehrend einer Aktualisierung ruht der Takt. Die Marke legt
+ * preupgrade.sh an, postupgrade.sh raeumt sie ab; gilt sie (juenger als 3600 s, nicht aus der Zukunft), wird
+ * nichts abgefragt, nichts geheilt, nichts gesendet - auch der Brueckenwaechter nicht. Bis 1.1.22 heilte ein Lauf
+ * im Fenster robo.json aus einer moeglicherweise aelteren Zweitschrift. --mqtt-leeren (oben) laeuft weiter. */
+if (ro_upgrade_marke_frisch()) {
+    echo "UPGRADE\n";
+    exit(0);
+}
+
 /* ==================================================================
  * Nur ein Durchgang zur Zeit
  * ==================================================================
@@ -109,18 +118,40 @@ if (!flock($ro_lock, LOCK_EX | LOCK_NB)) {
 $ro_zustaende = array();
 $ro_erreicht = 0;
 $ro_robots = ro_robots();
-foreach ($ro_robots as $ro_n => $ro_r) {
+/* Nachbau 27.10. (bis zu 5 Roboter): Minutenbudget - die Abfragen enden nach hoechstens RO_LAUF_FRIST s. Vor jedem
+ * Roboter sein schlimmster Fall (ro_lauf_kosten()); reicht die Restzeit nicht, wird er ausgelassen ("verspaetet",
+ * Platzhalter ok 0: keine Ereignispruefung, kein MQTT). Der Start wandert mit dem Zaehler. */
+$ro_t0 = microtime(true);
+$ro_verspaetet = array();
+foreach (ro_lauf_reihenfolge(array_keys($ro_robots), ro_lauf_lesen()['zaehler']) as $ro_n) {
+    if (microtime(true) - $ro_t0 + ro_lauf_kosten($ro_robots[$ro_n], $ro_n) > RO_LAUF_FRIST) {
+        $ro_verspaetet[] = $ro_n;
+        $ro_zustaende[$ro_n] = array('ok' => 0, 'verspaetet' => 1);
+        continue;
+    }
     $ro_zustaende[$ro_n] = ro_state($ro_n);
     if (!empty($ro_zustaende[$ro_n]['ok'])) { $ro_erreicht++; }
 }
+ksort($ro_zustaende);
+sort($ro_verspaetet);
+$ro_dauer_ms = (int) round((microtime(true) - $ro_t0) * 1000);
+if ($ro_verspaetet || is_file(ro_tmpdir() . '/last_lauf_frist.txt')) {
+    ro_log_if_changed('lauf_frist', $ro_verspaetet
+        ? 'Frist ' . RO_LAUF_FRIST . ' s: Roboter ' . implode(', ', $ro_verspaetet) . ' in diesem Lauf ausgelassen (verspaetet)'
+        : 'alle Roboter wieder in der Frist');
+}
 
 ro_events_check($ro_zustaende);
+// Gruppe 28 (1.1.23): abgelaufene Zwischenstaende des Cloud-Abrufs (Captcha, Zweitfaktor, Auswahlliste) wegraeumen -
+// 10 Minuten. Seit dem dritten Nachbau ueber das Stammmodul xiaomi_cloud.php (ro_xc() setzt die Ablage).
+ro_xc();
+xc_aufraeumen();
 
 /* Das Lebenszeichen. Es sagt etwas ueber den LAUF, nicht ueber einen
  * Roboter: ok = 1 heisst "dieser Durchgang hat wirklich gemessen". Ohne
  * konfigurierten Roboter gibt es nichts zu messen - dann ist ok = 0, und
  * das ist die richtige Auskunft, nicht "alles in Ordnung". */
-$ro_lauf = ro_lauf_setzen($ro_robots && $ro_erreicht > 0);
+$ro_lauf = ro_lauf_setzen($ro_robots && $ro_erreicht > 0, $ro_verspaetet, $ro_dauer_ms);
 
 /* ==================================================================
  * MQTT (Durchgang 01.10.2026, Bauliste M1-M5)
@@ -146,6 +177,7 @@ $ro_cfg = ro_config();
 if (!empty($ro_cfg['mqtt_enabled'])) {
     ro_abo_datei(ro_mqtt_thema_saeubern($ro_cfg['mqtt_topic']), true);
     foreach ($ro_robots as $ro_n => $ro_r) {
+        if (!empty($ro_zustaende[$ro_n]['verspaetet'])) { continue; }   // Nachbau 27.10.: nicht gelesen, nichts senden
         ro_mqtt_senden($ro_zustaende[$ro_n], $ro_n, false);
     }
     ro_mqtt_lebenszeichen();

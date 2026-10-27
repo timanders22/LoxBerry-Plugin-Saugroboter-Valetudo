@@ -45,4 +45,15 @@ if [ ! -x "$PHP" ]; then
     exit 1
 fi
 
-"$PHP" "$BIN/cron.php" >/dev/null 2>>"$LOG"
+# Gruppe 28 (1.1.23, S16; Bauform Abfuhr 1.4.26 / Ferien 1.2.28, Root-Abwurf wie ACTiKamera 1.9.32): cron.log ab
+# 256 kB auf die letzten 300 Zeilen kappen (Form Bruecke 1.0.1), ueber eine Nebendatei. Ruft jemand diese Datei als
+# root auf, laeuft cron.php als loxberry (der LoxBerry-Cron selbst startet als loxberry, /etc/cron.d/lbdefaults -
+# der Zweig ist eine Haertung). Die Upgrade-Marke prueft bin/cron.php selbst (S19).
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$LOG" > "$LOG.neu" 2>/dev/null && mv -f "$LOG.neu" "$LOG"
+fi
+if command -v su >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+    su loxberry -s /bin/sh -c '"$0" "$1/cron.php"' "$PHP" "$BIN" >/dev/null 2>>"$LOG"
+else
+    "$PHP" "$BIN/cron.php" >/dev/null 2>>"$LOG"
+fi

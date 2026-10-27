@@ -241,7 +241,7 @@ function ro_vorgaben()
      * braucht die Schluesselliste, um Fremdes zu erkennen - ohne sie
      * koennte sie nur alles durchwinken. */
     return array(
-    'robots' => array(),         // [{name, ip, port, user, pass}]
+    'robots' => array(),         // [{nr, name, ip, port, user, pass, typ, token}] - typ/token seit 1.1.23 (fehlt -> valetudo/'')
     'cache_sec' => 20,           // Status-Cache (schuetzt den Roboter)
     'warn_hours' => 10,          // Warnschwelle Verbrauchsmaterial in Stunden
     'warn_prozent' => 10,        // Warnschwelle fuer Teile, die Prozent melden
@@ -252,6 +252,7 @@ function ro_vorgaben()
     'notify' => array(),
     'tts' => array(),
     'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
+    'endpunkt_ein' => 0,         // Gruppe 28 (1.1.23, E-E12): HTTP-Lesezweig fuer Loxone; Neuinstallation aus, Update an (ro_config())
 );
 }
 
@@ -345,15 +346,16 @@ function ro_config($erzeugen = true) {
         if (!is_array($daten)) { $lage = 'kaputt'; $daten = null; }
     }
 
-    if ($lage === 'kaputt') {
+    /* Gruppe 28 (1.1.23, S12; Entscheidung 1): die .kaputt-Abschrift und ihre Protokollzeile NUR mit $erzeugen - der
+     * unangemeldete Endpunkt und die Befehlsbruecke schreiben nichts (Regeln/05 :170, Prueferbericht "wer es streng
+     * will"). Die Oberflaeche und der Minutenlauf legen sie beim naechsten Aufruf an. */
+    if ($lage === 'kaputt' && $erzeugen) {
         /* Die beschaedigte Datei wird BEISEITEGELEGT, nicht ueberschrieben:
-         * sie ist das Einzige, woraus sich hinterher noch etwas holen laesst. */
+         * sie ist das Einzige, woraus sich hinterher noch etwas holen laesst.
+         * I2 (Durchgang 01.10.2026): mit 0600 und den Rechten VOR dem Inhalt
+         * (ro_write_atomic), nicht mit copy(). Beiseitegelegt wird der
+         * ungekuerzte Rohinhalt, nicht der getrimmte. */
         $kaputt = $p['config'] . '.kaputt';
-        /* I2 (Durchgang 01.10.2026): mit 0600 und den Rechten VOR dem Inhalt
-         * (ro_write_atomic), nicht mit copy(). copy() legte die Datei mit der
-         * umask an - in WSL gemessen 644 (Installer-Pruefer, Fall R1), und
-         * darin stehen Aktionstoken und Valetudo-Anmeldung. Beiseitegelegt
-         * wird der ungekuerzte Rohinhalt, nicht der getrimmte. */
         if (!is_file($kaputt)) {
             $ro_kroh = @file_get_contents($p['config']);
             if (is_string($ro_kroh)) { ro_write_atomic($kaputt, $ro_kroh, 0600); }
@@ -366,17 +368,25 @@ function ro_config($erzeugen = true) {
      * Bis 1.1.3 hiess die Bedingung ($roh === '' || $roh === '{}'). Eine halb
      * geschriebene Datei ist weder leer noch {}, wurde also nicht geheilt -
      * und eine Zweitschrift ohne Aktionstoken wurde blind kopiert. Geprueft
-     * wird jetzt, ob die Zweitschrift ueberhaupt etwas Rettbares enthaelt. */
-    if ($erzeugen && in_array($lage, array('fehlt', 'leer', 'kaputt'), true) && is_file($p['backup'])) {
+     * wird jetzt, ob die Zweitschrift ueberhaupt etwas Rettbares enthaelt.
+     *
+     * Gruppe 28 (1.1.23, S12; Bauart aWATTar spot_config(false)): OHNE $erzeugen wird eine gueltige Zweitschrift mit
+     * Aktionstoken NUR GELESEN - im Speicher verwendet, nichts geschrieben, keine Protokollzeile. Bis 1.1.22 bekam ein
+     * Befehl mit richtigem Token ohne robo.json 403, bis der naechste Minutenlauf heilte (Pruefbericht p12, Fall A). */
+    if (in_array($lage, array('fehlt', 'leer', 'kaputt'), true) && is_file($p['backup'])) {
         $bk = json_decode((string) @file_get_contents($p['backup']), true);
         if (is_array($bk) && isset($bk['aktionstoken']) && trim((string) $bk['aktionstoken']) !== '') {
-            if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
-            if (ro_write_atomic($p['config'], json_encode($bk, JSON_PRETTY_PRINT
-                    | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0600)) {
+            if (!$erzeugen) {
                 $daten = $bk;
-                ro_log_if_changed('cfg_geheilt', 'Konfiguration aus der Zweitschrift wiederhergestellt ('
-                    . $lage . ').');
-                $lage = 'aus der Zweitschrift';
+            } else {
+                if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
+                if (ro_write_atomic($p['config'], json_encode($bk, JSON_PRETTY_PRINT
+                        | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0600)) {
+                    $daten = $bk;
+                    ro_log_if_changed('cfg_geheilt', 'Konfiguration aus der Zweitschrift wiederhergestellt ('
+                        . $lage . ').');
+                    $lage = 'aus der Zweitschrift';
+                }
             }
         }
     }
@@ -387,6 +397,10 @@ function ro_config($erzeugen = true) {
      * Konfiguration mit Inhalt, die den Schluessel nicht kennt, stammt aus einer Fassung, in der MQTT ab Werk aus
      * war: sie behaelt "aus". Leer oder {} zaehlt wie eine neue Installation (Bauart Abfuhrkalender 1.4.25). */
     if ($cfg && !array_key_exists('mqtt_enabled', $cfg)) { $cfg['mqtt_enabled'] = 0; }
+    /* Gruppe 28 (1.1.23, E-E12, Lese-Regel; dieselbe Bauart): eine eingerichtete Anlage ohne den Schluessel
+     * endpunkt_ein stammt aus einer Fassung, in der der Lesezweig immer offen war - sie behaelt ihn (Update an).
+     * Leer oder {} ist eine Neuinstallation: aus. postupgrade.sh schreibt den Wert zusaetzlich fest. */
+    if ($cfg && !array_key_exists('endpunkt_ein', $cfg)) { $cfg['endpunkt_ein'] = 1; }
     $cfg += ro_vorgaben();
     if (!is_array($cfg['robots'])) { $cfg['robots'] = array(); }
     // Migration: Einzel-IP aus einer aelteren Fassung.
@@ -443,18 +457,29 @@ function ro_robots_aus($cfg) {
         // Die eigene Nummer sticht die Zaehlung; eine belegte oder unsinnige
         // Nummer faellt auf die Zaehlung zurueck, damit nie eine Zeile verschwindet.
         $nr = isset($r['nr']) ? (int) $r['nr'] : 0;
-        if ($nr < 1 || $nr > 9 || isset($out[$nr])) { $nr = $n; }
+        /* Nachbau 27.10.: Nummern 1 bis RO_ROBOTER_MAX (die Bruecke kennt {nr} 2-5); laeuft die Zaehlung darueber,
+         * nimmt die Zeile die erste freie Nummer. Mehr als RO_ROBOTER_MAX Zeilen (nur von Hand) bleiben aussen vor -
+         * die Pruefung der Konfiguration nennt sie. */
+        if (count($out) >= RO_ROBOTER_MAX) { break; }
+        if ($nr < 1 || $nr > RO_ROBOTER_MAX || isset($out[$nr])) { $nr = $n; }
         while (isset($out[$nr])) { $nr++; }
+        if ($nr > RO_ROBOTER_MAX) { $nr = 1; while (isset($out[$nr])) { $nr++; } }
+        /* Gruppe 28 (1.1.23, E-E1): der Geraetetyp der Zeile - fehlt er (jede Zeile bis 1.1.22) oder ist er unbekannt,
+         * gilt Valetudo. Beim Xiaomi-Treiber ist der Port fest 54321 (miIO); der gespeicherte Port bleibt in der
+         * Datei unberuehrt. Der Token (32 Hex, klein) steht nur hier und in der Sicherung - nie in Seite oder Protokoll. */
+        $typ = (isset($r['typ']) && is_string($r['typ']) && in_array($r['typ'], ro_robot_typen(), true)) ? $r['typ'] : 'valetudo';
         $out[$nr] = array('nr' => $nr,
                          'name' => trim((string) (isset($r['name']) ? $r['name'] : '')) !== '' ? trim((string) $r['name']) : ('Saugroboter ' . $nr),
                          'ip' => trim((string) $r['ip']),
-                         'port' => max(1, min(65535, (int) (isset($r['port']) ? $r['port'] : 80))),
+                         'port' => $typ === 'miot' ? RO_MIIO_PORT : max(1, min(65535, (int) (isset($r['port']) ? $r['port'] : 80))),
                          // Valetudo kann eine Anmeldung verlangen (express-basic-auth,
                          // einzustellen unter /api/v2/valetudo/config/interfaces/http/auth/basic).
                          // Bis 1.0.14 gab es dafuer kein Feld: wer sie einschaltete,
                          // sah den Roboter als "nicht erreichbar".
                          'user' => trim((string) (isset($r['user']) ? $r['user'] : '')),
-                         'pass' => (string) (isset($r['pass']) ? $r['pass'] : ''));
+                         'pass' => (string) (isset($r['pass']) ? $r['pass'] : ''),
+                         'typ' => $typ,
+                         'token' => (isset($r['token']) && is_string($r['token'])) ? strtolower(trim($r['token'])) : '');
     }
     return $out;
 }
@@ -665,7 +690,17 @@ function ro_log_lesen($max = 300)
     /* Beide Dateien tragen den Zeitstempel im selben Format am Zeilenanfang;
      * danach laesst sich zusammenfuehren, ohne die Zeilen zu zerlegen. */
     sort($zeilen);
-    return array_slice($zeilen, -$max);
+    $zeilen = array_slice($zeilen, -$max);
+    /* Gruppe 28 (1.1.23, S21 Linienrest): dazu die Startmeldungen der Befehlsbruecke (befehle_start.log, Pfad wie
+     * die Bruecke ihn bildet: log/plugins/<ordner>/). Ihre Zeilen tragen keinen Zeitstempel am Anfang - sie werden
+     * mit dem Dateinamen vorangestellt und HINTEN angehaengt, nicht einsortiert. Hoechstens 50 Zeilen. */
+    $bs = dirname($p['log']) . '/befehle_start.log';
+    if (is_file($bs)) {
+        foreach (ro_log_tail($bs, 50) as $z) {
+            if (trim($z) !== '') { $zeilen[] = '[befehle_start.log] ' . $z; }
+        }
+    }
+    return $zeilen;
 }
 
 /** Kopfzeilen fuer einen Abruf - mit Anmeldung, wenn eine eingetragen ist. */
@@ -778,10 +813,13 @@ function ro_state_code($txt) {
     }
     return 8; // unbekannt
 }
-function ro_state_text($code) {
-    $t = array(0 => 'in der Ladestation', 1 => 'bereit', 2 => 'reinigt', 3 => 'pausiert',
-               4 => 'faehrt zur Ladestation', 5 => 'faehrt', 8 => 'unbekannt', 9 => 'Fehler');
-    return isset($t[$code]) ? $t[$code] : 'unbekannt';
+function ro_state_text($code, $ok = 0) {
+    /* Gruppe 28 (1.1.23, S15): aus der Sprachdatei ([MELDUNG] STATUS_n, de/en, mit Umlauten). Code 8 MIT ok 1 heisst
+     * beim Xiaomi-Treiber "Firmware-Update oder unbekannter Zustand" (E-E5, N10) - nicht "unbekannt". */
+    $code = (int) $code;
+    if ($code === 8 && (int) $ok === 1) { return ro_t('MELDUNG.STATUS_UPDATE'); }
+    if (!in_array($code, array(0, 1, 2, 3, 4, 5, 8, 9), true)) { $code = 8; }
+    return ro_t('MELDUNG.STATUS_' . $code);
 }
 
 /** Valetudo: DockStatusStateAttribute.VALUE */
@@ -868,6 +906,8 @@ function ro_ereignisse($dev = 1)
 {
     $r = ro_robot($dev);
     if ($r === null) { return null; }
+    // Gruppe 28 (1.1.23): der Xiaomi-Treiber kennt keine Valetudo-Ereignisse - "nicht gelesen", nie "keine".
+    if ($r['typ'] === 'miot') { return null; }
     $wurzel = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/';
     $pfade = array('events', 'valetudo/events');
     $gemerkt = ro_ereignis_pfad($dev);
@@ -898,10 +938,10 @@ function ro_ist_liste($j)
 }
 
 function ro_event_text($code) {
-    $t = array(0 => '', 1 => 'Staubbehaelter voll', 2 => 'Verbrauchsteil aufgebraucht',
-               3 => 'Wischmodul pruefen', 4 => 'Stoerung', 5 => 'Karte hat sich geaendert',
-               6 => 'Valetudo wurde aktualisiert', 7 => 'Fehler in Valetudo', 8 => 'unbekanntes Ereignis');
-    return isset($t[$code]) ? $t[$code] : '';
+    // Gruppe 28 (1.1.23, S15): aus der Sprachdatei ([MELDUNG] EVENT_n), 0 = kein Ereignis.
+    $code = (int) $code;
+    if ($code < 1 || $code > 8) { return ''; }
+    return ro_t('MELDUNG.EVENT_' . $code);
 }
 
 /** Wert aus der Valetudo-Attributliste holen. */
@@ -1031,7 +1071,12 @@ function ro_teil_felder()
 /** Die Adresse, unter der ein Zustand gemessen wurde - fuer gemessen_N.json. */
 function ro_gemessen_adresse($r)
 {
-    return is_array($r) ? ((string) $r['ip'] . ':' . (int) $r['port']) : '';
+    /* Gruppe 28 (1.1.23, N4): typbewusst - beim Typwechsel auf derselben Adresse uebernaehme ein Ausfall des T12 sonst
+     * die letzten Valetudo-Messwerte. Valetudo behaelt die Form ip:port (eine Messung von 1.1.22 gilt nach dem Update
+     * weiter), der Xiaomi-Treiber heisst miot|ip:port. */
+    if (!is_array($r)) { return ''; }
+    $a = (string) $r['ip'] . ':' . (int) $r['port'];
+    return (isset($r['typ']) && $r['typ'] === 'miot') ? 'miot|' . $a : $a;
 }
 
 /** Der letzte erfolgreich gemessene Zustand dieses Roboters, oder null. */
@@ -1087,7 +1132,7 @@ function ro_state($dev = 1, $force = false) {
     }
     // C3: der letzte erfolgreich gemessene Zustand (fuer Ausfall und Teilausfall).
     $vorher = ro_gemessen_lesen($dev, $r);
-    $st = array('ok' => 0, 'name' => $r ? $r['name'] : '-', 'code' => 8, 'text' => 'unbekannt',
+    $st = array('ok' => 0, 'name' => $r ? $r['name'] : '-', 'code' => 8, 'text' => ro_state_text(8),
                 // Gruppe 2 (1.1.22, -1-Regel, Entwurf sv E2/E3): ohne Messung -1 statt 0 - Akku und Reinigungsbilanz.
                 'batterie' => -1, 'laedt' => 0,
                 'fehler' => 0, 'fehlertext' => '', 'fstufe' => -1, 'fteil' => -1,
@@ -1106,154 +1151,38 @@ function ro_state($dev = 1, $force = false) {
                 'teil_ok' => array('statistik' => 0, 'gesamt' => 0, 'verbrauch' => 0),
                 // C3: wann die Werte gemessen wurden (bei Ausfall: die letzte Messung).
                 'messung_ts' => 0,
+                // Gruppe 28 (1.1.23): Treiber der Zeile und Grund eines Ausfalls (nur fuer Protokoll und Reiter Test).
+                'typ' => $r ? $r['typ'] : 'valetudo', 'grund' => '',
                 'ts' => time());
     if ($r === null) {
         return $st;
     }
-    $base = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/robot';
-    // 1) Status - und mit ihm Anbauteile, Ladestation und die Stufen.
-    //    Alle drei stecken in DERSELBEN Antwort und wurden bis 1.0.14
-    //    weggeworfen; sie kosten keinen zusaetzlichen Abruf.
-    // C1: nur dieser Abruf setzt und loescht den Stumm-Merker.
-    $j = @json_decode((string) ro_get($base . '/state', 2, $dev, true), true);
-    if (is_array($j) && isset($j['attributes'])) {
-        $st['ok'] = 1;
-        $s = ro_attr($j['attributes'], 'StatusStateAttribute');
-        if ($s) {
-            $st['code'] = ro_state_code(isset($s['value']) ? $s['value'] : '');
-            $st['text'] = ro_state_text($st['code']);
-            /* Der Fehlercode kommt aus error.vendorErrorCode, NICHT aus
-             * metaData.error_code. Letzteres gibt es in Valetudo nicht: das
-             * metaData der StatusStateAttribute traegt im gesamten Quelltext
-             * genau zwei Schluessel, "zoned" und "segment_cleaning". Bis
-             * 1.0.14 war FEHLER deshalb immer 0 oder 1, waehrend die Vorlage
-             * ihn als 0..10000 beschrieb. */
-            if (isset($s['error']) && is_array($s['error'])) {
-                if (!empty($s['error']['message'])) { $st['fehlertext'] = (string) $s['error']['message']; }
-                if (isset($s['error']['vendorErrorCode'])) {
-                    $st['fehler'] = (int) preg_replace('/[^0-9]/', '', (string) $s['error']['vendorErrorCode']);
-                }
-                if (isset($s['error']['severity']['level'])) {
-                    $st['fstufe'] = ro_fstufe_code($s['error']['severity']['level']);
-                }
-                if (isset($s['error']['subsystem'])) {
-                    $st['fteil'] = ro_fteil_code($s['error']['subsystem']);
-                }
-            }
-            if ($st['code'] === 9 && $st['fehler'] === 0) { $st['fehler'] = 1; }
-        }
-        $b = ro_attr($j['attributes'], 'BatteryStateAttribute');
-        if ($b) {
-            // Gruppe 2 (1.1.22, E2): ohne "level" meldet das Geraet keinen Akkustand - -1, nicht 0 ("leer").
-            $st['batterie'] = (int) (isset($b['level']) ? $b['level'] : -1);
-            $st['laedt'] = (isset($b['flag']) && $b['flag'] === 'charging') ? 1 : 0;
-        }
-        // Valetudo: AttachmentStateAttribute, type = dustbin | watertank | mop
-        foreach (ro_attr_alle($j['attributes'], 'AttachmentStateAttribute') as $a) {
-            $an = !empty($a['attached']) ? 1 : 0;
-            $typ = isset($a['type']) ? strtolower((string) $a['type']) : '';
-            if ($typ === 'dustbin')   { $st['behaelter'] = $an; }
-            if ($typ === 'watertank') { $st['wassertank'] = $an; }
-            if ($typ === 'mop')       { $st['wischer'] = $an; }
-        }
-        // Valetudo: DockStatusStateAttribute
-        $d = ro_attr($j['attributes'], 'DockStatusStateAttribute');
-        if ($d) { $st['dock'] = ro_dock_code(isset($d['value']) ? $d['value'] : ''); }
-        // Valetudo: PresetSelectionStateAttribute, type = fan_speed | water_grade | operation_mode
-        foreach (ro_attr_alle($j['attributes'], 'PresetSelectionStateAttribute') as $a) {
-            $typ = isset($a['type']) ? strtolower((string) $a['type']) : '';
-            $wert = isset($a['value']) ? $a['value'] : '';
-            if ($typ === 'fan_speed')      { $st['saugstufe'] = ro_stufe_code($wert); }
-            if ($typ === 'water_grade')    { $st['wasserstufe'] = ro_stufe_code($wert); }
-            if ($typ === 'operation_mode') { $st['modus'] = ro_modus_code($wert); }
-        }
+    /* Gruppe 28 (1.1.23, E-E1): der Geraeteteil je Treiber, der Schluss (Ausfall, Fertig-Erkennung, gemessen_N,
+     * Zwischenspeicher, Protokoll) ist EINER fuer beide. */
+    if ($r['typ'] === 'miot') {
+        $st = ro_miot_state($dev, $r, $st, $vorher);
+    } else {
+        $st = ro_valetudo_state($dev, $r, $st, $vorher, $cfg);
     }
-    /* Kam schon der Zustand nicht, sind die folgenden Abrufe verlorene Zeit:
-       Gemessen waren das 24 s statt 6 je Roboter. Der Zwischenspeicher wird
-       trotzdem geschrieben, damit die naechste Abfrage nicht sofort wieder
-       wartet. */
     if ($st['ok'] !== 1) {
         // C3 (Nr. 28): die letzten Messwerte, OK=0, CODE=8.
+        $grund = $st['grund'];
         $st = ro_state_ausfall($st, $vorher);
+        $st['grund'] = $grund;
+        $st['typ'] = $r['typ'];
         ro_write_json($cache, $st);
-        ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' (nicht erreichbar)');
+        ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' (' . ro_ausfall_grund_text($r['typ'], $grund) . ')');
         return $st;
     }
-
-    // 2) Statistik aktuell
-    $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability', 2, $dev), true);
-    $st['teil_ok']['statistik'] = ro_ist_liste($j) ? 1 : 0;
-    foreach ((array) $j as $e) {
-        if (!isset($e['type']) || !isset($e['value'])) { continue; }
-        if ($e['type'] === 'area') { $st['flaeche'] = round(((float) $e['value']) / 10000, 1); }   // cm2 -> m2
-        if ($e['type'] === 'time') { $st['dauer'] = (int) round(((float) $e['value']) / 60); }      // s -> min
-    }
-    // 3) Statistik gesamt
-    $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability', 2, $dev), true);
-    $st['teil_ok']['gesamt'] = ro_ist_liste($j) ? 1 : 0;
-    foreach ((array) $j as $e) {
-        if (!isset($e['type']) || !isset($e['value'])) { continue; }
-        if ($e['type'] === 'area') { $st['flaeche_gesamt'] = round(((float) $e['value']) / 10000, 1); }
-        if ($e['type'] === 'time') { $st['dauer_gesamt'] = round(((float) $e['value']) / 3600, 1); } // s -> h
-        if ($e['type'] === 'count') { $st['anzahl_gesamt'] = (int) $e['value']; }
-    }
-    // 4) Verbrauchsmaterialien
-    $j = @json_decode((string) ro_get($base . '/capabilities/ConsumableMonitoringCapability', 2, $dev), true);
-    $st['teil_ok']['verbrauch'] = ro_ist_liste($j) ? 1 : 0;
-    foreach ((array) $j as $e) {
-        $typ = isset($e['type']) ? $e['type'] : '';
-        $sub = isset($e['subType']) ? $e['subType'] : '';
-        if (!isset($e['remaining']['value'])) { continue; }
-        $wert = (float) $e['remaining']['value'];
-        $einheit = isset($e['remaining']['unit']) ? strtolower((string) $e['remaining']['unit']) : 'minutes';
-        $feld = ro_verbrauch_feld($typ, $sub);
-        if ($feld === '') {
-            // Nicht verschlucken - nennen. Der Reiter Test zeigt die Liste.
-            $st['material_fremd'][] = $typ . '/' . ($sub !== '' ? $sub : 'none');
-            continue;
-        }
-        if ($einheit === 'percent') {
-            $st[$feld] = (int) round(max(0, min(100, $wert)));
-        } else {
-            // minutes -> Stunden, abgerundet. Wer 59 Minuten Restlaufzeit hat,
-            // soll 0 sehen und nicht 1.
-            $st[$feld] = (int) floor($wert / 60);
-        }
-    }
-    $warn_h = max(0, (int) $cfg['warn_hours']);
-    $warn_p = max(0, (int) $cfg['warn_prozent']);
-    /* C3, Teilausfall: was nicht als Liste kam, kommt aus der letzten
-     * Messung - VOR der Warnschwelle, damit MATWARN zu den Werten passt. */
-    foreach (array('statistik', 'gesamt', 'verbrauch') as $g) {
-        if (empty($st['teil_ok'][$g])) { $st = ro_teil_uebernehmen($st, $vorher, $g); }
-    }
-    $prozent = ro_verbrauch_prozentfelder();
-    foreach (array('buerste_haupt', 'buerste_seite', 'buerste_seite2', 'filter', 'filter2',
-                   'sensor', 'raeder', 'mop', 'dock_buerste', 'dock_filter',
-                   'dock_behaelter', 'reiniger') as $k) {
-        $grenze = in_array($k, $prozent, true) ? $warn_p : $warn_h;
-        if ($st[$k] >= 0 && $st[$k] <= $grenze) { $st['material_warn'] = 1; }
-    }
-    // 5) Valetudos Ereignisliste. WELCHER Pfad gilt, entscheidet das Geraet -
-    //    siehe ro_ereignisse(). evlesbar trennt "keine Ereignisse" von
-    //    "nicht gelesen"; bis 1.1.5 war das dasselbe, und zwar stumm.
-    $ev = ro_ereignisse($dev);
-    $st['evlesbar'] = is_array($ev) ? 1 : 0;
-    if (is_array($ev)) {
-        foreach ($ev as $e) {
-            if (!is_array($e) || !empty($e['processed'])) { continue; }
-            $st['event']++;
-            $c = ro_event_code(isset($e['__class']) ? $e['__class'] : '');
-            if ($c === 1) { $st['evmuell'] = 1; }
-            // Der jueng(st)e offene Eintrag bestimmt EVTYP - die Liste kommt
-            // in der Reihenfolge des Auftretens.
-            $st['evtyp'] = $c;
-            $st['evtext'] = ro_event_text($c);
-            $st['evid'] = isset($e['id']) ? (string) $e['id'] : '';
-        }
+    $st['text'] = ro_state_text($st['code'], $st['ok']);
+    // Dritter Nachbau (Fahrprobe T12): beim Reinigen die Taetigkeit des Xiaomi-Roboters, z. B. "reinigt (wischt)" -
+    // die Statuszahl bleibt 2 wie bei Valetudo (Musterprojekt/Statustexte unveraendert).
+    if ($r['typ'] === 'miot' && $st['code'] === 2 && !empty($st['taetigkeit'])
+            && preg_match('/^MIOT_STATUS_\d{1,2}\z/', (string) $st['taetigkeit'])) {
+        $st['text'] .= ' (' . ro_t('MELDUNG.' . $st['taetigkeit']) . ')';
     }
 
-    // C3, Teilausfall: die Ereignisse der letzten Messung, wenn die Liste nicht lesbar war.
+    // C3, Teilausfall: die Ereignisse der letzten Messung, wenn die Liste nicht lesbar war (der T12 hat keine).
     if (empty($st['evlesbar'])) { $st = ro_teil_uebernehmen($st, $vorher, 'ereignisse'); }
 
     // Zeitpunkt der letzten Reinigung merken (Wechsel von "reinigt" auf etwas anderes)
@@ -1280,7 +1209,7 @@ function ro_state($dev = 1, $force = false) {
     ro_write_json($cache, $st);
     ro_log_if_changed('status_' . $dev, 'Status=' . $st['text'] . ' Batterie=' . $st['batterie']
         . '% Fehler=' . $st['fehler'] . ' Material-Warnung=' . $st['material_warn']
-        . ' Ereignisse=' . $st['event']);
+        . ' Ereignisse=' . $st['event'] . ($r['typ'] === 'miot' ? ' (Xiaomi MIoT ' . (int) $st['miot_status'] . ')' : ''));
     return $st;
 }
 
@@ -1303,6 +1232,17 @@ function ro_reinigung_beendet($code)
 function ro_command($cmd, $dev = 1, $param = '') {
     $r = ro_robot($dev);
     if ($r === null) { return array(0, 'Roboter nicht konfiguriert'); }
+    /* Gruppe 28 (1.1.23, E-E7): eine Xiaomi-Zeile geht an den miIO-Treiber - dieselben Befehlsnamen, was der T12
+     * nicht kann, quittiert ro_miot_command() mit NICHT_UNTERSTUETZT. Protokoll ohne Token und ohne Antwort. */
+    if ($r['typ'] === 'miot') {
+        $cmd = strtolower(trim((string) $cmd));
+        $param = (string) $param;
+        list($ok, $info) = ro_miot_command($cmd, $r, $param);
+        ro_log('Befehl "' . $cmd . ($param !== '' ? ' ' . $param : '') . '" an ' . $r['name'] . ' -> Xiaomi MIoT '
+               . $info . (ro_befehl_quelle() === 'mqtt' ? ' (MQTT)' : ''));
+        if ($ok) { @unlink(ro_tmpdir() . '/state_' . (int) $dev . '.json'); }
+        return array($ok, $info);
+    }
     $wurzel = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/';
     $base = $wurzel . 'robot/capabilities/';
     $cmd = strtolower(trim((string) $cmd));
@@ -1604,7 +1544,7 @@ function ro_ruhezeit($dev = 1, $force = false)
         return is_array($c) && array_key_exists('d', $c) ? $c['d'] : null;
     }
     $r = ro_robot($dev);
-    if ($r === null) { return null; }
+    if ($r === null || $r['typ'] === 'miot') { return null; }   // Gruppe 28: der T12 hat keine Valetudo-Ruhezeit
     $j = @json_decode((string) ro_get('http://' . $r['ip'] . ':' . $r['port']
         . '/api/v2/robot/capabilities/DoNotDisturbCapability', 2, $dev), true);
     $j = is_array($j) ? $j : null;
@@ -1630,17 +1570,19 @@ function ro_segments($dev = 1, $force = false) {
         if (is_array($c)) { return $c; }
     }
     $r = ro_robot($dev);
-    if ($r === null) { return array(); }
+    // Gruppe 28 (1.1.23, E-E8): beim T12 gibt es keine Raumnamen; seine Raum-IDs liest nur der offene Reiter Test roh.
+    if ($r === null || $r['typ'] === 'miot') { return array(); }
     $j = @json_decode((string) ro_get('http://' . $r['ip'] . ':' . $r['port']
         . '/api/v2/robot/capabilities/MapSegmentationCapability', 2, $dev), true);
     $out = array();
-    foreach ((array) $j as $e) {
-        if (isset($e['id'])) {
+    foreach ((ro_ist_liste($j) ? $j : array()) as $e) {
+        if (is_array($e) && isset($e['id'])) {
             $out[(string) $e['id']] = isset($e['name']) ? (string) $e['name'] : ('Raum ' . $e['id']);
         }
     }
-    // Auch eine leere Liste wird gemerkt - sonst fragt jeder Aufruf erneut.
-    if (is_array($j)) { ro_write_json($cache, $out); }
+    /* Gruppe 28 (1.1.23, E2): gemerkt wird nur eine LISTE (auch eine leere) - ein Fehlerrumpf {"message": ..} einer
+     * 404/500 galt bis 1.1.22 eine Stunde lang als "keine Raeume". */
+    if (ro_ist_liste($j)) { ro_write_json($cache, $out); }
     return $out;
 }
 
@@ -1659,12 +1601,17 @@ function ro_capabilities($dev = 1, $force = false) {
         if (is_array($c)) { return $c; }
     }
     $r = ro_robot($dev);
-    if ($r === null) { return array(); }
+    // Gruppe 28: beim T12 gilt die feste Liste ro_miot_befehle() - Valetudo-Faehigkeiten gibt es dort nicht.
+    if ($r === null || $r['typ'] === 'miot') { return array(); }
     $j = @json_decode((string) ro_get('http://' . $r['ip'] . ':' . $r['port']
         . '/api/v2/robot/capabilities', 2, $dev), true);
+    /* Gruppe 28 (1.1.23, E2): nur eine LISTE zaehlt (und wird gemerkt) - der Fehlerrumpf {"message": ..} einer 404
+     * ergab bis 1.1.22 die "Faehigkeit" "Not Found". */
     $out = array();
-    foreach ((array) $j as $e) { if (is_string($e)) { $out[] = $e; } }
-    if (is_array($j)) { ro_write_json($cache, $out); }
+    if (ro_ist_liste($j)) {
+        foreach ($j as $e) { if (is_string($e)) { $out[] = $e; } }
+        ro_write_json($cache, $out);
+    }
     return $out;
 }
 function ro_kann($dev, $faehigkeit) {
@@ -1677,11 +1624,17 @@ function ro_kann($dev, $faehigkeit) {
 function ro_robotinfo($dev = 1, $force = false) {
     $dev = max(1, (int) $dev);
     $cache = ro_tmpdir() . '/info_' . $dev . '.json';
+    $r = ro_robot($dev);
+    /* Gruppe 28: beim T12 schreibt den Steckbrief nur der offene Reiter Test (miIO.info, ro_miot_diagnose()) - hier
+     * nur lesen, nie fragen. */
+    if ($r !== null && $r['typ'] === 'miot') {
+        $c = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+        return is_array($c) ? $c : array();
+    }
     if (!$force && is_file($cache) && time() - filemtime($cache) < 3600) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c)) { return $c; }
     }
-    $r = ro_robot($dev);
     if ($r === null) { return array(); }
     $wurzel = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/';
     $a = @json_decode((string) ro_get($wurzel . 'robot', 2, $dev), true);
@@ -1718,13 +1671,18 @@ function ro_lauf_lesen()
     $f = ro_tmpdir() . '/lauf.json';
     $d = is_file($f) ? (json_decode((string) @file_get_contents($f), true) ?: array()) : array();
     if (!is_array($d)) { $d = array(); }
-    $d += array('ts' => 0, 'zaehler' => 0, 'ok' => 0);
-    return array('ts' => (int) $d['ts'], 'zaehler' => (int) $d['zaehler'], 'ok' => (int) $d['ok']);
+    $d += array('ts' => 0, 'zaehler' => 0, 'ok' => 0, 'verspaetet' => array(), 'dauer_ms' => -1);
+    // Nachbau 27.10.: dazu die in diesem Lauf ausgelassenen Roboter (Minutenbudget) und die Dauer der Abfragen.
+    $v = array();
+    foreach ((array) $d['verspaetet'] as $x) { if (is_numeric($x)) { $v[] = (int) $x; } }
+    return array('ts' => (int) $d['ts'], 'zaehler' => (int) $d['zaehler'], 'ok' => (int) $d['ok'],
+                 'verspaetet' => $v, 'dauer_ms' => (int) $d['dauer_ms']);
 }
-function ro_lauf_setzen($ok)
+function ro_lauf_setzen($ok, $verspaetet = array(), $dauer_ms = -1)
 {
     $a = ro_lauf_lesen();
-    $neu = array('ts' => time(), 'zaehler' => ((int) $a['zaehler'] + 1) % 1000, 'ok' => $ok ? 1 : 0);
+    $neu = array('ts' => time(), 'zaehler' => ((int) $a['zaehler'] + 1) % 1000, 'ok' => $ok ? 1 : 0,
+                 'verspaetet' => array_values(array_map('intval', (array) $verspaetet)), 'dauer_ms' => (int) $dauer_ms);
     ro_write_json(ro_tmpdir() . '/lauf.json', $neu);
     return $neu;
 }
@@ -2627,6 +2585,16 @@ function ro_mqtt_senden($st, $dev = 1, $voll = false) {
         $zeilen[] = ro_mqtt_zeile(ro_mqtt_retain($k, $v) && !isset($platz[$k]), $prefix . '/' . $k, $v);
         $gesendet[$k] = $w;
     }
+    /* Gruppe 28 (1.1.23, N3): der Xiaomi-Treiber kennt keine Ereignisse (sie gehen nicht hinaus). Die
+     * zurueckbehaltenen Ereignisthemen eines frueheren Valetudo-Roboters derselben Nummer werden EINMAL im Broker
+     * geloescht (leere retain-Nutzlast), statt fuer immer stehen zu bleiben; gemerkt im Abbild als ''. */
+    if (isset($st['typ']) && $st['typ'] === 'miot' && (int) $st['ok'] === 1) {
+        foreach (array('event', 'evtyp', 'evmuell') as $k) {
+            if (array_key_exists($k, $gesendet) && (string) $gesendet[$k] === '') { continue; }
+            $zeilen[] = 'retain ' . $prefix . '/' . $k . ' ';
+            $gesendet[$k] = '';
+        }
+    }
     $n = $zeilen ? ro_udp_senden($udp, $zeilen) : 0;
     ro_write_json($af, array('praefix' => $prefix, 'werte' => $gesendet,
         'voll' => $voll ? time() : (int) $abbild['voll']));
@@ -2876,7 +2844,7 @@ function ro_mqtt_gateway_name($dev, $thema, $praefix = null)
  */
 function ro_mqtt_namen($dev = 1, $praefix = null)
 {
-    $dev = max(1, min(9, (int) $dev));
+    $dev = max(1, min(RO_ROBOTER_MAX, (int) $dev));
     $wurzel = ro_mqtt_thema_saeubern($praefix === null ? ro_config()['mqtt_topic'] : $praefix);
     $aus = array();
     $dazu = function ($thema, $bedeutung, $bereich, $text, $digital, $nc) use (&$aus, $dev, $wurzel) {
@@ -2890,7 +2858,10 @@ function ro_mqtt_namen($dev = 1, $praefix = null)
         $bereich = empty($f[0]) ? '0/1' : $f[1] . ' … ' . $f[2] . ($f[3] !== '' ? ' ' . $f[3] : '');
         $dazu(strtolower($name), $f[4], $bereich, false, empty($f[0]), $name === 'OK');
     }
-    if ($dev === 1) {
+    /* Nachbau 27.10.: das Lebenszeichen steht beim ERSTEN eingerichteten Roboter (bis hierher fest bei 1 - eine
+     * Anlage mit Roboter 2 bis 5 ohne Roboter 1 bekam die drei Haken nie). Ohne Roboter: 1. */
+    $ro_erster = ro_mqtt_namen_geraete();
+    if ($dev === (int) $ro_erster[0]) {
         $dazu('status/zaehler', ro_t('MQTT.T_ZAEHLER'), '0 … 999', false, false, false);
         $dazu('status/ok', ro_t('MQTT.T_OK'), '0/1', false, true, true);
         $dazu('status/befehle', ro_t('MQTT.T_BEFEHLE'), '-1 … 1', false, false, true);
@@ -3165,7 +3136,8 @@ function ro_spaet_schluessel()
  *
  * Ab Werk unveraendert: Ausgabeart Music Server ohne IP; gesprochen wird nur mit dem Haken
  * "Audioausgabe aktiv" (notify.audio, ab Werk aus); dieselben sechs Ausgabearten wie bisher
- * (ohne 'aus' - der Haken ist der Schalter - und ohne Sonos4Lox). Neu und gewollt: Adresse und
+ * (ohne 'aus' - der Haken ist der Schalter). Gruppe 28 (1.1.23, E5): dazu Sonos4Lox und SonoX
+ * (Modul 1.1.4; SonoX schickt Ansagetexte an Google - Hinweis im Modulblock). Neu und gewollt: Adresse und
  * Vorlage muessen im Heimnetz liegen (Speichern, Zurueckspielen und vor jedem Senden); ins
  * Protokoll nur die Kurzform ansage_kurz() - nie Text, Token oder die Adresse des Music Servers.
  */
@@ -3173,7 +3145,8 @@ function ro_spaet_schluessel()
 /** Die Ausgabewege der Sprachausgabe - EINE Liste fuer Formular, Pruefung und Ansage (wie bis 1.1.14). */
 function ro_tts_wege()
 {
-    return array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    // Gruppe 28 (1.1.23, E5; Pflegewelle 22): dazu Sonos4Lox und SonoX (Modul 1.1.4).
+    return array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
 }
 
 /**
@@ -3278,38 +3251,38 @@ function ro_events_check($zustaende = null) {
         $f = ro_tmpdir() . '/ev_' . $n . '.json';
         /* C2 (Durchgang 01.10.2026): antwortet der Roboter nicht, wird nichts
          * gemeldet und ev_N.json NICHT ueberschrieben - der letzte GEMESSENE
-         * Code bleibt, wie ro_state() es mit last_N.json haelt. Bis 1.1.11
-         * stand danach code 8 darin: endete eine Reinigung waehrend einer
-         * Funkpause (etwa beim Andocken), ging "fertig" verloren, und
-         * 9 -> 8 -> 9 meldete einen Fehler doppelt (in WSL gemessen,
-         * Code-Pruefer Fall C1: 0 Meldungen statt einer). */
+         * Code bleibt, wie ro_state() es mit last_N.json haelt. */
         if (!isset($st['ok']) || (int) $st['ok'] !== 1) { continue; }
         $prev = is_file($f) ? (json_decode((string) @file_get_contents($f), true) ?: array()) : array();
         /* Gesammelt, nicht ueberschrieben. Bis 1.0.14 schrieben Fertig,
          * Fehler und Material nacheinander DIESELBE Variable; fiel die
          * Wartungswarnung in derselben Minute an, in der eine Reinigung
-         * endete, verschwand "ist fertig" ersatzlos. */
+         * endete, verschwand "ist fertig" ersatzlos.
+         * Gruppe 28 (1.1.23, S15): die Saetze kommen aus der Sprachdatei ([MELDUNG], de/en, mit Umlauten) - sie sind
+         * zugleich Ansagetext; die Sprache der Ansage ist die der Oberflaeche (ro_sprache()). */
         $meldungen = array();
         // Reinigung beendet
         if (!empty($cfg['notify']['fertig']) && isset($prev['code']) && (int) $prev['code'] === 2
             && ro_reinigung_beendet($st['code'])) {
-            /* Gruppe 2 (1.1.22, -1-Regel): ohne Reinigungsbilanz vom Geraet (-1) nur "ist fertig." - sonst sagte die
-             * Ansage "-1 Quadratmeter in -1 Minuten". */
-            $meldungen['fertig'] = ($st['flaeche'] < 0 || $st['dauer'] < 0) ? $st['name'] . ' ist fertig.'
-                : $st['name'] . ' ist fertig. ' . str_replace('.', ',', (string) $st['flaeche'])
-                  . ' Quadratmeter in ' . (int) $st['dauer'] . ' Minuten.';
+            /* Gruppe 2 (1.1.22, -1-Regel): ohne Reinigungsbilanz vom Geraet (-1, beim T12 immer) nur "ist fertig." */
+            $meldungen['fertig'] = ($st['flaeche'] < 0 || $st['dauer'] < 0)
+                ? sprintf(ro_t('MELDUNG.FERTIG'), $st['name'])
+                : sprintf(ro_t('MELDUNG.FERTIG_BILANZ'), $st['name'],
+                          ro_sprache() === 'de' ? str_replace('.', ',', (string) $st['flaeche']) : (string) $st['flaeche'],
+                          (int) $st['dauer']);
         }
         // Fehler
         if (!empty($cfg['notify']['fehler']) && $st['code'] === 9 && (!isset($prev['code']) || (int) $prev['code'] !== 9)) {
-            $meldungen['fehler'] = 'Achtung: ' . $st['name'] . ' meldet einen Fehler'
-                         . ($st['fehlertext'] !== '' ? ': ' . $st['fehlertext'] : '.');
+            $meldungen['fehler'] = $st['fehlertext'] !== ''
+                ? sprintf(ro_t('MELDUNG.FEHLER_MIT'), $st['name'], $st['fehlertext'])
+                : sprintf(ro_t('MELDUNG.FEHLER'), $st['name']);
         }
         // Valetudo-Ereignis (hoechstens einmal je Ereignis)
         if (!empty($cfg['notify']['ereignis']) && $st['event'] > 0 && $st['evtyp'] > 0) {
             $evm = ro_tmpdir() . '/evm_' . $n . '_' . substr(md5((string) $st['evid'] . '|' . $st['evtyp']), 0, 12);
             if (!is_file($evm)) {
                 @file_put_contents($evm, '1');
-                $meldungen['ereignis'] = $st['name'] . ': ' . $st['evtext'] . '.';
+                $meldungen['ereignis'] = sprintf(ro_t('MELDUNG.EREIGNIS'), $st['name'], ro_event_text($st['evtyp']));
             }
         }
         // Verbrauchsmaterial (hoechstens einmal taeglich)
@@ -3319,21 +3292,22 @@ function ro_events_check($zustaende = null) {
                 @file_put_contents($mf, '1');
                 $teile = ro_material_faellig($st, $cfg);
                 if ($teile) {
-                    $meldungen['material'] = $st['name'] . ': Wartung faellig - ' . implode(', ', $teile) . ' pruefen oder wechseln.';
+                    $meldungen['material'] = sprintf(ro_t('MELDUNG.WARTUNG'), $st['name'], implode(', ', $teile));
                 }
             }
         }
+        /* Nachbau 27.10.: ohne neuen Anlass eine Fehlermeldung, die nicht mehr gilt, abloesen (ro_meldung_abloesen()). */
+        if (!$meldungen) { ro_meldung_abloesen($n, $st); }
         if ($meldungen) {
             $text = implode(' ', $meldungen);
             @touch(ro_tmpdir() . '/ann_' . $n);
             @file_put_contents(ro_tmpdir() . '/anntext_' . $n, $text);
+            ro_write_json(ro_tmpdir() . '/annteile_' . $n . '.json', array('teile' => $meldungen, 'ts' => time()));
             /* Saugroboter-k1 (1.1.15, Entscheidung Nr. 18): der Satz ist zugleich der Ansagetext
-             * ('Hallo! ' davor) - ins Protokoll kommen nur die Anlaesse und seine Laenge. Die
-             * Meldefunktion bleibt: der Satz steht unter <praefix>/meldung (MQTT) und im Feld
-             * meldung von robo.php, dafuer liegt er in anntext_<n>. */
+             * (Gruss davor) - ins Protokoll kommen nur die Anlaesse und seine Laenge. */
             ro_log('Meldung: ' . implode(', ', array_keys($meldungen)) . ' (' . ansage_zeichen($text) . ' Zeichen)');
             if (!empty($cfg['notify']['audio'])) {
-                ro_say('Hallo! ' . $text);
+                ro_say(ro_t('MELDUNG.GRUSS') . ' ' . $text);
             }
         }
         ro_write_json($f, array('code' => $st['code'], 'ts' => time()));
@@ -3354,17 +3328,12 @@ function ro_material_faellig($st, $cfg = null)
     $warn_h = max(0, (int) $cfg['warn_hours']);
     $warn_p = max(0, (int) $cfg['warn_prozent']);
     $prozent = ro_verbrauch_prozentfelder();
-    $namen = array('filter' => 'Filter', 'filter2' => 'Zweitfilter',
-                   'buerste_haupt' => 'Hauptbuerste', 'buerste_seite' => 'Seitenbuerste',
-                   'buerste_seite2' => 'zweite Seitenbuerste', 'sensor' => 'Sensoren',
-                   'raeder' => 'Raeder', 'mop' => 'Wischbezug',
-                   'dock_buerste' => 'Buerste der Station', 'dock_filter' => 'Filter der Station',
-                   'dock_behaelter' => 'Staubbeutel der Station', 'reiniger' => 'Reinigungsmittel');
+    // Gruppe 28 (1.1.23, S15): die Namen aus der Sprachdatei ([MELDUNG] TEIL_<FELD>, mit Umlauten).
     $teile = array();
-    foreach ($namen as $k => $bez) {
+    foreach (ro_meldung_teile() as $k) {
         if (!isset($st[$k])) { continue; }
         $grenze = in_array($k, $prozent, true) ? $warn_p : $warn_h;
-        if ($st[$k] >= 0 && $st[$k] <= $grenze) { $teile[] = $bez; }
+        if ($st[$k] >= 0 && $st[$k] <= $grenze) { $teile[] = ro_t('MELDUNG.TEIL_' . strtoupper($k)); }
     }
     return $teile;
 }
@@ -3667,7 +3636,7 @@ function ro_endpunkt_pfad($werte = array())
  * fehlt, soll nicht stillschweigend verschwinden.
  */
 function ro_vorlage($dev = 1, $nur_belegte = false) {
-    $dev = max(1, min(9, (int) $dev));
+    $dev = max(1, min(RO_ROBOTER_MAX, (int) $dev));
     $st = $nur_belegte ? ro_state($dev) : null;
     $cmds = array();
     foreach (ro_felder() as $name => $f) {
@@ -3744,7 +3713,7 @@ function ro_abo_text() {
 function ro_vo_vorlage($dev = 1) {
     $cfg = ro_config();
     $tok = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
-    $dev = max(1, min(9, (int) $dev));
+    $dev = max(1, min(RO_ROBOTER_MAX, (int) $dev));
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut HintText="" Title="Saugroboter steuern' . ($dev > 1 ? ' ' . $dev : '')
@@ -3837,6 +3806,8 @@ function ro_config_speichern($cfg)
     $vorher = ro_config();
     if (!ro_write_atomic($p['config'], $js, 0600)) { return false; }
     ro_mqtt_wechsel_vormerken($vorher, $cfg);
+    // Gruppe 28 (1.1.23, N4, E-E17): Typ- oder Adresswechsel einer Geraetenummer verwirft ihre Zwischenspeicher.
+    ro_wechsel_verwerfen($vorher, $cfg);
     /* C8 (Durchgang 01.10.2026): auch die Zweitschrift wird geprueft. Bis
      * 1.1.11 wurde ihr Rueckgabewert verworfen; scheiterte sie, blieb darin
      * ein altes Token, und ein Update spielte es zurueck. Die Konfiguration
@@ -3909,11 +3880,13 @@ function ro_wert_pruefen($schluessel, $wert)
     switch ($schluessel) {
         case 'robots':
             if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
-            if (count($wert) > 2) { return ro_t('GRUND.ROBOTER_MAX'); }
+            // Nachbau 27.10.: bis zu RO_ROBOTER_MAX (5) Zeilen; bis zur Probe 1.1.23 hoechstens 2.
+            if (count($wert) > RO_ROBOTER_MAX) { return ro_t('GRUND.ROBOTER_MAX'); }
             foreach ($wert as $r) {
                 if (!is_array($r)) { return ro_t('GRUND.ROBOTER_ZEILE'); }
                 foreach (array_keys($r) as $k) {
-                    if (!in_array($k, array('nr', 'name', 'ip', 'port', 'user', 'pass'), true)) {
+                    // Gruppe 28 (1.1.23, E-E2/E-E3): dazu typ und token.
+                    if (!in_array($k, array('nr', 'name', 'ip', 'port', 'user', 'pass', 'typ', 'token'), true)) {
                         return sprintf(ro_t('GRUND.ROBOTER_FELD'), $k);
                     }
                 }
@@ -3926,7 +3899,15 @@ function ro_wert_pruefen($schluessel, $wert)
                 // Die Geraetenummer ist eine Adresse (seit 1.1.4) und wird
                 // wie jeder andere Wert geprueft, nicht nur mitgenommen.
                 if (isset($r['port']) && !ro_ganz_ok($r['port'], 1, 65535)) { return ro_t('GRUND.PORT'); }
-                if (isset($r['nr']) && !ro_ganz_ok($r['nr'], 1, 9)) { return ro_t('GRUND.NR'); }
+                if (isset($r['nr']) && !ro_ganz_ok($r['nr'], 1, RO_ROBOTER_MAX)) { return ro_t('GRUND.NR'); }
+                /* Gruppe 28 (1.1.23): Geraetetyp aus der Liste; Token leer oder 32 Hex - Grossbuchstaben werden
+                 * angenommen (die Sicherung schreibt sie klein, wie das Formular, E-E3). */
+                if (isset($r['typ']) && (!is_string($r['typ']) || !in_array($r['typ'], ro_robot_typen(), true))) {
+                    return ro_t('GRUND.TYP');
+                }
+                if (isset($r['token']) && (!is_string($r['token']) || !preg_match('/^([0-9A-Fa-f]{32})?\z/', $r['token']))) {
+                    return ro_t('GRUND.MIOT_TOKEN');
+                }
             }
             return '';
         case 'cache_sec':
@@ -3940,6 +3921,7 @@ function ro_wert_pruefen($schluessel, $wert)
                    ? '' : ro_t('GRUND.NULL_EINS');
         case 'befehle_mqtt_ein':
         case 'befehle_mqtt_steuern':
+        case 'endpunkt_ein':   // Gruppe 28 (1.1.23, E-E12): der Lesezweig fuer Loxone, 0 oder 1
             // Gruppe 2 (1.1.22): die beiden Haken der Befehlsbruecke - wie mqtt_enabled 0 oder 1.
             return ((is_int($wert) || is_string($wert)) && in_array((string) $wert, array('0', '1'), true))
                    ? '' : ro_t('GRUND.NULL_EINS');
@@ -4086,6 +4068,14 @@ function ro_sicherung_lesen($roh)
             continue;
         }
         $neu[$k] = $w;
+        if ($k === 'robots') {
+            // Gruppe 28 (1.1.23, E-E3): Token klein speichern (die Pruefung hat Grossbuchstaben angenommen).
+            foreach ($neu['robots'] as $ro_ri => $ro_rz) {
+                if (is_array($ro_rz) && isset($ro_rz['token']) && is_string($ro_rz['token'])) {
+                    $neu['robots'][$ro_ri]['token'] = strtolower($ro_rz['token']);
+                }
+            }
+        }
         if ($k === 'tts') {
             /* Nr. 36 b, Stufe 2: gepruefte Form (Zahlen als Zahl) und fehlende Eintraege mit ihrer
              * Vorgabe - eine Sicherung aus 1.1.14 kennt sonos_zone/sonos_laut nicht. */
@@ -4125,7 +4115,8 @@ function ro_sicherung_lesen($roh)
     $fehlend = array();
     foreach (array_keys(ro_vorgaben()) as $fk) {
         // Gruppe 2 (1.1.22): die Haken der Befehlsbruecke darf eine aeltere Sicherung nicht kennen (ro_spaet_schluessel()).
-        if (!array_key_exists($fk, $daten) && !in_array($fk, ro_spaet_schluessel(), true)) {
+        if (!array_key_exists($fk, $daten) && !in_array($fk, ro_spaet_schluessel(), true)
+            && !in_array($fk, ro_spaet_geltend(), true)) {
             $fehlend[] = $fk;
         }
     }
@@ -4133,7 +4124,17 @@ function ro_sicherung_lesen($roh)
         $mangel[] = sprintf(ro_t('TEXT.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten);
+    /* Gruppe 28 (1.1.23, N7): fehlt ein Spaetschluessel mit geltendem Wert (ro_spaet_geltend()), bleibt der
+     * geltende - die Oberflaeche sagt es (fuenfter Rueckgabewert). */
+    $spaet = array();
+    foreach (ro_spaet_geltend() as $ro_sk) {
+        if (!array_key_exists($ro_sk, $daten)) {
+            $neu[$ro_sk] = isset($jetzt[$ro_sk]) ? (int) $jetzt[$ro_sk] : $neu[$ro_sk];
+            $spaet[] = $ro_sk;
+        }
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten,
+                 $spaet ? array(sprintf(ro_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $spaet))) : array());
 }
 
 /**
@@ -4165,9 +4166,8 @@ function ro_sicherung_bauen()
 {
     $cfg = ro_config();
     $aus = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Saugroboter (Valetudo). '
-                    . 'Enthaelt das Aktionstoken der Anlage - wie ein Passwort behandeln. '
-                    . 'Die Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG sind nicht enthalten.',
+        // Gruppe 28 (1.1.23, E3/E-E2): der Kopf nennt alle Geheimnisse der Datei - aus der Sprachdatei.
+        '_hinweis' => ro_t('TEXT.SICH_HINWEIS_KOPF'),
         '_stand'   => date('Y-m-d H:i'),
         '_fassung' => ro_pluginversion(),
     );
@@ -4180,9 +4180,18 @@ function ro_sicherung_bauen()
      * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
      * geltende (ro_sicherung_lesen()). */
     if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }   // Nr. 36 b: eine Quelle
+    /* Gruppe 28 (1.1.23, E-E3): eine Xiaomi-Zeile mit Adresse, aber ohne Token wird nicht abgewiesen (Ganzstand wie
+     * das Kennwort, S11) - der Kopf nennt sie. */
+    $ohne = array();
+    foreach (ro_robots_aus($cfg) as $n => $r) {
+        if ($r['typ'] === 'miot' && $r['token'] === '') { $ohne[] = $n; }
+    }
     /* X-3: wuerde das eigene Zurueckspielen diese Datei abweisen, sagt es der
      * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
     $warn = ro_sicherung_warnung($aus);
+    if ($ohne) {
+        $aus = array('_warnung_token' => sprintf(ro_t('TEXT.SICH_TOKEN_FEHLT_KOPF'), implode(', ', $ohne))) + $aus;
+    }
     if ($warn) {
         $aus = array('_warnung' => sprintf(ro_t('TEXT.SICH_WARN_KOPF'), implode(', ', $warn))) + $aus;
     }
@@ -4466,8 +4475,11 @@ function ro_selbsttest($opt = array())
     }
     $add('PRUEF.MODELL', $modelle ? 1 : 2, implode(', ', $modelle));
 
-    // Welche Faehigkeiten meldet der erste Roboter?
-    $caps = $robots ? ro_capabilities(1) : array();
+    /* Welche Faehigkeiten meldet der erste VALETUDO-Roboter? Gruppe 28 (1.1.23, S8): seine Nummer, nicht die feste 1
+     * (eine Anlage mit nur Roboter 2 fragte bis 1.1.22 ins Leere); der T12 hat die feste Liste ro_miot_befehle(). */
+    $ro_v1 = 0;
+    foreach ($robots as $ro_vn => $ro_vr) { if ($ro_vr['typ'] === 'valetudo') { $ro_v1 = $ro_vn; break; } }
+    $caps = $ro_v1 ? ro_capabilities($ro_v1) : array();
     $add('PRUEF.FAEHIGKEITEN', $caps ? 1 : 2, (string) count($caps));
     foreach (array('MapSegmentationCapability' => 'PRUEF.RAEUME',
                    'FanSpeedControlCapability' => 'PRUEF.SAUGSTUFE',
@@ -4650,10 +4662,25 @@ function ro_selbsttest($opt = array())
     list($as, $at) = ro_pruef_ansage($cfg, $test_offen);
     $add('PRUEF.ANSAGE', $as, $at);
 
+    /* Gruppe 28 (1.1.23, E-E11): [MELDUNG] von Hand gepflegt - de/en gleich viele Schluessel, jeder bildbare da. */
+    list($ms, $mt) = ro_meldung_pruefen();
+    $add('PRUEF.MELDUNG', $ms, $mt);
+    /* Gruppe 28 (1.1.23, N8): ohne openssl ist der Xiaomi-Treiber nicht nutzbar - nur genannt, wenn eine
+     * Xiaomi-Zeile eingetragen ist. */
+    $ro_miot = array();
+    foreach ($robots as $ro_mn => $ro_mr) { if ($ro_mr['typ'] === 'miot') { $ro_miot[] = $ro_mn; } }
+    if ($ro_miot) {
+        $add('PRUEF.OPENSSL', extension_loaded('openssl') ? 1 : 0,
+            extension_loaded('openssl') ? 'PHP ' . PHP_VERSION : ro_t('PRUEF.OPENSSL_FEHLT'));
+    }
+    // Gruppe 28 (1.1.23, E-E12): der HTTP-Lesezweig fuer Loxone (Reiter Einbindung).
+    $add('PRUEF.LESEZWEIG', empty($cfg['endpunkt_ein']) ? 2 : 1,
+        ro_t(empty($cfg['endpunkt_ein']) ? 'PRUEF.LESEZWEIG_AUS' : 'PRUEF.LESEZWEIG_EIN'));
+
     // Nicht-stoeren-Zeit in Valetudo - sie kann einem Loxone-Programm in die
     // Quere fahren, ohne dass jemand daran denkt.
-    if ($robots) {
-        $dnd = ro_ruhezeit(1);
+    if ($ro_v1) {
+        $dnd = ro_ruhezeit($ro_v1);
         if (is_array($dnd) && isset($dnd['enabled'])) {
             $add('PRUEF.RUHEZEIT', empty($dnd['enabled']) ? 1 : 2,
                 empty($dnd['enabled']) ? '' : sprintf('%02d:%02d-%02d:%02d',
@@ -4691,6 +4718,1207 @@ function ro_selbsttest($opt = array())
                                                : sprintf(ro_t('PRUEF.NAMEN_OK'), count($nt_ist)));
 
     return $z;
+}
+
+/* ==================================================================
+ * Treiber "Xiaomi MIoT" (Gruppe 28, 1.1.23; Entscheidung 3, Entwurf 2.2-2.4, 3.3, 3.8, E-E1-E-E9)
+ * ==================================================================
+ *
+ * Ein Xiaomi-Saugroboter OHNE Valetudo (Hausherr: Xiaomi T12, xiaomi.vacuum.c103, 3irobotix) spricht im Heimnetz das
+ * miIO-Protokoll (UDP 54321). Je Roboterzeile waehlt das Feld "typ" den Treiber: 'valetudo' (fehlt -> Valetudo, jede
+ * bestehende Zeile bleibt) oder 'miot'. Beide Treiber fuellen DIESELBEN Felder; Fertig-Erkennung, Meldungen,
+ * Zwischenspeicher, MQTT und Befehlsbruecke sind gemeinsam (ro_state(), ro_command()).
+ *
+ * Protokoll - belegt am Quelltext python-miio (github.com/rytilahti/python-miio, miio/protocol.py und
+ * miio/miioprotocol.py, nur gelesen 26.10.2026; nichts uebernommen, nichts installiert):
+ *   Kopf 32 Byte, Big Endian: 0x2131 (2) | Laenge gesamt (2) | 0 (4) | Geraetekennung (4) | Stempel (4) | Pruefsumme (16).
+ *   Pruefsumme = MD5(Kopf[0..15] . Token . Nutzlast); Nutzlast = AES-128-CBC/PKCS7 von JSON . "\0" mit
+ *   Schluessel = MD5(Token), IV = MD5(Schluessel . Token). Gruss = 0x2131 0x0020 + 28 x 0xFF; die Antwort traegt
+ *   Kennung und Stempel. Nur openssl_encrypt()/openssl_decrypt() und udp://-Stroeme - kein python-miio, kein pip,
+ *   kein exec, kein Fremdprozess (Entscheidung 3).
+ * Belegung JE MODELL (Nachbau 26.10. spaet nach dem Geraetetest: der T12 des Hausherrn meldet miIO.info
+ * xiaomi.vacuum.b106bk, nicht c103) - Tabelle ro_miot_modelle(), Quelle je Modell die offizielle MIoT-Spezifikation
+ * (home.miot-spec.com/spec/<modell>, Daten miot-spec.org/miot-spec-v2/instance?type=<urn>, nur gelesen 26.10.2026):
+ *   c103   urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-c103:2   - Saugstufe 2/11, Modus 0-3, Status 0-10
+ *   b106bk urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-b106bk:1 - Saugstufe 7/5 (2/11 gibt es nicht -> -4003,
+ *          am Geraet gemessen), Modus 0-2, Status 0-8, Raum-IDs ueber map 10/2 + Aktion 10/13 (ungeprueft)
+ * Ein unbekanntes Modell faehrt mit der c103-Tabelle (gemeinsame MIoT-Grundform siid 2/3) und bekommt im Reiter Test
+ * eine Warnung. Das Modell kommt aus miIO.info (einmal am Tag je Roboter, tmp/miot_modell_N.json ohne Geheimnis).
+ *
+ * DER TOKEN geht nie in Protokoll, Antwortzeile, Reiter Test, Fehlermeldung, Kommandozeile oder Umgebung; die
+ * Sitzung haelt ihn nur im Speicher dieses Prozesses (Regeln/05, Entscheidung 3). Auch die Geraetekennung wird
+ * nirgends gezeigt (ein Geraetemerkmal wie die Seriennummer).
+ */
+
+/** Die Geraetetypen einer Roboterzeile - EINE Liste fuer Formular, Sicherung und Treiberwahl. */
+function ro_robot_typen()
+{
+    return array('valetudo', 'miot');
+}
+
+/** Der feste miIO-Port. */
+define('RO_MIIO_PORT', 54321);
+
+/**
+ * Nach so vielen Sekunden ohne frischen Geraetestempel gruesst die Sitzung vor dem naechsten Paket neu (Nachbau 26.10.
+ * spaet). Beleg: python-miio (miio/miioprotocol.py, Zweig master, gelesen 26.10.2026) fuehrt dafuer handshake_timeout
+ * ein ("Some devices require a recent handshake to accept commands") und rechnet den Stempel als letzter
+ * Geraetestempel + 1 s. Am T12 gemessen: ein Paket mit einem 120 s zurueckliegenden Stempel bleibt ohne Antwort.
+ */
+define('RO_MIIO_GRUSS_ALTER', 10);
+
+/** Token (32 Hex, Gross- oder Kleinbuchstaben) -> 16 Byte, sonst false. */
+function ro_miio_token_bin($hex)
+{
+    $hex = strtolower(trim((string) $hex));
+    if (!preg_match('/^[0-9a-f]{32}\z/', $hex)) { return false; }
+    return hex2bin($hex);
+}
+
+/** array(Schluessel, IV) - je 16 Byte roh (python-miio: key = md5(token), iv = md5(key + token)). */
+function ro_miio_schluessel($tok)
+{
+    $key = md5($tok, true);
+    return array($key, md5($key . $tok, true));
+}
+
+function ro_miio_verschluesseln($klar, $tok)
+{
+    list($key, $iv) = ro_miio_schluessel($tok);
+    // OPENSSL_RAW_DATA: Rohbytes; ohne OPENSSL_ZERO_PADDING rechnet openssl PKCS7 selbst.
+    return openssl_encrypt($klar, 'aes-128-cbc', $key, OPENSSL_RAW_DATA, $iv);
+}
+
+function ro_miio_entschluesseln($geheim, $tok)
+{
+    list($key, $iv) = ro_miio_schluessel($tok);
+    $k = openssl_decrypt($geheim, 'aes-128-cbc', $key, OPENSSL_RAW_DATA, $iv);
+    return $k === false ? false : rtrim($k, "\0");
+}
+
+/** Ein Paket bauen. $did = 4 Byte roh, $stempel = ganze Zahl. */
+function ro_miio_paket($did, $stempel, $tok, $json)
+{
+    $nutz = ro_miio_verschluesseln($json . "\0", $tok);
+    if ($nutz === false) { return false; }
+    $kopf = pack('nnN', 0x2131, 32 + strlen($nutz), 0) . $did . pack('N', $stempel & 0xFFFFFFFF);
+    return $kopf . md5($kopf . $tok . $nutz, true) . $nutz;
+}
+
+/**
+ * Ein empfangenes Paket zerlegen: array('lage' => ok|gruss|kurz|magie|laenge|summe|entschl|json, 'did', 'stempel', 'j').
+ * Was die Pruefsumme nicht besteht (falscher Token, fremdes Paket), wird nie entschluesselt.
+ */
+function ro_miio_zerlegen($roh, $tok)
+{
+    $aus = array('lage' => 'kurz', 'did' => '', 'stempel' => 0, 'j' => null);
+    if (strlen($roh) < 32) { return $aus; }
+    $k = unpack('nmagie/nlaenge/Nunbekannt', substr($roh, 0, 8));
+    if ($k['magie'] !== 0x2131) { $aus['lage'] = 'magie'; return $aus; }
+    if ($k['laenge'] !== strlen($roh)) { $aus['lage'] = 'laenge'; return $aus; }
+    $aus['did'] = substr($roh, 8, 4);
+    $s = unpack('Nst', substr($roh, 12, 4));
+    $aus['stempel'] = $s['st'];
+    if ($k['laenge'] === 32) { $aus['lage'] = 'gruss'; return $aus; }
+    $nutz = substr($roh, 32);
+    if (!hash_equals(md5(substr($roh, 0, 16) . $tok . $nutz, true), substr($roh, 16, 16))) {
+        $aus['lage'] = 'summe';
+        return $aus;
+    }
+    $klar = ro_miio_entschluesseln($nutz, $tok);
+    if ($klar === false) { $aus['lage'] = 'entschl'; return $aus; }
+    $j = json_decode($klar, true);
+    if (!is_array($j)) {
+        // python-miio kennt Geraete mit ",," im JSON - dieselbe Nachbesserung, nichts weiter.
+        $j = json_decode(str_replace(',,', ',', $klar), true);
+    }
+    if (!is_array($j)) { $aus['lage'] = 'json'; return $aus; }
+    $aus['lage'] = 'ok';
+    $aus['j'] = $j;
+    return $aus;
+}
+
+/** UDP-Strom zum Roboter - ohne die Erweiterung "sockets" (wie ro_udp_senden()). */
+function ro_miio_strom($ip, $port)
+{
+    $s = @stream_socket_client('udp://' . $ip . ':' . (int) $port, $en, $es, 1);
+    return $s === false ? null : $s;
+}
+
+/** Ein Datagramm lesen, hoechstens $tmo s. null = Zeitablauf oder niemand am Port (ICMP: fread liefert ''). */
+function ro_miio_lesen($s, $tmo)
+{
+    $bis = microtime(true) + $tmo;
+    while (true) {
+        $rest = $bis - microtime(true);
+        if ($rest <= 0) { return null; }
+        $r = array($s); $w = null; $e = null;
+        $n = @stream_select($r, $w, $e, (int) floor($rest), (int) (($rest - floor($rest)) * 1000000));
+        if ($n === false) { return null; }
+        if ($n === 0) { continue; }
+        $d = @fread($s, 4096);
+        if ($d !== false && $d !== '') { return $d; }
+        return null;
+    }
+}
+
+/** Gruss: array(ok, Kennung (4 Byte), Stempel, ms). Zwei Versuche je 1 s - ein verlorenes Datagramm ist kein Ausfall. */
+function ro_miio_gruss($s, $tmo = 1.0, $versuche = 2)
+{
+    $gruss = pack('nn', 0x2131, 0x0020) . str_repeat("\xff", 28);
+    for ($i = 0; $i < $versuche; $i++) {
+        $t0 = microtime(true);
+        @fwrite($s, $gruss);
+        $d = ro_miio_lesen($s, $tmo);
+        if ($d === null) { continue; }
+        if (strlen($d) === 32 && substr($d, 0, 2) === "\x21\x31") {
+            $st = unpack('Nst', substr($d, 12, 4));
+            return array(true, substr($d, 8, 4), $st['st'], (int) round((microtime(true) - $t0) * 1000));
+        }
+    }
+    return array(false, '', 0, 0);
+}
+
+/**
+ * Eine Sitzung = ein Gruss je Lauf bzw. je Befehl (E-E4; kein Merker ueber Prozesse, keine Datei). Rueckgabe
+ * array('fehler' => ''|TOKEN_FORM|OPENSSL|NETZ|KEIN_GRUSS, 's', 'tok', 'did', 'stempel', 'stempel_zeit', 'id', 'gruss_ms').
+ * $r ist die Roboterzeile (ip, token; 'miio_port' nur fuer die Proben gegen die Attrappe).
+ */
+function ro_miio_sitzung($r)
+{
+    if (!extension_loaded('openssl')) { return array('fehler' => 'OPENSSL'); }
+    $tok = ro_miio_token_bin(isset($r['token']) ? $r['token'] : '');
+    if ($tok === false) { return array('fehler' => 'TOKEN_FORM'); }
+    $s = ro_miio_strom($r['ip'], isset($r['miio_port']) ? (int) $r['miio_port'] : RO_MIIO_PORT);
+    if ($s === null) { return array('fehler' => 'NETZ'); }
+    list($ok, $did, $stempel, $ms) = ro_miio_gruss($s);
+    if (!$ok) { @fclose($s); return array('fehler' => 'KEIN_GRUSS'); }
+    return array('fehler' => '', 's' => $s, 'tok' => $tok, 'did' => $did,
+                 'stempel' => $stempel, 'stempel_zeit' => microtime(true),
+                 // Laufnummer: zufaelliger Beginn, damit zwei Prozesse kurz nacheinander nicht dieselbe senden.
+                 'id' => mt_rand(1, 8999), 'gruss_ms' => $ms);
+}
+
+/** Sitzung schliessen und den Token aus dem Speicher nehmen. */
+function ro_miio_schliessen(array &$z)
+{
+    if (isset($z['s']) && is_resource($z['s'])) { @fclose($z['s']); }
+    $z['tok'] = '';
+    $z['s'] = null;
+}
+
+/** Stempel fuer das naechste Paket: letzter Geraetestempel + verstrichene ganze Sekunden + 1 (python-miio: +1 s). */
+function ro_miio_stempel(array $z)
+{
+    return (int) $z['stempel'] + (int) floor(microtime(true) - $z['stempel_zeit']) + 1;
+}
+
+/**
+ * Ein Aufruf mit Wiederholung. Rueckgabe array(lage, result|null, fehlercode, text);
+ * lage: ok | fehler (error vom Geraet) | keine_antwort | token (Antwort kam, Summe/Entschluesseln falsch).
+ * Frist 2 s je Paket, hoechstens 2 Pakete: nach Zeitablauf neue Laufnummer (+100 wie python-miio) und ein Neugruss,
+ * bei error.code -9999/-30001 gleich die naechste Nummer. Schlimmster Fall 2 x 1 s + 2 x 2 s + 1 s = 7 s.
+ * Liegt der letzte Geraetestempel laenger als RO_MIIO_GRUSS_ALTER s zurueck (lange Pause in einer Sitzung), kommt
+ * VOR dem Paket ein Neugruss (ein Versuch, 1 s) - der Stempel beruht dann auf dem frischen Geraetestempel.
+ */
+function ro_miio_rufen(array &$z, $methode, $params, $tmo = 2.0, $versuche = 2)
+{
+    $letzte = 'keine_antwort';
+    for ($i = 0; $i < $versuche; $i++) {
+        if (microtime(true) - (float) $z['stempel_zeit'] > RO_MIIO_GRUSS_ALTER) {
+            list($ok, $did, $st) = ro_miio_gruss($z['s'], 1.0, 1);
+            if ($ok) { $z['did'] = $did; $z['stempel'] = $st; $z['stempel_zeit'] = microtime(true); }
+        }
+        $id = $z['id'];
+        $json = json_encode(array('id' => $id, 'method' => $methode, 'params' => $params),
+                            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $p = ($json === false) ? false : ro_miio_paket($z['did'], ro_miio_stempel($z), $z['tok'], $json);
+        if ($p === false) { return array('fehler', null, 0, 'OPENSSL'); }
+        @fwrite($z['s'], $p);
+        $bis = microtime(true) + $tmo;
+        $antwort = null;
+        while (($rest = $bis - microtime(true)) > 0) {
+            $d = ro_miio_lesen($z['s'], $rest);
+            if ($d === null) { break; }
+            $t = ro_miio_zerlegen($d, $z['tok']);
+            if ($t['lage'] === 'gruss') { continue; }                      // verspaeteter Gruss
+            if ($t['lage'] !== 'ok') { $letzte = 'token'; continue; }      // Summe/Entschluesseln falsch
+            $z['stempel'] = $t['stempel'];
+            $z['stempel_zeit'] = microtime(true);
+            if (!isset($t['j']['id']) || (int) $t['j']['id'] !== $id) { continue; }   // alte Antwort
+            $antwort = $t['j'];
+            break;
+        }
+        if ($antwort === null) {
+            $z['id'] = ($z['id'] + 100) % 9999 + 1;
+            list($ok, $did, $st) = ro_miio_gruss($z['s'], 1.0, 1);
+            if ($ok) { $z['did'] = $did; $z['stempel'] = $st; $z['stempel_zeit'] = microtime(true); }
+            continue;
+        }
+        $z['id'] = $z['id'] % 9999 + 1;
+        if (isset($antwort['error'])) {
+            $c = isset($antwort['error']['code']) ? (int) $antwort['error']['code'] : 0;
+            if (in_array($c, array(-9999, -30001), true) && $i + 1 < $versuche) { $letzte = 'fehler'; continue; }
+            return array('fehler', null, $c, '');
+        }
+        return array('ok', isset($antwort['result']) ? $antwort['result'] : null, 0, '');
+    }
+    return array($letzte, null, 0, '');
+}
+
+/**
+ * Die Treiber-Tabelle JE MODELL (Nachbau 26.10. spaet). Quelle: offizielle MIoT-Spezifikation je urn (siehe Kopf).
+ *   lesen        Name => (siid, piid) fuer EIN get_properties je Minute (fuenf Werte)
+ *   status       MIoT-Status -> Statuszahl des Plugins (fehlt -> 8 "unbekannt"); laedt: Stati mit Ladestrom
+ *   modus/saug   MIoT-Wert -> Plugin-Code (E-E5); modus_setzen/fan_setzen: (siid, piid, Befehlswert => MIoT-Wert)
+ *   start/stop/home (siid, aiid); raum (siid, aiid, piid des Eingangs Raum-IDs)
+ *   raeume       wie der Reiter Test die Raum-IDs liest: ('eigenschaft', siid, piid) oder
+ *                ('aktion', siid, aiid, siid_karte, piid_karte, piid_ausgabe) - die Karten-Nummer kommt aus get_properties
+ *   hinweis      fault-Werte, die KEIN Fehler sind (fehler bleibt 0, Code nicht 9; roh im Reiter Test)
+ *   gemessen     was am Geraet gemessen ist (sonst "nein")
+ */
+function ro_miot_modelle()
+{
+    $c103 = array(
+        'urn' => 'urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-c103:2',
+        'lesen' => array('status' => array(2, 1), 'fehler' => array(2, 2), 'modus' => array(2, 4), 'saug' => array(2, 11),
+                         'akku' => array(3, 1)),
+        // 0 Sleep, 1 Idle, 2 Paused, 3 Go Charging, 4 Charging, 5 Sweeping, 6 Sweeping and Mopping, 7 Mopping,
+        // 8 Upgrading, 9 BuildingMap, 10 Charged
+        'status' => array(0 => 1, 1 => 1, 2 => 3, 3 => 4, 4 => 0, 5 => 2, 6 => 2, 7 => 2, 8 => 8, 9 => 5, 10 => 0),
+        'laedt' => array(4),
+        'modus' => array(0 => 1, 1 => 3, 2 => 2, 3 => 4),        // Sweep, Sweep And Mop, Mop, Sweep Then Mop
+        'saug' => array(0 => 2, 1 => 3, 2 => 4, 3 => 5),         // Silent, Basic, Strong, Full Speed
+        'modus_setzen' => array(2, 4, array('vacuum' => 0, 'vacuum_and_mop' => 1, 'mop' => 2, 'vacuum_then_mop' => 3)),
+        'fan_setzen' => array(2, 11, array('low' => 0, 'medium' => 1, 'high' => 2, 'max' => 3)),
+        'start' => array(2, 1), 'stop' => array(2, 2), 'home' => array(3, 1), 'raum' => array(2, 7, 10),
+        'raeume' => array('eigenschaft', 2, 10),
+        'hinweis' => array(),
+        'statusname' => array(),
+        'zusatz' => array(),      // Nachbau 27.10.: keine gemessene Belegung -> Verbrauch/Reinigung/Wasser -1
+        'wasser' => array(),
+        'gemessen' => 'nein',
+    );
+    $b106bk = array(
+        'urn' => 'urn:miot-spec-v2:device:vacuum:0000A006:xiaomi-b106bk:1',
+        'lesen' => array('status' => array(2, 1), 'fehler' => array(2, 2), 'modus' => array(2, 4), 'saug' => array(7, 5),
+                         'akku' => array(3, 1)),
+        // 0 Sleep, 1 Idle, 2 Paused, 3 Go Charging, 4 Charging, 5 Sweeping, 6 Mopping, 7 Sweeping and Mopping, 8 Upgrade
+        'status' => array(0 => 1, 1 => 1, 2 => 3, 3 => 4, 4 => 0, 5 => 2, 6 => 2, 7 => 2, 8 => 8),
+        'laedt' => array(4),
+        'modus' => array(0 => 1, 1 => 3, 2 => 2),                // Sweep, SweepAndMop, Mop (kein "erst saugen, dann wischen")
+        'saug' => array(0 => 2, 1 => 3, 2 => 4, 3 => 5),         // 7/5 suction-state: Slient, Standard, Medium, Turbo
+        'modus_setzen' => array(2, 4, array('vacuum' => 0, 'vacuum_and_mop' => 1, 'mop' => 2)),
+        'fan_setzen' => array(7, 5, array('low' => 0, 'medium' => 1, 'high' => 2, 'max' => 3)),
+        'start' => array(2, 1), 'stop' => array(2, 2), 'home' => array(3, 1), 'raum' => array(2, 7, 10),
+        // 2/10 room-ids ist laut Spezifikation nicht lesbar (access leer); die Raumliste liefert die Aktion 10/13
+        // get-map-room-list (Eingang 2 cur-map-id, Ausgabe 17 room-id-name-list) - ungeprueft bis zum Geraetetest.
+        'raeume' => array('aktion', 10, 13, 10, 2, 17),
+        // fault 2/2 ist laut Spezifikation nur ein Wertebereich 0-3000 ohne Liste. Gemessen (26./27.10.2026): 2105 bei
+        // Status 4 in der Station (Akku 100), 2108 bei Status 6 beim Reinigen (Fahrprobe, Modus 1 SweepAndMop) - beide
+        // ohne Stoerung. Dritter Nachbau (Nachtrag 27.10. nachts): der ganze Bereich 2100-2199 ist ein Hinweis (fehler 0,
+        // Code nicht 9, roh im Reiter Test); jeder andere Wert bleibt ein Fehler ("MIoT-Fehler n").
+        'hinweis' => range(2100, 2199),
+        'statusname' => array(6 => 'MIOT_STATUS_7', 7 => 'MIOT_STATUS_6'),
+        /* Nachbau 27.10.: die Zusatzwerte (am Geraet gelesen, Gerätetest 3b) - EIN zweites get_properties je Minute,
+         * ein Versuch (ro_miot_zusatz_abbilden()). */
+        'zusatz' => array('seite_pct' => array(7, 8), 'seite_h' => array(7, 9), 'haupt_pct' => array(7, 10),
+                          'haupt_h' => array(7, 11), 'filter_pct' => array(7, 12), 'filter_h' => array(7, 13),
+                          'mop_pct' => array(7, 14), 'mop_h' => array(7, 15), 'dauer' => array(7, 22),
+                          'flaeche' => array(7, 23), 'wasser' => array(7, 6)),
+        'wasser' => array(0 => 2, 1 => 3, 2 => 4),                // 7/6 water-state: Low, Mid, High
+        'gemessen' => '26.10.2026 lesend: Gruss 18 ms, status 4, fault 2105, 2/11 -4003, Akku 100, Firmware 4.3.3_0010;'
+                    . ' 27.10.2026: Belegung greift, Verbrauchsmaterial/Dauer/Flaeche/Wasser lesbar;'
+                    . ' 27.10.2026 nachts Fahrprobe: home/start/stop MIOT 0, Reinigen status 6 fault 2108, Station 4/2105',
+    );
+    return array('xiaomi.vacuum.c103' => $c103, 'xiaomi.vacuum.b106bk' => $b106bk);
+}
+
+/** Ist die Belegung dieses Modells bekannt (Tabelle)? Nur unbekannte Modelle bekommen die Warnung. */
+function ro_miot_modell_bekannt($modell)
+{
+    return is_string($modell) && $modell !== '' && array_key_exists($modell, ro_miot_modelle());
+}
+
+/** Die Tabelle eines Modells; unbekannt oder leer -> c103 (MIoT-Grundform siid 2/3) mit 'bekannt' => false. */
+function ro_miot_tabelle($modell = '')
+{
+    $alle = ro_miot_modelle();
+    $bekannt = ro_miot_modell_bekannt($modell);
+    $t = $bekannt ? $alle[$modell] : $alle['xiaomi.vacuum.c103'];
+    $t['modell'] = $bekannt ? $modell : '';
+    $t['bekannt'] = $bekannt;
+    return $t;
+}
+
+/** Die fuenf Eigenschaften des Minutenlaufs fuer ein Modell (ohne Angabe: Grundform). */
+function ro_miot_belegung($tab = null)
+{
+    if (!is_array($tab)) { $tab = ro_miot_tabelle(''); }
+    return $tab['lesen'];
+}
+
+/**
+ * Das Modell des Roboters dieser Sitzung: aus tmp/miot_modell_N.json (24 h, gleiche Adresse), sonst EIN miIO.info
+ * in der offenen Sitzung. Rueckgabe Modellname oder '' (keine Antwort / unbrauchbar - dann gilt die Grundform).
+ * Die Antwort von miIO.info kann den Token tragen - sie wird sofort verworfen, gespeichert wird nur das Modell.
+ */
+function ro_miot_modell_holen(array &$z, $dev, $ip)
+{
+    $dev = max(1, (int) $dev);
+    $f = ro_tmpdir() . '/miot_modell_' . $dev . '.json';
+    if (is_file($f) && time() - (int) @filemtime($f) < 86400) {
+        $c = json_decode((string) @file_get_contents($f), true);
+        if (is_array($c) && isset($c['modell'], $c['adresse']) && $c['adresse'] === (string) $ip && is_string($c['modell'])) {
+            return $c['modell'];
+        }
+    }
+    list($l, $info) = ro_miio_rufen($z, 'miIO.info', array());
+    $m = ($l === 'ok' && is_array($info) && isset($info['model']) && is_string($info['model'])
+          && preg_match('/^[a-z0-9_.\-]{3,60}\z/', $info['model'])) ? $info['model'] : '';
+    $fw = ($l === 'ok' && is_array($info) && isset($info['fw_ver']) && is_scalar($info['fw_ver']))
+        ? substr((string) $info['fw_ver'], 0, 30) : '';
+    unset($info);
+    $z['info_lage'] = $l;   // Nachbau 27.10.: ohne Antwort beendet ro_miot_state() den Abruf
+    if ($m !== '') { ro_write_json($f, array('modell' => $m, 'firmware' => $fw, 'adresse' => (string) $ip)); }
+    return $m;
+}
+
+/**
+ * EIN get_properties fuer eine Liste Name => (siid, piid). Rueckgabe array(lage, Name => array(Wert|null, Code), Code).
+ * Jede Eigenschaft traegt im Feld did ihren Namen; das Geraet gibt ihn zurueck - die Zuordnung braucht keine
+ * Reihenfolge. Ein Eintrag mit code != 0 bleibt null (-> -1), nie 0.
+ */
+function ro_miot_lesen(array &$z, array $liste, $versuche = 2)
+{
+    $params = array();
+    foreach ($liste as $name => $sp) {
+        $params[] = array('did' => $name, 'siid' => $sp[0], 'piid' => $sp[1]);
+    }
+    list($lage, $res, $code) = ro_miio_rufen($z, 'get_properties', $params, 2.0, $versuche);
+    $werte = array();
+    foreach ($liste as $name => $sp) { $werte[$name] = array(null, null); }
+    if ($lage !== 'ok' || !is_array($res)) { return array($lage, $werte, $code); }
+    foreach ($res as $e) {
+        if (!is_array($e) || !isset($e['did']) || !array_key_exists((string) $e['did'], $werte)) { continue; }
+        $c = isset($e['code']) ? (int) $e['code'] : -1;
+        $werte[(string) $e['did']] = array($c === 0 && array_key_exists('value', $e) ? $e['value'] : null, $c);
+    }
+    return array('ok', $werte, 0);
+}
+
+/**
+ * Zustand des Xiaomi-Roboters in die Felder des Zustands (Entwurf 2.3, E-E5) - nach der Tabelle des Modells.
+ * $st kommt mit den -1-Vorgaben aus ro_state(). Statuszahl laut Tabelle 'status' (unbekannt -> 8), fault != 0 -> 9,
+ * ausser der Wert steht in 'hinweis' (dann fehler 0); roh bleiben miot_status und miot_fehler fuer den Reiter Test.
+ * Dritter Nachbau: beim Reinigen (Code 2 wie Valetudo "cleaning") steht in 'taetigkeit' der Statusname nach der
+ * Tabelle (b106bk 5 saugt, 6 wischt, 7 saugt und wischt) - ro_state() haengt ihn an den Statustext; sonst ''.
+ */
+function ro_miot_abbilden(array $st, array $w, $tab = null)
+{
+    if (!is_array($tab)) { $tab = ro_miot_tabelle(''); }
+    $wert = function ($n) use ($w) { return isset($w[$n]) ? $w[$n][0] : null; };
+    $status = $wert('status');
+    if ($status === null || !is_numeric($status)) { return $st; }          // ohne Status kein Zustand: ok bleibt 0
+    $st['ok'] = 1;
+    $s = (int) $status;
+    $st['code'] = isset($tab['status'][$s]) ? $tab['status'][$s] : 8;
+    $st['miot_status'] = $s;
+    $st['laedt'] = in_array($s, $tab['laedt'], true) ? 1 : 0;             // kein eigener Ladestatus (Entscheidung 3)
+    $f = $wert('fehler');
+    if ($f !== null && is_numeric($f)) {
+        $st['miot_fehler'] = (int) $f;
+        $st['fehler'] = in_array((int) $f, $tab['hinweis'], true) ? 0 : max(0, (int) $f);
+        if ($st['fehler'] > 0) { $st['code'] = 9; }
+    }
+    $st['taetigkeit'] = $st['code'] === 2
+        ? (isset($tab['statusname'][$s]) ? $tab['statusname'][$s] : 'MIOT_STATUS_' . max(0, min(10, $s))) : '';
+    $a = $wert('akku');
+    $st['batterie'] = ($a !== null && is_numeric($a) && $a >= 0 && $a <= 100) ? (int) $a : -1;
+    $m = $wert('modus');
+    $st['modus'] = ($m !== null && is_numeric($m) && isset($tab['modus'][(int) $m])) ? $tab['modus'][(int) $m] : -1;
+    $g = $wert('saug');
+    $st['saugstufe'] = ($g !== null && is_numeric($g) && isset($tab['saug'][(int) $g])) ? $tab['saug'][(int) $g] : -1;
+    return $st;
+}
+
+/**
+ * Was ein Xiaomi-Roboter kann - EINE Liste fuer ro_command(), die Spalte "Xiaomi T12" im Reiter Einbindung, den Reiter
+ * Test und die Wiki (E-E7). 'pruef': 'ja' oder 'ungeprueft' (segments bis zum Geraetetest, E-E8). Die Werte von fan
+ * und modus kommen aus der Tabelle des Modells (b106bk kennt kein vacuum_then_mop -> NICHT_UNTERSTUETZT). Alle
+ * uebrigen Befehle aus ro_befehle() quittiert das Plugin mit NICHT_UNTERSTUETZT.
+ */
+function ro_miot_befehle()
+{
+    return array(
+        'start'    => array('pruef' => 'ja'),
+        'stop'     => array('pruef' => 'ja'),
+        'home'     => array('pruef' => 'ja'),
+        'fan'      => array('pruef' => 'ja', 'werte' => array('low' => 0, 'medium' => 1, 'high' => 2, 'max' => 3)),
+        'modus'    => array('pruef' => 'ja', 'werte' => array('vacuum' => 0, 'vacuum_and_mop' => 1, 'mop' => 2,
+                                                              'vacuum_then_mop' => 3)),
+        'segments' => array('pruef' => 'ungeprueft'),
+    );
+}
+
+/**
+ * Ein Befehl an den Roboter in einer offenen Sitzung, nach der Tabelle des Modells. Rueckgabe array(ok 0/1, Info) -
+ * Info ohne Token und ohne Antwort: MIOT <code> | MIIO <code> | TOKEN | KEINE_ANTWORT | NICHT_UNTERSTUETZT | PARAMETER.
+ */
+function ro_miot_befehl(array &$z, $cmd, $param = '', $tab = null)
+{
+    if (!is_array($tab)) { $tab = ro_miot_tabelle(''); }
+    $b = ro_miot_befehle();
+    if (!isset($b[$cmd])) { return array(0, 'NICHT_UNTERSTUETZT'); }
+    switch ($cmd) {
+        case 'start':
+        case 'stop':
+        case 'home':
+            $r = ro_miio_rufen($z, 'action', array('did' => $cmd, 'siid' => $tab[$cmd][0], 'aiid' => $tab[$cmd][1], 'in' => array()));
+            break;
+        case 'fan':
+        case 'modus':
+            $s = $tab[$cmd === 'fan' ? 'fan_setzen' : 'modus_setzen'];
+            if (!isset($s[2][$param])) { return array(0, 'NICHT_UNTERSTUETZT'); }
+            $r = ro_miio_rufen($z, 'set_properties', array(array('did' => $cmd === 'fan' ? 'saug' : 'modus', 'siid' => $s[0],
+                'piid' => $s[1], 'value' => $s[2][$param])));
+            break;
+        case 'segments':
+            // Raum-IDs, bis 16 je hoechstens 4 Ziffern; "x2" (Durchgaenge) kann der Roboter nicht. Wertform am Geraet messen.
+            if (!preg_match('/^\d{1,4}(,\d{1,4}){0,15}\z/', (string) $param)) { return array(0, 'PARAMETER'); }
+            $r = ro_miio_rufen($z, 'action', array('did' => 'raum', 'siid' => $tab['raum'][0], 'aiid' => $tab['raum'][1],
+                'in' => array(array('piid' => $tab['raum'][2], 'value' => (string) $param))));
+            break;
+        default:
+            return array(0, 'NICHT_UNTERSTUETZT');
+    }
+    list($lage, $res, $code) = $r;
+    if ($lage !== 'ok') {
+        return array(0, $lage === 'fehler' ? 'MIIO ' . $code : ($lage === 'token' ? 'TOKEN' : 'KEINE_ANTWORT'));
+    }
+    // action: {"code":0,"out":[]}; set_properties: [{"did":..,"code":0}]. 0 und 1 ("angenommen, laeuft") gelten als OK.
+    $c = (is_array($res) && isset($res['code'])) ? (int) $res['code']
+       : ((is_array($res) && isset($res[0]['code'])) ? (int) $res[0]['code'] : -1);
+    return array(($c === 0 || $c === 1) ? 1 : 0, 'MIOT ' . $c);
+}
+
+/**
+ * Der Geraeteteil von ro_state() fuer eine MIoT-Zeile: EIN Gruss, das Modell (Zwischenspeicher, sonst miIO.info) und
+ * EIN get_properties (fuenf Werte laut Tabelle). Was der Roboter nicht meldet, bleibt -1 - und geht hinaus
+ * (teil_ok = 1, N3): "nicht unterstuetzt" ist eine Aussage. Ereignisse gibt es beim T12 nicht (evlesbar 0). Ausfall:
+ * $st['grund'] (OPENSSL | TOKEN_FORM | NETZ | KEIN_GRUSS | TOKEN | KEINE_ANTWORT | MIIO), ok bleibt 0 - den Rest
+ * macht der gemeinsame Schluss in ro_state().
+ */
+function ro_miot_state($dev, array $r, array $st, $vorher = null)
+{
+    $st['teil_ok'] = array('statistik' => 1, 'gesamt' => 1, 'verbrauch' => 1);
+    $st['evlesbar'] = 0;
+    if (trim((string) $r['token']) === '') { $st['grund'] = 'TOKEN_FEHLT'; return $st; }
+    if (ro_stumm($dev)) { $st['grund'] = 'KEIN_GRUSS'; return $st; }
+    $z = ro_miio_sitzung($r);
+    if ($z['fehler'] !== '') {
+        if ($z['fehler'] === 'KEIN_GRUSS' || $z['fehler'] === 'NETZ') { ro_stumm_setzen($dev); }
+        $st['grund'] = $z['fehler'];
+        return $st;
+    }
+    ro_stumm_loeschen($dev);
+    $tab = ro_miot_tabelle(ro_miot_modell_holen($z, $dev, $r['ip']));
+    /* Nachbau 27.10. (Minutenbudget): blieb miIO.info ohne Antwort (6 s), antwortet auch get_properties nicht -
+     * Ende statt weiterer 6 s. Ein Fehler des Geraets (error) laesst die Grundform gelten wie bisher. */
+    if (isset($z['info_lage']) && in_array($z['info_lage'], array('keine_antwort', 'token'), true)) {
+        ro_miio_schliessen($z);
+        $st['grund'] = $z['info_lage'] === 'token' ? 'TOKEN' : 'KEINE_ANTWORT';
+        return $st;
+    }
+    list($lage, $w, $code) = ro_miot_lesen($z, ro_miot_belegung($tab));
+    /* Nachbau 27.10.: die Zusatzwerte des Modells (b106bk) - nur nach einer Antwort auf die fuenf Werte, EIN
+     * Versuch (hoechstens 3 s). Ohne Antwort: Teilausfall wie beim Valetudo-Treiber (unten). */
+    $lz = '';
+    $wz = array();
+    if ($lage === 'ok' && !empty($tab['zusatz'])) {
+        list($lz, $wz) = ro_miot_lesen($z, $tab['zusatz'], 1);
+    }
+    ro_miio_schliessen($z);
+    if ($lage !== 'ok') {
+        $st['grund'] = $lage === 'token' ? 'TOKEN' : ($lage === 'fehler' ? 'MIIO ' . (int) $code : 'KEINE_ANTWORT');
+        return $st;
+    }
+    $st = ro_miot_abbilden($st, $w, $tab);
+    if ((int) $st['ok'] !== 1) { $st['grund'] = 'KEINE_ANTWORT'; return $st; }
+    if (!empty($tab['zusatz'])) {
+        if ($lz === 'ok') {
+            $st = ro_miot_zusatz_abbilden($st, $wz, $tab);
+            $warn_h = max(0, (int) ro_config()['warn_hours']);
+            foreach (array('buerste_haupt', 'buerste_seite', 'filter', 'mop') as $k) {
+                if ($st[$k] >= 0 && $st[$k] <= $warn_h) { $st['material_warn'] = 1; }
+            }
+        } else {
+            // Teilausfall: Verbrauch und letzte Reinigung aus der letzten Messung, ueber MQTT nichts (teil_ok 0).
+            $st['teil_ok']['statistik'] = 0;
+            $st['teil_ok']['verbrauch'] = 0;
+            foreach (array('statistik', 'verbrauch') as $g) { $st = ro_teil_uebernehmen($st, $vorher, $g); }
+            foreach (ro_miot_zusatz_felder() as $k) {
+                if (is_array($vorher) && array_key_exists($k, $vorher)) { $st[$k] = $vorher[$k]; }
+            }
+            if (is_array($vorher) && isset($vorher['material_warn'])) { $st['material_warn'] = (int) $vorher['material_warn']; }
+        }
+    }
+    $st['fehlertext'] = $st['fehler'] > 0 ? sprintf(ro_t('MELDUNG.FEHLER_MIOT'), (int) $st['fehler']) : '';
+    return $st;
+}
+
+/**
+ * Ein Befehl an eine MIoT-Zeile (aus ro_command()). Rueckgabe array(ok, Info) wie ro_command().
+ */
+function ro_miot_command($cmd, array $r, $param)
+{
+    $b = ro_miot_befehle();
+    if (!isset($b[$cmd])) { return array(0, 'NICHT_UNTERSTUETZT'); }
+    if (trim((string) $r['token']) === '') { return array(0, 'TOKEN_FEHLT'); }
+    $z = ro_miio_sitzung($r);
+    if ($z['fehler'] !== '') { return array(0, $z['fehler']); }
+    $tab = ro_miot_tabelle(ro_miot_modell_holen($z, isset($r['nr']) ? (int) $r['nr'] : 1, $r['ip']));
+    $erg = ro_miot_befehl($z, $cmd, $param, $tab);
+    ro_miio_schliessen($z);
+    return $erg;
+}
+
+/**
+ * Reiter Test fuer eine MIoT-Zeile (E-E9) - NUR bei offenem Reiter Test (Regeln/04 :396-397), ohne Bewegung:
+ * (1) Gruss mit Laufzeit, (2) Token passt (status + Akku), (3) Raum-IDs roh nach der Tabelle des Modells (b106bk:
+ * Karten-Nummer 10/2 und Aktion 10/13 get-map-room-list - eine Abfrage, keine Bewegung), dazu miIO.info (Modell,
+ * Firmware - keine MAC, keine Kennung, kein Token; ein Token in der Antwort wird verworfen) und die fuenf Werte roh
+ * (fault roh, auch ein Hinweiswert). Zwischenspeicher 60 s (miot_diag_N.json, ohne Geheimnis). Der Steckbrief geht
+ * nach info_N.json (PRUEF.MODELL), das Modell nach miot_modell_N.json.
+ * Rueckgabe array('gruss' => array(Stand, ms), 'token' => array(Stand, Grund, Status, Akku), 'raeume' => Rohtext|null,
+ * 'modell', 'firmware', 'bekannt' (Tabelle vorhanden), 'roh' (Name=Wert/Code), 'zeit').
+ */
+function ro_miot_diagnose($dev, $force = false)
+{
+    $dev = max(1, (int) $dev);
+    $cache = ro_tmpdir() . '/miot_diag_' . $dev . '.json';
+    if (!$force && is_file($cache) && time() - filemtime($cache) < 60) {
+        $c = json_decode((string) @file_get_contents($cache), true);
+        if (is_array($c) && isset($c['gruss'], $c['bekannt'])) { return $c; }
+    }
+    $r = ro_robot($dev);
+    $aus = array('gruss' => array(0, 0), 'token' => array(0, '', -1, -1), 'raeume' => null,
+                 'modell' => '', 'firmware' => '', 'bekannt' => false, 'roh' => '', 'zeit' => time());
+    if ($r === null || $r['typ'] !== 'miot') { return $aus; }
+    if (!extension_loaded('openssl')) { $aus['token'] = array(0, 'OPENSSL', -1, -1); return $aus; }
+    if (trim((string) $r['token']) === '') {
+        $aus['token'] = array(0, 'TOKEN_FEHLT', -1, -1);
+        $r['token'] = str_repeat('0', 32);       // nur fuer den Gruss: er braucht keinen Token
+    }
+    $z = ro_miio_sitzung($r);
+    if ($z['fehler'] !== '') {
+        if ($aus['token'][1] === '') { $aus['token'] = array(0, $z['fehler'], -1, -1); }
+        ro_write_json($cache, $aus);
+        return $aus;
+    }
+    $aus['gruss'] = array(1, (int) $z['gruss_ms']);
+    if ($aus['token'][1] === 'TOKEN_FEHLT') {
+        ro_miio_schliessen($z);
+        ro_write_json($cache, $aus);
+        return $aus;
+    }
+    list($lage, $w, $code) = ro_miot_lesen($z, array('status' => array(2, 1), 'akku' => array(3, 1)));
+    if ($lage === 'ok' && $w['status'][0] !== null) {
+        $aus['token'] = array(1, '', (int) $w['status'][0], $w['akku'][0] !== null ? (int) $w['akku'][0] : -1);
+        list($l3, $info) = ro_miio_rufen($z, 'miIO.info', array());
+        if ($l3 === 'ok' && is_array($info)) {
+            $aus['modell'] = isset($info['model']) && is_string($info['model']) ? substr($info['model'], 0, 60) : '';
+            $aus['firmware'] = isset($info['fw_ver']) && is_scalar($info['fw_ver']) ? substr((string) $info['fw_ver'], 0, 30) : '';
+        }
+        unset($info);
+        $aus['bekannt'] = ro_miot_modell_bekannt($aus['modell']);
+        $tab = ro_miot_tabelle($aus['modell']);
+        // Statusname nach der Tabelle: b106bk zaehlt 6 wischt / 7 saugt+wischt, c103 umgekehrt.
+        $sn = (int) $aus['token'][2];
+        $aus['status_schluessel'] = isset($tab['statusname'][$sn]) ? $tab['statusname'][$sn] : 'MIOT_STATUS_' . max(0, min(10, $sn));
+        if ($aus['modell'] !== '' && preg_match('/^[a-z0-9_.\-]{3,60}\z/', $aus['modell'])) {
+            ro_write_json(ro_tmpdir() . '/miot_modell_' . $dev . '.json',
+                array('modell' => $aus['modell'], 'firmware' => $aus['firmware'], 'adresse' => (string) $r['ip']));
+        }
+        list($l4, $w4) = ro_miot_lesen($z, ro_miot_belegung($tab));
+        if ($l4 === 'ok') {
+            $roh = array();
+            foreach ($w4 as $k => $v) { $roh[] = $k . '=' . ($v[0] === null ? '-' : (is_scalar($v[0]) ? (string) $v[0] : 'json')) . '/' . (int) $v[1]; }
+            $aus['roh'] = substr(implode(' ', $roh), 0, 160);
+        }
+        $aus['raeume'] = ro_miot_raeume_roh($z, $tab);
+        ro_write_json(ro_tmpdir() . '/info_' . $dev . '.json',
+            array('hersteller' => 'Xiaomi', 'modell' => $aus['modell'], 'valetudo' => ''));
+    } else {
+        $aus['token'] = array(0, $lage === 'token' ? 'TOKEN' : ($lage === 'fehler' ? 'MIIO ' . (int) $code : 'KEINE_ANTWORT'), -1, -1);
+    }
+    ro_miio_schliessen($z);
+    ro_write_json($cache, $aus);
+    return $aus;
+}
+
+/** Raum-IDs roh fuer den Reiter Test nach der Tabelle (hoechstens 120 Zeichen); 'MIOT <code>' wenn das Geraet ablehnt. */
+function ro_miot_raeume_roh(array &$z, array $tab)
+{
+    $rt = $tab['raeume'];
+    $kurz = function ($v) { return substr((string) (is_scalar($v) ? $v : json_encode($v)), 0, 120); };
+    if ($rt[0] === 'eigenschaft') {
+        list($l, $w) = ro_miot_lesen($z, array('raeume' => array($rt[1], $rt[2])));
+        if ($l !== 'ok') { return null; }
+        return $w['raeume'][0] === null ? ('MIOT ' . (int) $w['raeume'][1]) : $kurz($w['raeume'][0]);
+    }
+    // ('aktion', siid, aiid, siid_karte, piid_karte, piid_ausgabe): erst die Karten-Nummer, dann die Abfrage-Aktion.
+    list($l, $w) = ro_miot_lesen($z, array('karte' => array($rt[3], $rt[4])));
+    if ($l !== 'ok') { return null; }
+    if ($w['karte'][0] === null || !is_numeric($w['karte'][0])) { return 'MIOT ' . (int) $w['karte'][1]; }
+    list($l2, $res, $code) = ro_miio_rufen($z, 'action', array('did' => 'raeume', 'siid' => $rt[1], 'aiid' => $rt[2],
+        'in' => array(array('piid' => $rt[4], 'value' => (int) $w['karte'][0]))));
+    if ($l2 === 'fehler') { return 'MIIO ' . (int) $code; }
+    if ($l2 !== 'ok' || !is_array($res)) { return null; }
+    if (isset($res['code']) && (int) $res['code'] !== 0) { return 'MIOT ' . (int) $res['code']; }
+    foreach ((isset($res['out']) && is_array($res['out'])) ? $res['out'] : array() as $o) {
+        if (is_array($o) && isset($o['piid']) && (int) $o['piid'] === (int) $rt[5] && array_key_exists('value', $o)) {
+            return $kurz($o['value']);
+        }
+    }
+    return 'MIOT ' . (isset($res['code']) ? (int) $res['code'] : -1);
+}
+
+/* ==================================================================
+ * Token aus der Xiaomi-Cloud holen (Gruppe 28, 1.1.23; Entscheidung "Token-Beschaffung", Empfehlung A) - seit dem
+ * dritten Nachbau (27.10.2026) ueber das gemeinsame Stammmodul xiaomi_cloud.php 1.0.0 (Werkzeuge/gemeinsam,
+ * byte-gleich verteilt wie Befehlsbruecke/Sprachmodul; dasselbe Modul wie im BLE-Scanner NG). Ablauf (Anmeldung,
+ * Captcha-Bild, Zweitfaktor Mail/SMS, Geraeteliste), Herkunft (Xiaomi-cloud-tokens-extractor, MIT) und der Umgang mit
+ * den Geheimnissen stehen im Kopf des Moduls; die Zwischenstaende bleiben data/plugins/<ordner>/cloud_*.json (0600,
+ * hoechstens 10 Minuten). Linieneigen bleiben: Oberflaeche (index.php), Sprachtexte der Lagen ([CLOUD]) und die
+ * Uebernahme in die Roboterzeile (ro_token_uebernehmen()).
+ * ================================================================== */
+
+/**
+ * Das Stammmodul laden und seinen Ablageordner auf den data-Ordner des Plugins setzen (bei jedem Aufruf - ro_paths()
+ * kann sich in Proben aendern; ohne gesetzte Ablage legt das Modul nichts ab). Rueckgabe: der Filter dieser Linie fuer
+ * xc_abruf() - nur Saugroboter (Modell xiaomi.vacuum.*), nur WLAN-Geraete mit Token.
+ */
+function ro_xc()
+{
+    require_once __DIR__ . '/xiaomi_cloud.php';
+    xc_ablage(ro_datadir());
+    return array('modelle' => array('xiaomi.vacuum.'), 'ble' => 0);
+}
+
+/**
+ * Einen Roboter aus der Auswahlliste in eine Roboterzeile uebernehmen: typ miot, Token, IP nur, wenn die Zeile keine
+ * hat. Die Liste wird dabei geloescht (xc_auswahl_nehmen()). Gegenprobe mit dem Filter der Linie (eine Auswahl ohne
+ * Saugroboter-Modell oder ohne 32-Hex-Token wird nicht uebernommen). Rueckgabe array(ok, Kennung fuer die Meldung, Nummer).
+ */
+function ro_token_uebernehmen($index, $nr)
+{
+    $filter = ro_xc();
+    $a = xc_auswahl_nehmen((int) $index);
+    if ($a === null) { return array(0, 'ABGELAUFEN', $nr); }
+    $g = $a['geraet'];
+    unset($a);
+    if (!is_array($g) || !isset($g['modell'], $g['token'], $g['ip'], $g['name'])
+            || !xc_passt(array('model' => (string) $g['modell'], 'did' => isset($g['did']) ? (string) $g['did'] : ''), $filter)
+            || !preg_match('/^[0-9a-f]{32}\z/', (string) $g['token'])) {
+        return array(0, 'WAHL', $nr);
+    }
+    $cfg = ro_config();
+    $nr = max(1, min(RO_ROBOTER_MAX, (int) $nr));
+    $neu = array(); $gesetzt = false;
+    foreach ((array) $cfg['robots'] as $r) {
+        $r = (array) $r;
+        if (isset($r['nr']) && (int) $r['nr'] === $nr) {
+            $r['typ'] = 'miot';
+            $r['token'] = $g['token'];
+            if (trim((string) (isset($r['ip']) ? $r['ip'] : '')) === '') { $r['ip'] = $g['ip']; }
+            $gesetzt = true;
+        }
+        $neu[] = $r;
+    }
+    if (!$gesetzt) {
+        if (count($neu) >= RO_ROBOTER_MAX || $g['ip'] === '') { return array(0, 'ZEILE', $nr); }
+        $neu[] = array('nr' => $nr, 'name' => $g['name'], 'ip' => $g['ip'], 'port' => 80, 'user' => '', 'pass' => '',
+                       'typ' => 'miot', 'token' => $g['token']);
+    }
+    $cfg['robots'] = $neu;
+    unset($g);
+    return array(ro_config_speichern($cfg) ? 1 : 0, 'GESPEICHERT', $nr);
+}
+
+/* ==================================================================
+ * Gruppe 28 (1.1.23): Treiber Valetudo als eigener Geraeteteil, Meldungstexte, Spaetliste, Typwechsel, healthcheck
+ * ================================================================== */
+
+/**
+ * Der Geraeteteil von ro_state() fuer eine Valetudo-Zeile (bis 1.1.22 der Rumpf von ro_state(), unveraendert bis auf
+ * E1): /state, Statistik, Gesamtwerte, Verbrauchsteile, Ereignisse. Kam schon der Zustand nicht, sind die uebrigen
+ * Abrufe verlorene Zeit - Rueckkehr mit ok 0 und $st['grund'] ('' = nicht erreichbar | ANMELDUNG <code>).
+ *
+ * E1 (Gruppe 28, Entscheidung 1): /state ueber ro_http() MIT Code. 401/403 heisst "Anmeldung abgewiesen" (Kennwort
+ * pruefen), nicht "nicht erreichbar"; CODE bleibt 8. Der Stumm-Merker wirkt wie bisher: er steht nur bei "keine
+ * Antwort" (Code 0) und wird bei jeder Antwort geloescht (C1).
+ */
+function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
+{
+    $base = 'http://' . $r['ip'] . ':' . $r['port'] . '/api/v2/robot';
+    // 1) Status - und mit ihm Anbauteile, Ladestation und die Stufen.
+    //    Alle drei stecken in DERSELBEN Antwort und wurden bis 1.0.14
+    //    weggeworfen; sie kosten keinen zusaetzlichen Abruf.
+    if (ro_stumm($dev)) {
+        return $st;               // "nicht erreichbar" - ohne eigenen Grund (der Kopf sagt "Adresse pruefen")
+    }
+    list($roh, $hcode) = ro_http($base . '/state', array('method' => 'GET', 'timeout' => 2, 'ignore_errors' => true,
+        'user_agent' => 'LoxBerry Saugroboter', 'header' => ro_kopfzeilen($r)));
+    if ($hcode === 0) { ro_stumm_setzen($dev); } else { ro_stumm_loeschen($dev); }
+    $j = @json_decode((string) $roh, true);
+    if (!is_array($j) || !isset($j['attributes'])) {
+        $st['grund'] = ($hcode === 401 || $hcode === 403) ? 'ANMELDUNG ' . $hcode : '';
+        return $st;
+    }
+    $st['ok'] = 1;
+    $s = ro_attr($j['attributes'], 'StatusStateAttribute');
+    if ($s) {
+        $st['code'] = ro_state_code(isset($s['value']) ? $s['value'] : '');
+        /* Der Fehlercode kommt aus error.vendorErrorCode, NICHT aus
+         * metaData.error_code (gibt es in Valetudo nicht). */
+        if (isset($s['error']) && is_array($s['error'])) {
+            if (!empty($s['error']['message'])) { $st['fehlertext'] = (string) $s['error']['message']; }
+            if (isset($s['error']['vendorErrorCode'])) {
+                $st['fehler'] = (int) preg_replace('/[^0-9]/', '', (string) $s['error']['vendorErrorCode']);
+            }
+            if (isset($s['error']['severity']['level'])) {
+                $st['fstufe'] = ro_fstufe_code($s['error']['severity']['level']);
+            }
+            if (isset($s['error']['subsystem'])) {
+                $st['fteil'] = ro_fteil_code($s['error']['subsystem']);
+            }
+        }
+        if ($st['code'] === 9 && $st['fehler'] === 0) { $st['fehler'] = 1; }
+    }
+    $b = ro_attr($j['attributes'], 'BatteryStateAttribute');
+    if ($b) {
+        // Gruppe 2 (1.1.22, E2): ohne "level" meldet das Geraet keinen Akkustand - -1, nicht 0 ("leer").
+        $st['batterie'] = (int) (isset($b['level']) ? $b['level'] : -1);
+        $st['laedt'] = (isset($b['flag']) && $b['flag'] === 'charging') ? 1 : 0;
+    }
+    // Valetudo: AttachmentStateAttribute, type = dustbin | watertank | mop
+    foreach (ro_attr_alle($j['attributes'], 'AttachmentStateAttribute') as $a) {
+        $an = !empty($a['attached']) ? 1 : 0;
+        $typ = isset($a['type']) ? strtolower((string) $a['type']) : '';
+        if ($typ === 'dustbin')   { $st['behaelter'] = $an; }
+        if ($typ === 'watertank') { $st['wassertank'] = $an; }
+        if ($typ === 'mop')       { $st['wischer'] = $an; }
+    }
+    // Valetudo: DockStatusStateAttribute
+    $d = ro_attr($j['attributes'], 'DockStatusStateAttribute');
+    if ($d) { $st['dock'] = ro_dock_code(isset($d['value']) ? $d['value'] : ''); }
+    // Valetudo: PresetSelectionStateAttribute, type = fan_speed | water_grade | operation_mode
+    foreach (ro_attr_alle($j['attributes'], 'PresetSelectionStateAttribute') as $a) {
+        $typ = isset($a['type']) ? strtolower((string) $a['type']) : '';
+        $wert = isset($a['value']) ? $a['value'] : '';
+        if ($typ === 'fan_speed')      { $st['saugstufe'] = ro_stufe_code($wert); }
+        if ($typ === 'water_grade')    { $st['wasserstufe'] = ro_stufe_code($wert); }
+        if ($typ === 'operation_mode') { $st['modus'] = ro_modus_code($wert); }
+    }
+
+    // 2) Statistik aktuell
+    $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability', 2, $dev), true);
+    $st['teil_ok']['statistik'] = ro_ist_liste($j) ? 1 : 0;
+    foreach ((array) $j as $e) {
+        if (!isset($e['type']) || !isset($e['value'])) { continue; }
+        if ($e['type'] === 'area') { $st['flaeche'] = round(((float) $e['value']) / 10000, 1); }   // cm2 -> m2
+        if ($e['type'] === 'time') { $st['dauer'] = (int) round(((float) $e['value']) / 60); }      // s -> min
+    }
+    // 3) Statistik gesamt
+    $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability', 2, $dev), true);
+    $st['teil_ok']['gesamt'] = ro_ist_liste($j) ? 1 : 0;
+    $gz = null;
+    foreach ((array) $j as $e) {
+        if (!isset($e['type']) || !isset($e['value'])) { continue; }
+        if ($e['type'] === 'area') { $st['flaeche_gesamt'] = round(((float) $e['value']) / 10000, 1); }
+        if ($e['type'] === 'time') { $gz = $e['value']; }
+        if ($e['type'] === 'count') { $st['anzahl_gesamt'] = (int) $e['value']; }
+    }
+    // Nachbau 26.10. spaet: Gesamtzeit mit Plausibilitaet (Befund "Gesamt ... 498443.5 h") - ro_gesamt_stunden().
+    if ($gz !== null) {
+        list($st['dauer_gesamt'], $st['dauer_gesamt_einheit']) = ro_gesamt_stunden($gz, $st['anzahl_gesamt']);
+    }
+    // 4) Verbrauchsmaterialien
+    $j = @json_decode((string) ro_get($base . '/capabilities/ConsumableMonitoringCapability', 2, $dev), true);
+    $st['teil_ok']['verbrauch'] = ro_ist_liste($j) ? 1 : 0;
+    foreach ((array) $j as $e) {
+        $typ = isset($e['type']) ? $e['type'] : '';
+        $sub = isset($e['subType']) ? $e['subType'] : '';
+        if (!isset($e['remaining']['value'])) { continue; }
+        $wert = (float) $e['remaining']['value'];
+        $einheit = isset($e['remaining']['unit']) ? strtolower((string) $e['remaining']['unit']) : 'minutes';
+        $feld = ro_verbrauch_feld($typ, $sub);
+        if ($feld === '') {
+            // Nicht verschlucken - nennen. Der Reiter Test zeigt die Liste.
+            $st['material_fremd'][] = $typ . '/' . ($sub !== '' ? $sub : 'none');
+            continue;
+        }
+        if ($einheit === 'percent') {
+            $st[$feld] = (int) round(max(0, min(100, $wert)));
+        } else {
+            // minutes -> Stunden, abgerundet.
+            $st[$feld] = (int) floor($wert / 60);
+        }
+    }
+    $warn_h = max(0, (int) $cfg['warn_hours']);
+    $warn_p = max(0, (int) $cfg['warn_prozent']);
+    /* C3, Teilausfall: was nicht als Liste kam, kommt aus der letzten
+     * Messung - VOR der Warnschwelle, damit MATWARN zu den Werten passt. */
+    foreach (array('statistik', 'gesamt', 'verbrauch') as $g) {
+        if (empty($st['teil_ok'][$g])) { $st = ro_teil_uebernehmen($st, $vorher, $g); }
+    }
+    $prozent = ro_verbrauch_prozentfelder();
+    foreach (array('buerste_haupt', 'buerste_seite', 'buerste_seite2', 'filter', 'filter2',
+                   'sensor', 'raeder', 'mop', 'dock_buerste', 'dock_filter',
+                   'dock_behaelter', 'reiniger') as $k) {
+        $grenze = in_array($k, $prozent, true) ? $warn_p : $warn_h;
+        if ($st[$k] >= 0 && $st[$k] <= $grenze) { $st['material_warn'] = 1; }
+    }
+    // 5) Valetudos Ereignisliste. WELCHER Pfad gilt, entscheidet das Geraet - siehe ro_ereignisse().
+    $ev = ro_ereignisse($dev);
+    $st['evlesbar'] = is_array($ev) ? 1 : 0;
+    if (is_array($ev)) {
+        foreach ($ev as $e) {
+            if (!is_array($e) || !empty($e['processed'])) { continue; }
+            $st['event']++;
+            $c = ro_event_code(isset($e['__class']) ? $e['__class'] : '');
+            if ($c === 1) { $st['evmuell'] = 1; }
+            $st['evtyp'] = $c;
+            $st['evtext'] = ro_event_text($c);
+            $st['evid'] = isset($e['id']) ? (string) $e['id'] : '';
+        }
+    }
+    return $st;
+}
+
+/** Der Grund eines Ausfalls fuer die Protokollzeile (deutsch - das Protokoll ist keine Oberflaeche). Nie der Token. */
+function ro_ausfall_grund_text($typ, $grund)
+{
+    $g = (string) $grund;
+    if (strpos($g, 'ANMELDUNG') === 0) { return 'Anmeldung abgewiesen, HTTP ' . substr($g, 10) . ' - Kennwort pruefen'; }
+    if ($typ === 'miot') { return 'Xiaomi MIoT: ' . ($g !== '' ? $g : 'KEINE_ANTWORT'); }
+    return 'nicht erreichbar';
+}
+
+/** Der Grund eines Ausfalls fuer Reiter Test und Kopf (Sprachdatei, [MELDUNG] GRUND_*). */
+function ro_ausfall_grund_anzeige($grund)
+{
+    $g = (string) $grund;
+    if ($g === '') { return ''; }
+    if (strpos($g, 'ANMELDUNG') === 0) { return sprintf(ro_t('MELDUNG.GRUND_ANMELDUNG'), (int) substr($g, 10)); }
+    if (strpos($g, 'MIIO') === 0) { return sprintf(ro_t('MELDUNG.GRUND_MIIO'), (int) substr($g, 5)); }
+    $k = 'MELDUNG.GRUND_' . preg_replace('/[^A-Z_]/', '', $g);
+    $t = ro_t($k);
+    return $t !== $k ? $t : $g;
+}
+
+/** Die Verbrauchsteile der Wartungsmeldung - EINE Liste (Schluessel MELDUNG.TEIL_<FELD>). */
+function ro_meldung_teile()
+{
+    return array('filter', 'filter2', 'buerste_haupt', 'buerste_seite', 'buerste_seite2', 'sensor', 'raeder', 'mop',
+                 'dock_buerste', 'dock_filter', 'dock_behaelter', 'reiniger');
+}
+
+/** Alle Schluessel aus [MELDUNG], die der Code bilden kann (E-E11: Pruefzeile im Reiter Test). */
+function ro_meldung_schluessel()
+{
+    $s = array('MELDUNG.STATUS_UPDATE', 'MELDUNG.FERTIG', 'MELDUNG.FERTIG_BILANZ', 'MELDUNG.FEHLER', 'MELDUNG.FEHLER_MIT',
+               'MELDUNG.EREIGNIS', 'MELDUNG.WARTUNG', 'MELDUNG.GRUSS', 'MELDUNG.FEHLER_MIOT',
+               'MELDUNG.GRUND_ANMELDUNG', 'MELDUNG.GRUND_MIIO');
+    foreach (array(0, 1, 2, 3, 4, 5, 8, 9) as $c) { $s[] = 'MELDUNG.STATUS_' . $c; }
+    for ($c = 1; $c <= 8; $c++) { $s[] = 'MELDUNG.EVENT_' . $c; }
+    foreach (ro_meldung_teile() as $k) { $s[] = 'MELDUNG.TEIL_' . strtoupper($k); }
+    for ($c = 0; $c <= 10; $c++) { $s[] = 'MELDUNG.MIOT_STATUS_' . $c; }
+    foreach (array('OPENSSL', 'TOKEN_FORM', 'TOKEN_FEHLT', 'NETZ', 'KEIN_GRUSS', 'TOKEN', 'KEINE_ANTWORT') as $g) {
+        $s[] = 'MELDUNG.GRUND_' . $g;
+    }
+    return $s;
+}
+
+/**
+ * Pruefzeile [MELDUNG] (E-E11; die Linie hat keinen Spracherzeuger): de und en tragen gleich viele Schluessel, und
+ * jeder Schluessel, den der Code bilden kann, ist in BEIDEN Dateien da. Rueckgabe array(Stand, Text).
+ */
+function ro_meldung_pruefen()
+{
+    $p = ro_paths();
+    $pfad = ($p['lbhome'] !== '' && is_dir($p['lbhome'] . '/templates/plugins/' . $p['plugin'] . '/lang'))
+        ? $p['lbhome'] . '/templates/plugins/' . $p['plugin'] . '/lang' : dirname(dirname(__DIR__)) . '/templates/lang';
+    $de = @parse_ini_file($pfad . '/language_de.ini', true, INI_SCANNER_RAW);
+    $en = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+    if (!is_array($de) || !is_array($en) || !isset($de['MELDUNG'], $en['MELDUNG'])) {
+        return array(0, ro_t('PRUEF.MELDUNG_UNLESBAR'));
+    }
+    $fehlt = array();
+    foreach (ro_meldung_schluessel() as $k) {
+        $s = substr($k, 8);
+        if (!isset($de['MELDUNG'][$s]) || !isset($en['MELDUNG'][$s])) { $fehlt[] = $s; }
+    }
+    $nd = count($de['MELDUNG']); $ne = count($en['MELDUNG']);
+    if ($fehlt || $nd !== $ne) {
+        return array(0, sprintf(ro_t('PRUEF.MELDUNG_AB'), $nd, $ne, implode(', ', $fehlt)));
+    }
+    return array(1, sprintf(ro_t('PRUEF.MELDUNG_OK'), $nd, count(ro_meldung_schluessel())));
+}
+
+/**
+ * Gruppe 28 (1.1.23, N7; Bauart G26/G27): Spaetschluessel mit GELTENDEM Wert - fehlen sie in einer Sicherung (aelter
+ * als 1.1.23), gilt der geltende Wert, nicht die Vorgabe; sonst schaltete ein Zurueckspielen einer laufenden Anlage den
+ * Lesezweig ab. Die Oberflaeche sagt es (TEXT.SICH_SPAET_BEHALTEN).
+ */
+function ro_spaet_geltend()
+{
+    return array('endpunkt_ein');
+}
+
+/**
+ * Gesamtzeit aus TotalStatisticsCapability (Valetudo: ValetudoDataPoint TYPES.TIME "in seconds", MQTT-Handle mit
+ * Unit.SECONDS; Roborock reicht clean_time aus get_clean_summary unveraendert durch - Quelle Hypfer/Valetudo, Zweig
+ * master, gelesen 26.10.2026) -> Stunden. Befund am Geraet 26.10.: Anzeige "498443.5 h" bei 458 Reinigungen. Das
+ * Plugin teilt seit jeher durch 3600 - der Rohwert war also rund 1,79 Mrd.; als Sekunden 56 Jahre, als Millisekunden
+ * 498 h (65 min je Reinigung, passend zu rund 60 m2 je Reinigung). Deshalb mit Plausibilitaet ueber die Anzahl:
+ *   Sekunden, wenn hoechstens 6 h je Reinigung (ohne Anzahl: hoechstens 100000 h);
+ *   sonst Millisekunden, wenn das 30 s bis 6 h je Reinigung ergibt (ohne Anzahl: hoechstens 100000 h);
+ *   sonst -1 (nicht plausibel - lieber "meldet das Geraet nicht" als eine Zahl, die keiner glauben kann).
+ * Rueckgabe array(Stunden mit einer Stelle | -1, 's' | 'ms' | 'unplausibel'). Die Einheit steht im Reiter Test.
+ */
+function ro_gesamt_stunden($roh, $anzahl)
+{
+    if (!is_numeric($roh) || (float) $roh < 0) { return array(-1, 'unplausibel'); }
+    $sek = (float) $roh;
+    $n = (int) $anzahl;
+    $passt = function ($s) use ($n) {
+        if ($n > 0) { return $s / $n >= 30 && $s / $n <= 6 * 3600; }
+        return $s <= 100000 * 3600;
+    };
+    if ($sek == 0 || ($n > 0 ? $sek / $n <= 6 * 3600 : $passt($sek))) { return array(round($sek / 3600, 1), 's'); }
+    if ($passt($sek / 1000)) { return array(round($sek / 3600000, 1), 'ms'); }
+    return array(-1, 'unplausibel');
+}
+
+/**
+ * Gruppe 28 (1.1.23, N3/N4, E-E17): wechselt eine Geraetenummer beim Speichern Typ oder Adresse, gelten ihre
+ * Zwischenspeicher nicht mehr - state_N, gemessen_N, segments_N, caps_N, info_N, dnd_N, stumm_N, mqtt_gesendet_N,
+ * miot_diag_N (der naechste Lauf misst neu und schickt den vollen Satz). Rueckgabe: die verworfenen Nummern.
+ */
+function ro_wechsel_verwerfen($vorher, $nachher)
+{
+    $alt = ro_robots_aus($vorher);
+    $neu = ro_robots_aus($nachher);
+    $weg = array();
+    foreach ($alt as $n => $r) {
+        if (isset($neu[$n]) && ro_gemessen_adresse($neu[$n]) === ro_gemessen_adresse($r)) { continue; }
+        $weg[] = $n;
+        foreach (array('state_%d.json', 'gemessen_%d.json', 'segments_%d.json', 'caps_%d.json', 'info_%d.json',
+                       'dnd_%d.json', 'stumm_%d', 'mqtt_gesendet_%d.json', 'miot_diag_%d.json', 'miot_modell_%d.json',
+                       // Nachbau 27.10.: die Meldung gehoerte zum alten Roboter dieser Nummer
+                       'anntext_%d', 'annteile_%d.json', 'ann_%d') as $m) {
+            @unlink(ro_tmpdir() . '/' . sprintf($m, $n));
+        }
+    }
+    return $weg;
+}
+
+/** Gruppe 28 (1.1.23, S19): liegt eine frische Upgrade-Marke (juenger als 3600 s, nicht aus der Zukunft)? */
+function ro_upgrade_marke_frisch()
+{
+    $p = ro_paths();
+    if ($p['lbhome'] === '') { return false; }
+    $m = $p['lbhome'] . '/data/plugins/' . $p['plugin'] . '.upgrade_laeuft';
+    clearstatcache(true, $m);
+    if (!is_file($m)) { return false; }
+    $alter = time() - (int) @filemtime($m);
+    return $alter >= 0 && $alter < 3600;
+}
+
+/**
+ * V5 (Gruppe 28, E-E13): der Zustand fuer bin/healthcheck - NUR aus Dateien (lauf.json, state_N.json, zustand.json der
+ * Bruecke, Konfigurationslage), kein Abruf beim Roboter, kein Broker, nichts angelegt. Stufen wie Regeln/03:
+ * 3 Fehler, 4 Warnung, 6 Hinweis, 5 in Ordnung. Rueckgabe array(status, Text).
+ */
+function ro_gesundheit()
+{
+    $cfg = ro_config(false);
+    $warn = array(); $hinweis = array();
+    $lage = ro_cfg_lage();
+    $cz = ro_cfg_zustand();
+    if ($cz === 'kaputt' || $lage['fremd']) {
+        return array(3, ro_t('HEALTH.KONFIG'));
+    }
+    $alter = ro_lauf_alter();
+    if ($alter > 900) {
+        return array(3, sprintf(ro_t('HEALTH.LAUF_STEHT'), (int) round($alter / 60)));
+    }
+    if ($alter < 0) { $hinweis[] = ro_t('HEALTH.NOCH_KEIN_LAUF'); }
+    // Nachbau 27.10. (Minutenbudget): im letzten Lauf ausgelassene Roboter.
+    $ro_lv = ro_lauf_lesen();
+    if ($ro_lv['verspaetet']) { $warn[] = sprintf(ro_t('HEALTH.VERSPAETET'), implode(', ', $ro_lv['verspaetet']), RO_LAUF_FRIST); }
+    $robots = ro_robots_aus($cfg);
+    $erreicht = 0;
+    foreach ($robots as $n => $r) {
+        $f = ro_tmpdir() . '/state_' . $n . '.json';
+        $st = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+        if ($r['typ'] === 'miot' && $r['token'] === '') { $warn[] = sprintf(ro_t('HEALTH.OHNE_TOKEN'), $n); }
+        if ($r['typ'] === 'miot' && !extension_loaded('openssl')) { $warn[] = sprintf(ro_t('HEALTH.OPENSSL'), $n); }
+        if (!is_array($st)) { continue; }
+        if (!empty($st['ok'])) {
+            $erreicht++;
+            if ((int) $st['code'] === 9) { $hinweis[] = sprintf(ro_t('HEALTH.FEHLER'), $n); }
+        } else {
+            $seit = isset($st['messung_ts']) && (int) $st['messung_ts'] > 0 ? time() - (int) $st['messung_ts'] : 99999;
+            if ($seit > 900) { $warn[] = sprintf(ro_t('HEALTH.NICHT_ERREICHT'), $n); }
+        }
+    }
+    if (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_enabled']) && $robots) {
+        list($bz) = ro_bruecke_zustand();
+        if ($bz === 0) { $warn[] = ro_t('HEALTH.BRUECKE'); }
+    }
+    if ($warn) { return array(4, implode(' ', $warn)); }
+    if (!$robots) { return array(6, ro_t('HEALTH.KEIN_ROBOTER')); }
+    if ($hinweis) { return array(6, implode(' ', $hinweis)); }
+    return array(5, sprintf(ro_t('HEALTH.OK'), $erreicht, count($robots), max(0, $alter)));
+}
+
+/* ==================================================================
+ * Nachbau 27.10.2026 (zweiter Geraetetest; ENTSCHEIDUNGEN_GRUPPE28 Nachtrag 27.10.): bis zu 5 Roboter,
+ * Minutenbudget, Werte des T12 (Verbrauchsmaterial, letzte Reinigung, Wischwasser), "Letzte Meldung" abloesen.
+ * ================================================================== */
+
+/** Hoechstzahl der Roboterzeilen - EINE Zahl fuer Formular, Pruefung/Sicherung, Geraetenummer, Endpunkt ?dev=,
+ *  Bruecke ({nr} 2-5 in bin/befehle_zuordnung.php), Vorlagen und Cloud-Uebernahme. Bis zur Probe 1.1.23: 2. */
+define('RO_ROBOTER_MAX', 5);
+
+/**
+ * Minutenbudget: die Abfragen eines Minutenlaufs (bin/cron.php) brauchen hoechstens RO_LAUF_FRIST Sekunden - Rest bis
+ * 60 s fuer Meldungen/Ansagen, MQTT und den Waechter der Bruecke. Vor jedem Roboter wird sein SCHLIMMSTER FALL
+ * (ro_lauf_kosten()) gegen die Restzeit gehalten; reicht sie nicht, wird er in diesem Lauf ausgelassen ("verspaetet":
+ * lauf.json, Kopf, healthcheck, Protokoll; ueber MQTT geht fuer ihn nichts, der Broker behaelt den letzten Stand).
+ * Der Start wandert je Lauf um einen Roboter weiter (Zaehler), damit ein Auslassen nie dauerhaft denselben trifft.
+ */
+define('RO_LAUF_FRIST', 40);
+
+/**
+ * Schlimmster Fall eines Roboters im Minutenlauf in Sekunden, aus den Fristen der Abrufe (ohne Zwischenspeicher):
+ *   Valetudo  /state 2 s (ohne Antwort: Ende) + Statistik 2 + Gesamt 2 + Verbrauch 2 + Ereignisse bis 3 Pfade x 2 = 14
+ *   Xiaomi    Gruss 2 x 1 s (ohne Gruss: Ende) + miIO.info 2 x (2 + 1) s nur ohne gueltiges miot_modell_N.json
+ *             (ohne Antwort: Ende) + get_properties 2 x (2 + 1) s (ohne Antwort: Ende) + Zusatzwerte 1 x (2 + 1) s
+ *             = 2 + 6 + 6 + 3 = 17, mit Modell im Zwischenspeicher 11
+ *   0         stumm (Merker 60 s), ohne Token
+ * Die Fristen von PHP gelten je Lesevorgang (http-Strom) bzw. je Datagramm (miIO).
+ */
+function ro_lauf_kosten(array $r, $dev)
+{
+    $dev = (int) $dev;
+    if ($r['typ'] === 'miot') {
+        if (trim((string) $r['token']) === '' || ro_stumm($dev)) { return 0; }
+        $f = ro_tmpdir() . '/miot_modell_' . $dev . '.json';
+        $c = (is_file($f) && time() - (int) @filemtime($f) < 86400) ? json_decode((string) @file_get_contents($f), true) : null;
+        $info = (is_array($c) && isset($c['adresse']) && $c['adresse'] === (string) $r['ip']) ? 0 : 6;
+        return 2 + $info + 6 + 3;
+    }
+    return ro_stumm($dev) ? 0 : 14;
+}
+
+/** Die Reihenfolge des Minutenlaufs: ab Position (Zaehler mod Anzahl), dann ringsum. */
+function ro_lauf_reihenfolge(array $nrn, $zaehler)
+{
+    sort($nrn);
+    if (!$nrn) { return array(); }
+    $s = ((int) $zaehler) % count($nrn);
+    return array_merge(array_slice($nrn, $s), array_slice($nrn, 0, $s));
+}
+
+/** Valetudo-Stufe als Name (Umkehrung von ro_stufe_code(); -1 -> ''). */
+function ro_stufe_name($code)
+{
+    $m = array(0 => 'off', 1 => 'min', 2 => 'low', 3 => 'medium', 4 => 'high', 5 => 'max', 6 => 'turbo', 7 => 'custom');
+    return isset($m[(int) $code]) ? $m[(int) $code] : '';
+}
+
+/**
+ * Die Zusatzwerte des T12 (b106bk-Tabelle 'zusatz', am Geraet gelesen 27.10.2026, Gerätetest 3b) in die Felder des
+ * Zustands - DIESELBEN Felder und Einheiten wie beim Valetudo-Treiber:
+ *   seite_h/haupt_h/filter_h/mop_h (Spezifikation: hours)  -> buerste_seite/buerste_haupt/filter/mop, Reststunden
+ *                                                            (Valetudo: remaining minutes / 60, abgerundet)
+ *   seite_pct/haupt_pct/filter_pct/mop_pct (percentage)     -> <feld>_pct, nur Seite und JSON (kein MQTT-Thema)
+ *   dauer 7/22 (0-360, ohne Einheit: Minuten)               -> dauer, min (Valetudo: s / 60)
+ *   flaeche 7/23 (0-1200, ohne Einheit: m2)                 -> flaeche, m2 (Valetudo: cm2 / 10000)
+ *   wasser 7/6 water-state (0 Low, 1 Mid, 2 High)           -> wasserstufe 2/3/4 (Valetudo low/medium/high)
+ * Ausserhalb des Feldbereichs (ro_felder()) oder nicht gemeldet: -1.
+ */
+function ro_miot_zusatz_abbilden(array $st, array $w, array $tab)
+{
+    $wert = function ($n) use ($w) {
+        return (isset($w[$n]) && $w[$n][0] !== null && is_numeric($w[$n][0])) ? $w[$n][0] + 0 : null;
+    };
+    foreach (array('seite_h' => 'buerste_seite', 'haupt_h' => 'buerste_haupt', 'filter_h' => 'filter', 'mop_h' => 'mop') as $q => $k) {
+        $v = $wert($q);
+        $st[$k] = ($v !== null && $v >= 0 && $v <= 10000) ? (int) $v : -1;
+    }
+    foreach (array('seite_pct' => 'buerste_seite_pct', 'haupt_pct' => 'buerste_haupt_pct', 'filter_pct' => 'filter_pct',
+                   'mop_pct' => 'mop_pct') as $q => $k) {
+        $v = $wert($q);
+        $st[$k] = ($v !== null && $v >= 0 && $v <= 100) ? (int) $v : -1;
+    }
+    $d = $wert('dauer');
+    $st['dauer'] = ($d !== null && $d >= 0 && $d <= 600) ? (int) $d : -1;
+    $f = $wert('flaeche');
+    $st['flaeche'] = ($f !== null && $f >= 0 && $f <= 1000) ? round((float) $f, 1) : -1;
+    $s = $wert('wasser');
+    $st['wasserstufe'] = ($s !== null && isset($tab['wasser'][(int) $s])) ? $tab['wasser'][(int) $s] : -1;
+    return $st;
+}
+
+/** Die Felder der Zusatzwerte, die bei einem Teilausfall aus der letzten Messung kommen (ausser den Gruppen). */
+function ro_miot_zusatz_felder()
+{
+    return array('buerste_seite_pct', 'buerste_haupt_pct', 'filter_pct', 'mop_pct', 'wasserstufe');
+}
+
+/**
+ * "Letzte Meldung" abloesen (Nachtrag 27.10.: "Letzte Meldung ... MIoT-Fehler 2105" stammte aus der alten Fassung).
+ * Seit diesem Nachbau liegt neben anntext_N der Beileger annteile_N.json (Anlass => Satz). Meldet der Roboter in
+ * diesem Lauf KEINEN Fehler (ok 1, Code nicht 9, fehler 0), faellt der Fehlerteil weg; bleibt nichts, verschwinden
+ * Text, Beileger und das Meldefenster ann_N. Ein Text OHNE passenden Beileger (Altform einer frueheren Fassung,
+ * Herkunft unbekannt) wird dann ganz abgeloest. Es entsteht KEINE neue Meldung (kein "fertig", keine Ansage);
+ * ein verbleibender Rest behaelt seine Dateizeit (24-h-Grenze von ro_meldung_lesen()).
+ * Rueckgabe '' (nichts zu tun) | 'teil' | 'weg'.
+ */
+function ro_meldung_abloesen($dev, array $st)
+{
+    $dev = (int) $dev;
+    if (!isset($st['ok']) || (int) $st['ok'] !== 1 || (int) $st['code'] === 9 || (int) $st['fehler'] > 0) { return ''; }
+    $tf = ro_tmpdir() . '/anntext_' . $dev;
+    $jf = ro_tmpdir() . '/annteile_' . $dev . '.json';
+    if (!is_file($tf)) { if (is_file($jf)) { @unlink($jf); } return ''; }
+    $alt = trim((string) @file_get_contents($tf));
+    $j = is_file($jf) ? json_decode((string) @file_get_contents($jf), true) : null;
+    $form = is_array($j) && isset($j['teile']) && is_array($j['teile']) && implode(' ', $j['teile']) === $alt;
+    $rest = array();
+    if ($form) {
+        if (!array_key_exists('fehler', $j['teile'])) { return ''; }
+        $rest = $j['teile'];
+        unset($rest['fehler']);
+    }
+    if ($rest) {
+        $mt = (int) @filemtime($tf);
+        @file_put_contents($tf, implode(' ', $rest));
+        if ($mt > 0) { @touch($tf, $mt); }
+        ro_write_json($jf, array('teile' => $rest, 'ts' => isset($j['ts']) ? (int) $j['ts'] : $mt));
+        ro_log('Meldung Roboter ' . $dev . ': Fehlerteil abgeloest (kein Fehler mehr), Rest ' . implode(', ', array_keys($rest)));
+        return 'teil';
+    }
+    @unlink($tf);
+    @unlink($jf);
+    @unlink(ro_tmpdir() . '/ann_' . $dev);
+    ro_log('Meldung Roboter ' . $dev . ': letzte Meldung abgeloest (kein Fehler mehr' . ($form ? '' : ', Altform ohne Beileger') . ')');
+    return 'weg';
 }
 
 /* Der Escape-Helfer gehoert in die Bibliothek, nicht in
