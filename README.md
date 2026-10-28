@@ -1,15 +1,37 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · ohne Gerät gebaut
+Version 1.1.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
-Bindet einen Saugroboter mit der cloudfreien Firmware **Valetudo** an Loxone an —
-mit **einer** Abfrage statt vier und einer sauberen **Statuszahl** statt
-zusammengesuchter Textbruchstücke. Die Werte gehen per MQTT an das
-MQTT-Gateway (Virtuelle Eingänge), Befehle über die Befehlsbrücke (zwei Haken,
-ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken
-bleibt für bestehende Anlagen.
+Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
+über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
+
+* **Valetudo:** **eine** Abfrage statt vier und eine saubere **Statuszahl** statt zusammengesuchter
+  Textbruchstücke.
+* **Xiaomi:** am Gerät gemessen mit dem **Xiaomi Robot Vacuum T12** (`xiaomi.vacuum.b106bk`) – Start, Heimfahrt,
+  Status und Fehlerwerte; dazu `xiaomi.vacuum.c103`, andere Modelle mit Warnung. Dieselben MQTT-Themen und Befehle
+  wie bei Valetudo; was der Roboter nicht meldet, steht auf -1.
+* **Token aus der Xiaomi-Cloud:** das Plugin holt den Token mit dem Mi-Home-Konto (Captcha und Zweitfaktor im
+  Plugin, Kennwort nie gespeichert) – mehrere Roboter in einem Zug. Von Hand eintragen geht weiter.
+
+Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle über die Befehlsbrücke (zwei Haken,
+ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.24
+
+* **Xiaomi-Saugroboter prominent:** Kopf dieser Beschreibung, Kasten oben im Reiter Einstellungen und Hilfe nennen
+  beide Wege – Valetudo und Xiaomi direkt über miIO.
+* **Mehrere Xiaomi-Roboter mit einer Anmeldung aus der Cloud:** die Liste unter „Token aus der Xiaomi-Cloud holen“
+  hat Kästchen (vorangehakt sind die Roboter, die die Cloud als online meldet; neue Spalte „Cloud meldet“) und den
+  Knopf „Ausgewählte übernehmen“. Steht ein Roboter schon in einer Xiaomi-Zeile (gleicher Token oder gleiche
+  Adresse), werden dort nur Token und Adresse aufgefrischt – Name und Nummer bleiben; jeder andere kommt in die
+  nächste freie Zeile. Eine Valetudo-Zeile mit derselben Adresse wird nur umgestellt, wenn die Cloud den Roboter als
+  online meldet. Das Auswahlfeld „Eintragen in“ entfällt.
+* **Code-Versand:** lehnt Xiaomi den Versand des Bestätigungscodes ab, nennt das Plugin den Grund (vorübergehende
+  Sperre, zusätzliches Captcha, sonstige Antwort von Xiaomi).
+* **Gemeinsame Module:** Xiaomi-Cloud-Modul 1.0.1, Befehlsbrücke 1.0.2 (die Befehlsvorlage für Loxone Config trägt
+  CRLF-Zeilenenden wie die Ausfuhren der Config), Sprachmodul 1.2.0 (für diese Linie verhaltensgleich).
 
 ## Neu in 1.1.23
 
@@ -1016,10 +1038,14 @@ für andere Plugins (1.3.15).
 
 ## Voraussetzung
 
-Auf dem Roboter läuft **Valetudo** (Fassung mit `/api/v2`). Es werden keine
-Cloud-Dienste benötigt — die Kommunikation bleibt im eigenen Netz. Hat Valetudo
+Entweder läuft auf dem Roboter **Valetudo** (Fassung mit `/api/v2`) – dann werden
+keine Cloud-Dienste benötigt, die Kommunikation bleibt im eigenen Netz. Hat Valetudo
 eine Anmeldung eingeschaltet (Settings → Connectivity → HTTP Basic Auth),
 gehören Benutzer und Kennwort in den Reiter Einstellungen.
+
+Oder es ist ein **Xiaomi-Saugroboter** mit der Mi-Home-App (Gerätetyp „Xiaomi“, gemessen
+mit dem T12 `xiaomi.vacuum.b106bk`): Auch er wird im Heimnetz angesprochen (miIO, UDP 54321,
+verschlüsselt mit seinem Token). Nur das Holen des Tokens meldet sich einmal bei Xiaomi an.
 
 ## Datenschutz
 

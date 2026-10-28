@@ -345,7 +345,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     }
     $rb_saved = !empty($rb_flash['saved']);
     // Gruppe 28 (1.1.23): das Ergebnis des Cloud-Abrufs (ohne Token) - nur fuer die Anzeige im Reiter Einstellungen.
-    $rb_cloud = (isset($rb_flash['cloud']) && is_array($rb_flash['cloud']) && isset($rb_flash['cloud']['lage'], $rb_flash['cloud']['zeile']))
+    $rb_cloud = (isset($rb_flash['cloud']) && is_array($rb_flash['cloud']) && isset($rb_flash['cloud']['lage']))
         ? $rb_flash['cloud'] : null;
     if (isset($rb_flash['tab']) && is_string($rb_flash['tab']) && in_array($rb_flash['tab'], $rb_reiterliste, true)) {
         $rb_tab = $rb_flash['tab'];
@@ -554,8 +554,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['endpunkt_save'])) {
  * (Liste ohne Token, Zweitfaktor-Link) reist mit der Umleitung; die Auswahl selbst liegt 0600 im data-Ordner. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['cloud_holen']) || isset($_POST['cloud_code_senden'])
         || isset($_POST['cloud_captcha_senden']) || isset($_POST['cloud_weg']))) {
-    $rb_czeile = (isset($_POST['cloud_zeile']) && is_string($_POST['cloud_zeile']) && preg_match('/^[1-5]\z/', $_POST['cloud_zeile']))
-        ? (int) $_POST['cloud_zeile'] : 1;
+    $rb_czeile = 0;          // Gruppe 37 (1.1.24): keine Zielzeile mehr - die Mehrfachauswahl verteilt (ro_token_mehrere())
     $rb_cfilter = ro_xc();   // Stammmodul laden, Ablage data-Ordner, Filter xiaomi.vacuum.* (nur WLAN mit Token)
     if (isset($_POST['cloud_captcha_senden'])) {
         // Nachbau 26.10. spaet: Captcha-Loesung des Hausherrn + Kennwort (erneut, nie gespeichert) - EIN Versuch je Bild.
@@ -591,7 +590,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['cloud_holen']) || is
     // Ins Protokoll nur die Lage - nie Konto, Kennwort, Code, Sitzung oder Token.
     ro_log('Token-Abruf aus der Xiaomi-Cloud: ' . $rb_clage
            . (isset($rb_cerg['geraete']) ? ' (' . count($rb_cerg['geraete']) . ' Saugroboter)' : ''));
-    $rb_cflash = array('cloud' => array('lage' => $rb_clage, 'zeile' => $rb_czeile));
+    $rb_cflash = array('cloud' => array('lage' => $rb_clage));
+    $rb_cks = array('SPERRE' => 'CLOUD.F_SENDEN_SPERRE', 'CAPTCHA' => 'CLOUD.F_SENDEN_CAPTCHA', 'UNBEKANNT' => 'CLOUD.F_SENDEN_UNBEKANNT');
     if ($rb_clage === 'ok') {
         $rb_cflash['cloud']['geraete'] = $rb_cerg['geraete'];
         $rb_cflash['meldungen'] = array(rb_e(sprintf(ro_t('CLOUD.M_GEFUNDEN'), count($rb_cerg['geraete']),
@@ -603,6 +603,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['cloud_holen']) || is
         $rb_cflash['meldungen'] = array(rb_e(ro_t($rb_cerg['weg'] === 'sms' ? 'CLOUD.M_CODE_SMS' : 'CLOUD.M_CODE_MAIL')));
     } elseif ($rb_clage === 'CAPTCHA' || $rb_clage === 'CAPTCHA_FALSCH') {
         $rb_cflash[$rb_clage === 'CAPTCHA' ? 'meldungen' : 'fehler'] = array(rb_e(ro_t($rb_clage === 'CAPTCHA' ? 'CLOUD.M_CAPTCHA' : 'CLOUD.M_CAPTCHA_FALSCH')));
+    } elseif ($rb_clage === 'SENDEN' && isset($rb_cerg['art'], $rb_cks[$rb_cerg['art']])) {
+        // Gruppe 37 (1.1.24, Stammmodul 1.0.1): warum Xiaomi den Code nicht verschickt hat - mit der (bereinigten) Antwort
+        $rb_cgr = (isset($rb_cerg['grund']) && is_string($rb_cerg['grund'])) ? $rb_cerg['grund'] : '';
+        $rb_cflash['fehler'] = array(rb_e(ro_t($rb_cks[$rb_cerg['art']])
+            . ($rb_cgr !== '' ? sprintf(ro_t('CLOUD.F_SENDEN_ANTWORT'), $rb_cgr) : '')));
     } elseif ($rb_clage === 'KEINE') {
         $rb_cflash['fehler'] = array(rb_e(sprintf(ro_t('CLOUD.F_KEINE'), implode(', ', $rb_cerg['regionen']))));
     } else {
@@ -612,17 +617,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['cloud_holen']) || is
     unset($rb_cerg);
     rb_umleiten('tab-settings', $rb_cflash);
 }
+/* Gruppe 37 (1.1.24): Mehrfachauswahl wie Xiaomi Licht 0.9.1 - die angehakten Indizes (cloud_index[]) mit EINEM Griff
+ * ins Stammmodul (xc_auswahl_mehrere()), gespeichert wird einmal (ro_token_mehrere()). Nichts angehakt: die Liste
+ * bleibt liegen und erscheint noch einmal (ohne Token). Ins Protokoll nur Zahlen und Gruende, nie Token oder Adresse. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cloud_nehmen'])) {
-    $rb_ci = (isset($_POST['cloud_wahl']) && is_string($_POST['cloud_wahl']) && preg_match('/^\d{1,3}\z/', $_POST['cloud_wahl']))
-        ? (int) $_POST['cloud_wahl'] : -1;
-    $rb_cz = (isset($_POST['cloud_zeile']) && is_string($_POST['cloud_zeile']) && preg_match('/^[1-5]\z/', $_POST['cloud_zeile']))
-        ? (int) $_POST['cloud_zeile'] : 1;
-    list($rb_cok, $rb_cart, $rb_cnr) = $rb_ci < 0 ? array(0, 'WAHL', $rb_cz) : ro_token_uebernehmen($rb_ci, $rb_cz);
-    ro_log('Token aus der Xiaomi-Cloud fuer Roboter ' . (int) $rb_cnr . ': ' . ($rb_cok ? 'uebernommen' : $rb_cart));
-    if ($rb_cok) {
-        rb_umleiten('tab-settings', array('saved' => 1, 'meldungen' => array(rb_e(sprintf(ro_t('CLOUD.M_UEBERNOMMEN'), (int) $rb_cnr)))));
+    $rb_cwahl = array();
+    foreach ((isset($_POST['cloud_index']) && is_array($_POST['cloud_index'])) ? $_POST['cloud_index'] : array() as $rb_ci) {
+        if (is_string($rb_ci) && preg_match('/^[0-9]{1,3}\z/', $rb_ci) && count($rb_cwahl) < 100) { $rb_cwahl[] = (int) $rb_ci; }
     }
-    rb_umleiten('tab-settings', array('fehler' => array(rb_e(ro_t('CLOUD.F_UEB_' . $rb_cart)))));
+    $rb_cerg = ro_token_mehrere($rb_cwahl);
+    $rb_cab = array();
+    foreach ($rb_cerg[3] as $rb_ck => $rb_cn) { $rb_cab[] = $rb_ck . ' ' . count($rb_cn); }
+    ro_log('Token aus der Xiaomi-Cloud: ' . $rb_cerg[0] . ', ' . count($rb_cerg[1]) . ' uebernommen, ' . count($rb_cerg[2])
+           . ' aufgefrischt' . ($rb_cab ? ', abgewiesen: ' . implode(', ', $rb_cab) : ''));
+    list($rb_cgut, $rb_cschlecht) = ro_xc_meldungen($rb_cerg);
+    $rb_cflash = array('meldungen' => array_map('rb_e', $rb_cgut), 'fehler' => array_map('rb_e', $rb_cschlecht));
+    if ($rb_cerg[0] === 'ok' && ($rb_cerg[1] || $rb_cerg[2])) { $rb_cflash['saved'] = 1; }
+    if ($rb_cerg[0] === 'WAHL' && ($rb_cliegt = xc_lesen('auswahl')) !== null && isset($rb_cliegt['liste'])) {
+        $rb_cflash['cloud'] = array('lage' => 'ok', 'geraete' => ro_xc_zeigen($rb_cliegt['liste']));   // Liste noch einmal zeigen
+    }
+    unset($rb_cerg, $rb_cliegt);
+    rb_umleiten('tab-settings', $rb_cflash);
 }
 
 /* --- MQTT speichern (eigener Reiter seit 1.0.10, Hausstandard) ---
@@ -1354,22 +1369,24 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
 <?php if ($rb_cloud && $rb_cloud['lage'] === 'ok' && !empty($rb_cloud['geraete']) && is_array($rb_cloud['geraete'])) { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
 <?= rb_fmt() ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_MODELL')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_REGION')) ?></th></tr>
+<tr><th><?= rb_e(ro_t('CLOUD.SP_WAHL')) ?></th><th><?= rb_e(ro_t('WORT.NAME')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_MODELL')) ?></th><th><?= rb_e(ro_t('EINST.ADRESSE')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_REGION')) ?></th><th><?= rb_e(ro_t('CLOUD.SP_ONLINE')) ?></th></tr>
 <?php foreach ($rb_cloud['geraete'] as $rb_cg) {
-    if (!is_array($rb_cg) || !isset($rb_cg['i'])) { continue; } ?>
-<tr><td><input data-role="none" type="radio" name="cloud_wahl" value="<?= (int) $rb_cg['i'] ?>"<?= (int) $rb_cg['i'] === 0 ? ' checked' : '' ?>></td>
-<td><?= rb_e(isset($rb_cg['name']) ? $rb_cg['name'] : '') ?></td><td><span class="sm-mono"><?= rb_e(isset($rb_cg['modell']) ? $rb_cg['modell'] : '') ?></span><?= (isset($rb_cg['modell']) && !ro_miot_modell_bekannt($rb_cg['modell'])) ? ' <b>' . rb_e(ro_t('CLOUD.MODELL_UNGEPRUEFT')) . '</b>' : '' ?></td>
-<td><span class="sm-mono"><?= rb_e(isset($rb_cg['ip']) ? $rb_cg['ip'] : '') ?></span></td><td><?= rb_e(isset($rb_cg['region']) ? $rb_cg['region'] : '') ?></td></tr>
+    if (!is_array($rb_cg) || !isset($rb_cg['i'])) { continue; }
+    /* Gruppe 37 (1.1.24): Kaestchen statt Wahlknopf; vorangehakt nur, was die Cloud als online meldet (isOnline). */
+    $rb_con = (isset($rb_cg['online']) && in_array($rb_cg['online'], array(0, 1), true)) ? $rb_cg['online'] : -1; ?>
+<tr><td><input data-role="none" type="checkbox" id="cloud_wahl_<?= (int) $rb_cg['i'] ?>" name="cloud_index[]" value="<?= (int) $rb_cg['i'] ?>"<?= $rb_con === 1 ? ' checked' : '' ?>></td>
+<td><label for="cloud_wahl_<?= (int) $rb_cg['i'] ?>"><?= rb_e(isset($rb_cg['name']) ? $rb_cg['name'] : '') ?></label></td><td><span class="sm-mono"><?= rb_e(isset($rb_cg['modell']) ? $rb_cg['modell'] : '') ?></span><?= (isset($rb_cg['modell']) && !ro_miot_modell_bekannt($rb_cg['modell'])) ? ' <b>' . rb_e(ro_t('CLOUD.MODELL_UNGEPRUEFT')) . '</b>' : '' ?></td>
+<td><span class="sm-mono"><?= rb_e(isset($rb_cg['ip']) && $rb_cg['ip'] !== '' ? $rb_cg['ip'] : '-') ?></span></td><td><?= rb_e(isset($rb_cg['region']) ? $rb_cg['region'] : '') ?></td>
+<td><?= rb_e(ro_t($rb_con === 1 ? 'CLOUD.ONLINE_JA' : ($rb_con === 0 ? 'CLOUD.ONLINE_NEIN' : 'CLOUD.ONLINE_UNBEKANNT'))) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-small"><?= rb_e(sprintf(ro_t('CLOUD.UEBERNEHMEN_TEXT'), (int) $rb_cloud['zeile'])) ?></div>
+<div class="sm-small"><?= rb_e(ro_t('CLOUD.UEBERNEHMEN_TEXT')) ?></div>
 <div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cloud_nehmen" value="1"><?= rb_e(sprintf(ro_t('CLOUD.K_UEBERNEHMEN'), (int) $rb_cloud['zeile'])) ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cloud_nehmen" value="1"><?= rb_e(ro_t('CLOUD.K_AUSGEWAEHLT')) ?></button>
 </div>
 </form>
 <?php } elseif ($rb_cloud && in_array($rb_cloud['lage'], array('CAPTCHA', 'CAPTCHA_FALSCH'), true)
@@ -1380,7 +1397,6 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
 <div class="sm-warnung"><?= rb_e(ro_t('CLOUD.CAPTCHA_TEXT')) ?></div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
 <?= rb_fmt() ?>
 <div class="sm-row"><div>
 <img src="data:<?= rb_e($rb_ccap['bildtyp']) ?>;base64,<?= rb_e(preg_replace('#[^A-Za-z0-9+/=]#', '', (string) $rb_ccap['bild'])) ?>" alt="<?= rb_e(ro_t('CLOUD.CAPTCHA_BILD')) ?>" style="max-width:100%;border:1px solid #ccc;background:#fff;">
@@ -1409,7 +1425,6 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
 <?php } ?></div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
 <?= rb_fmt() ?>
 <div class="sm-knopfreihe">
 <?php if (in_array(8, (array) $rb_czf['optionen'], true)) { ?>
@@ -1426,7 +1441,6 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
 <div class="sm-warnung"><?= rb_e(ro_t('CLOUD.ZWEITFAKTOR_TEXT')) ?></div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="cloud_zeile" value="<?= (int) $rb_cloud['zeile'] ?>">
 <?= rb_fmt() ?>
 <div class="sm-row"><div>
 <label><?= rb_e(ro_t('CLOUD.CODE')) ?></label>
@@ -1441,16 +1455,6 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <?= rb_fmt() ?>
 <div class="sm-row">
-  <div>
-    <label><?= rb_e(ro_t('CLOUD.ZEILE')) ?></label>
-    <select data-role="none" name="cloud_zeile">
-<?php $rb_cwahl = false; /* Nachbau 27.10.: bei mehreren Xiaomi-Zeilen nur die erste vorgewaehlt */
-foreach ($rb_zeilen as $rb_cz) { $rb_cz = (array) $rb_cz;
-    $rb_csel = !$rb_cwahl && isset($rb_cz['typ']) && $rb_cz['typ'] === 'miot'; if ($rb_csel) { $rb_cwahl = true; } ?>
-      <option value="<?= (int) $rb_cz['nr'] ?>"<?= $rb_csel ? ' selected' : '' ?>><?= rb_e(sprintf(ro_t('CLOUD.ZEILE_N'), (int) $rb_cz['nr'], isset($rb_cz['name']) && $rb_cz['name'] !== '' ? $rb_cz['name'] : '-')) ?></option>
-<?php } ?>
-    </select>
-  </div>
   <div>
     <label><?= rb_e(ro_t('CLOUD.REGION')) ?></label>
     <select data-role="none" name="cloud_region">

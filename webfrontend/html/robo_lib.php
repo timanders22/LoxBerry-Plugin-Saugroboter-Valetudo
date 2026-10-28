@@ -5386,12 +5386,12 @@ function ro_miot_raeume_roh(array &$z, array $tab)
 
 /* ==================================================================
  * Token aus der Xiaomi-Cloud holen (Gruppe 28, 1.1.23; Entscheidung "Token-Beschaffung", Empfehlung A) - seit dem
- * dritten Nachbau (27.10.2026) ueber das gemeinsame Stammmodul xiaomi_cloud.php 1.0.0 (Werkzeuge/gemeinsam,
+ * dritten Nachbau (27.10.2026) ueber das gemeinsame Stammmodul xiaomi_cloud.php (seit 1.1.24 Fassung 1.0.1, Werkzeuge/gemeinsam,
  * byte-gleich verteilt wie Befehlsbruecke/Sprachmodul; dasselbe Modul wie im BLE-Scanner NG). Ablauf (Anmeldung,
  * Captcha-Bild, Zweitfaktor Mail/SMS, Geraeteliste), Herkunft (Xiaomi-cloud-tokens-extractor, MIT) und der Umgang mit
  * den Geheimnissen stehen im Kopf des Moduls; die Zwischenstaende bleiben data/plugins/<ordner>/cloud_*.json (0600,
  * hoechstens 10 Minuten). Linieneigen bleiben: Oberflaeche (index.php), Sprachtexte der Lagen ([CLOUD]) und die
- * Uebernahme in die Roboterzeile (ro_token_uebernehmen()).
+ * Uebernahme in die Roboterzeilen (seit 1.1.24 Mehrfachauswahl: ro_token_mehrere()).
  * ================================================================== */
 
 /**
@@ -5407,43 +5407,164 @@ function ro_xc()
 }
 
 /**
- * Einen Roboter aus der Auswahlliste in eine Roboterzeile uebernehmen: typ miot, Token, IP nur, wenn die Zeile keine
- * hat. Die Liste wird dabei geloescht (xc_auswahl_nehmen()). Gegenprobe mit dem Filter der Linie (eine Auswahl ohne
- * Saugroboter-Modell oder ohne 32-Hex-Token wird nicht uebernommen). Rueckgabe array(ok, Kennung fuer die Meldung, Nummer).
+ * Gruppe 37 (1.1.24, Bauvorschrift Inhalt 2; Vorbild Xiaomi Licht 0.9.1 xl_cloud_uebernehmen()): die angehakten
+ * Eintraege der Auswahl mit EINEM Griff (xc_auswahl_mehrere(), Stammmodul 1.0.1; die Liste ist danach geloescht) in
+ * die Roboterzeilen uebernehmen - alle mit EINER Anmeldung. Ersetzt ro_token_uebernehmen($index, $nr) (ein Roboter in
+ * eine gewaehlte Zeile). Je Geraet in dieser Reihenfolge:
+ *   1. Xiaomi-Zeile mit demselben Token (= derselbe Roboter): die Adresse wird aufgefrischt, wenn die Cloud eine andere
+ *      nennt und keine andere Zeile sie traegt; Name und Nummer bleiben;
+ *   2. Zeile mit derselben Adresse: Xiaomi-Zeile -> Token auffrischen. Valetudo-Zeile -> Geraetetyp Xiaomi und Token NUR,
+ *      wenn die Cloud den Roboter als online meldet (ein Roboter mit Valetudo ist nicht in der Xiaomi-Cloud online; ein
+ *      veralteter Eintrag darf eine laufende Valetudo-Zeile nicht umstellen), sonst abgewiesen (VALETUDO);
+ *   3. sonst die naechste freie Nummer 1..RO_ROBOTER_MAX (Name aus Mi Home, Port 80, Geraetetyp Xiaomi).
+ * Gegenprobe wie bisher: nur Saugroboter-Modelle (xc_passt() mit dem Filter der Linie - eine Auswahl aus einem
+ * Zwischenstand der Vorfassung kann anderes tragen) und 32-Hex-Token. Gespeichert wird EINMAL am Schluss. Die Token
+ * reisen nur im Speicher; Meldungen nennen nur Namen. Rueckgabe array(lage, neu (Namen), aufgefrischt (Namen),
+ * abgewiesen (Grund => Namen)) mit lage ok | WAHL (nichts angehakt, die Liste bleibt) | ABGELAUFEN | SPEICHERN.
  */
-function ro_token_uebernehmen($index, $nr)
+function ro_token_mehrere(array $indizes)
 {
     $filter = ro_xc();
-    $a = xc_auswahl_nehmen((int) $index);
-    if ($a === null) { return array(0, 'ABGELAUFEN', $nr); }
-    $g = $a['geraet'];
-    unset($a);
-    if (!is_array($g) || !isset($g['modell'], $g['token'], $g['ip'], $g['name'])
-            || !xc_passt(array('model' => (string) $g['modell'], 'did' => isset($g['did']) ? (string) $g['did'] : ''), $filter)
-            || !preg_match('/^[0-9a-f]{32}\z/', (string) $g['token'])) {
-        return array(0, 'WAHL', $nr);
-    }
+    $wahl = xc_auswahl_mehrere($indizes);
+    if ($wahl === null) { return array('ABGELAUFEN', array(), array(), array()); }
+    if (!$wahl) { return array('WAHL', array(), array(), array()); }
     $cfg = ro_config();
-    $nr = max(1, min(RO_ROBOTER_MAX, (int) $nr));
-    $neu = array(); $gesetzt = false;
-    foreach ((array) $cfg['robots'] as $r) {
-        $r = (array) $r;
-        if (isset($r['nr']) && (int) $r['nr'] === $nr) {
-            $r['typ'] = 'miot';
-            $r['token'] = $g['token'];
-            if (trim((string) (isset($r['ip']) ? $r['ip'] : '')) === '') { $r['ip'] = $g['ip']; }
-            $gesetzt = true;
+    $zeilen = array();
+    foreach ((array) $cfg['robots'] as $r) { $zeilen[] = (array) $r; }
+    $ipk = function ($w) { return strtolower(trim((string) $w)); };
+    $neu = array(); $frisch = array(); $ab = array(); $angefasst = array();
+    foreach ($wahl as $g) {
+        if (!is_array($g)) { continue; }
+        $name = trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', (string) (isset($g['name']) ? $g['name'] : '')));
+        $name = function_exists('mb_substr') ? mb_substr($name, 0, 40, 'UTF-8') : substr($name, 0, 40);
+        $modell = isset($g['modell']) ? (string) $g['modell'] : '';
+        $zeigen = $name !== '' ? $name : ($modell !== '' ? $modell : '?');
+        if (!xc_passt(array('model' => $modell, 'did' => isset($g['did']) ? (string) $g['did'] : ''), $filter)) {
+            $ab['MODELL'][] = $zeigen;
+            continue;
         }
-        $neu[] = $r;
+        $tok = strtolower(trim((string) (isset($g['token']) ? $g['token'] : '')));
+        if (!preg_match('/^[0-9a-f]{32}\z/', $tok)) {
+            $ab['TOKEN_FORM'][] = $zeigen;
+            continue;
+        }
+        $ip = (isset($g['ip']) && is_string($g['ip']) && preg_match('/^[\w\.\-]{1,253}\z/', $g['ip'])) ? $g['ip'] : '';
+        $online = isset($g['online']) ? (int) $g['online'] : -1;
+        // 1. Xiaomi-Zeile mit demselben Token = derselbe Roboter: Adresse auffrischen, wenn frei; Name/Nummer bleiben.
+        $treffer = -1;
+        foreach ($zeilen as $i => $z) {
+            if (isset($z['typ'], $z['token']) && $z['typ'] === 'miot' && strtolower((string) $z['token']) === $tok
+                    && $ipk(isset($z['ip']) ? $z['ip'] : '') !== '') {
+                $treffer = $i;
+                break;
+            }
+        }
+        if ($treffer >= 0) {
+            if ($ip !== '' && $ipk($zeilen[$treffer]['ip']) !== $ipk($ip)) {
+                $belegt = false;
+                foreach ($zeilen as $i => $z) {
+                    if ($i !== $treffer && $ipk(isset($z['ip']) ? $z['ip'] : '') === $ipk($ip)) { $belegt = true; }
+                }
+                if (!$belegt) { $zeilen[$treffer]['ip'] = $ip; }
+            }
+            $angefasst[$treffer] = true;
+            $frisch[] = $zeigen;
+            continue;
+        }
+        // 2. Zeile mit derselben Adresse: Xiaomi-Zeile -> Token; Valetudo-Zeile nur, wenn die Cloud ihn online meldet.
+        if ($ip !== '') {
+            foreach ($zeilen as $i => $z) {
+                if ($ipk(isset($z['ip']) ? $z['ip'] : '') === $ipk($ip)) { $treffer = $i; break; }
+            }
+        }
+        if ($treffer >= 0) {
+            if (isset($angefasst[$treffer])) {
+                $ab['IP_DOPPELT'][] = $zeigen;
+                continue;
+            }
+            $ist_miot = isset($zeilen[$treffer]['typ']) && $zeilen[$treffer]['typ'] === 'miot';
+            if (!$ist_miot && $online !== 1) {
+                $ab['VALETUDO'][] = $zeigen;
+                continue;
+            }
+            $zeilen[$treffer]['typ'] = 'miot';
+            $zeilen[$treffer]['token'] = $tok;
+            $angefasst[$treffer] = true;
+            $frisch[] = $zeigen;
+            continue;
+        }
+        if ($ip === '') {
+            $ab['KEINE_IP'][] = $zeigen;
+            continue;
+        }
+        // 3. naechste freie Nummer; Zeilen ohne Adresse sind ungenutzt (ro_robots_aus) und weichen einer neuen Zeile.
+        $wirk = ro_robots_aus(array('robots' => $zeilen));
+        $nr = 0;
+        for ($n = 1; $n <= RO_ROBOTER_MAX; $n++) { if (!isset($wirk[$n])) { $nr = $n; break; } }
+        if ($nr > 0) {
+            foreach ($zeilen as $i => $z) {
+                if ($ipk(isset($z['ip']) ? $z['ip'] : '') === '' && isset($z['nr']) && (int) $z['nr'] === $nr) { unset($zeilen[$i]); }
+            }
+            if (count($zeilen) >= RO_ROBOTER_MAX) {
+                foreach ($zeilen as $i => $z) {
+                    if ($ipk(isset($z['ip']) ? $z['ip'] : '') === '') { unset($zeilen[$i]); break; }
+                }
+            }
+        }
+        if ($nr === 0 || count($zeilen) >= RO_ROBOTER_MAX) {
+            $ab['VOLL'][] = $zeigen;
+            continue;
+        }
+        $zeilen[] = array('nr' => $nr, 'name' => $name !== '' ? $name : ('Saugroboter ' . $nr), 'ip' => $ip, 'port' => 80,
+                          'user' => '', 'pass' => '', 'typ' => 'miot', 'token' => $tok);
+        end($zeilen);
+        $angefasst[key($zeilen)] = true;
+        $neu[] = $zeigen;
     }
-    if (!$gesetzt) {
-        if (count($neu) >= RO_ROBOTER_MAX || $g['ip'] === '') { return array(0, 'ZEILE', $nr); }
-        $neu[] = array('nr' => $nr, 'name' => $g['name'], 'ip' => $g['ip'], 'port' => 80, 'user' => '', 'pass' => '',
-                       'typ' => 'miot', 'token' => $g['token']);
+    $tok = '';
+    unset($wahl, $g);
+    if ($neu || $frisch) {
+        $cfg['robots'] = array_values($zeilen);
+        if (!ro_config_speichern($cfg)) { return array('SPEICHERN', array(), array(), $ab); }
     }
-    $cfg['robots'] = $neu;
-    unset($g);
-    return array(ro_config_speichern($cfg) ? 1 : 0, 'GESPEICHERT', $nr);
+    return array('ok', $neu, $frisch, $ab);
+}
+
+/** Die Auswahlliste fuer eine zweite Anzeige (nichts angehakt): nur Name, Modell, Adresse, Region, online - nie der Token. */
+function ro_xc_zeigen($liste)
+{
+    $aus = array();
+    foreach ((array) $liste as $i => $g) {
+        if (!is_array($g)) { continue; }
+        $aus[] = array('i' => (int) $i, 'name' => isset($g['name']) ? (string) $g['name'] : '',
+                       'modell' => isset($g['modell']) ? (string) $g['modell'] : '', 'ip' => isset($g['ip']) ? (string) $g['ip'] : '',
+                       'region' => isset($g['region']) ? (string) $g['region'] : '',
+                       'online' => (isset($g['online']) && in_array($g['online'], array(0, 1), true)) ? $g['online'] : -1);
+    }
+    return $aus;
+}
+
+/** Meldungen zum Ergebnis von ro_token_mehrere(): array(gute, schlechte) - Klartext (die Oberflaeche maskiert), nur Namen. */
+function ro_xc_meldungen(array $erg)
+{
+    list($lage, $neu, $frisch, $ab) = $erg;
+    $gut = array();
+    $schlecht = array();
+    if ($lage === 'ABGELAUFEN') { return array(array(), array(ro_t('CLOUD.U_ABGELAUFEN'))); }
+    if ($lage === 'WAHL') { return array(array(), array(ro_t('CLOUD.U_WAHL'))); }
+    if ($lage === 'SPEICHERN') {
+        $schlecht[] = ro_t('CLOUD.U_SPEICHERN');
+    } else {
+        $gut[] = sprintf(ro_t('CLOUD.M_ERGEBNIS'), count($neu), count($frisch));
+    }
+    $namen = function ($k) use ($ab) { return empty($ab[$k]) ? '' : implode(', ', $ab[$k]); };
+    if ($namen('VOLL') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_VOLL'), RO_ROBOTER_MAX, $namen('VOLL')); }
+    if ($namen('KEINE_IP') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_KEINE_IP'), $namen('KEINE_IP')); }
+    if ($namen('IP_DOPPELT') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_IP_DOPPELT'), $namen('IP_DOPPELT')); }
+    if ($namen('VALETUDO') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_VALETUDO'), $namen('VALETUDO')); }
+    if ($namen('TOKEN_FORM') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_TOKEN_FORM'), $namen('TOKEN_FORM')); }
+    if ($namen('MODELL') !== '') { $schlecht[] = sprintf(ro_t('CLOUD.U_MODELL'), $namen('MODELL')); }
+    return array($gut, $schlecht);
 }
 
 /* ==================================================================
