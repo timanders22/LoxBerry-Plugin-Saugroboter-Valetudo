@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,33 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.25
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne Änderung an Abruf, MQTT oder Befehlen; neu sind der Selbsttest für
+Gateway V2 und mehrere Lautsprecher gleichzeitig für die Ansagen:
+
+* **Selbsttest MQTT-Gateway V2:** Die Selbstprüfung im Reiter *Test* hat eine neue Zeile „MQTT-Gateway V2:
+  Datenpunkte angehakt“. Sie liest `config/system/subscriptions.json` und nennt jedes Thema der Hakenliste (Reiter
+  *Einbindung in Loxone*, Schritt 2), das im Gateway nicht angehakt ist, und jedes mit „N“, dem „Noncached“ fehlt.
+  Unter Gateway V1 oder bei ausgeschaltetem MQTT „trifft nicht zu“. Hakenliste und Selbsttest kommen aus derselben
+  Funktion.
+* **Kopf, Zeile MQTT:** Groß steht weiter der Schalter dieses Plugins, klein darunter jetzt der Autostart des
+  MQTT-Gateways (ein/aus, „nicht feststellbar“ ohne MQTT-Abschnitt in der LoxBerry-Konfiguration) – wie in den
+  übrigen Plugins.
+* **Gemeinsame Sprachausgabe 1.2.1** (bisher 1.2.0).
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 10 s, mit Sonos 30 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  1.1.24. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 1.1.24 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* spricht wie bisher an alle Ziele; die Knöpfe *Testansage an Ziel n* daneben sprechen
+  den Testsatz nur an diesem Ziel.
+* Unverändert: Befehlsbrücke 1.0.2 und Xiaomi-Cloud-Modul 1.0.1 (seit 1.1.24).
 
 ## Neu in 1.1.24
 
@@ -658,7 +685,7 @@ nicht an einem echten Lautsprecher.
   und im Feld `meldung` von `robo.php` – dort ist er die Meldung selbst.
 * Ein Netzfehler zur Gegenstelle nennt seinen Text.
 * Die Einstellungen bekommen zwei Felder `tts.sonos_zone` und `tts.sonos_laut` mit Vorgabewerten (Sonos4Lox
-  bietet dieses Plugin nicht an). Eine Sicherung aus 1.1.14 und älter wird angenommen.
+  bot dieses Plugin damals noch nicht an). Eine Sicherung aus 1.1.14 und älter wird angenommen.
 
 **In Loxone:** nichts zu tun.
 

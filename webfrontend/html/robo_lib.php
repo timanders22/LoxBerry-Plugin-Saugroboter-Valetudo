@@ -40,7 +40,8 @@ date_default_timezone_set('Europe/Berlin');
 
 
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
- * Nr. 36 b; seit 1.1.15 Stufe 2 mit Modul 1.1.1). Liegt neben dieser Datei; sie legt
+ * Nr. 36 b; seit 1.1.15 Stufe 2 mit Modul 1.1.1; seit 1.1.25 Stamm 1.2.1 mit weiteren Ausgabezielen, ro_mit_zielen(),
+ * Welle Mehrfach-Ziele). Liegt neben dieser Datei; sie legt
  * beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
@@ -2881,6 +2882,104 @@ function ro_mqtt_namen_geraete()
     return $n ? $n : array(1);
 }
 
+/**
+ * Nachtwelle N3 (1.1.25): die Hakenliste fuer Gateway V2 - alle Eintraege von ro_mqtt_namen() fuer jeden
+ * eingerichteten Roboter (das Lebenszeichen beim ersten). EINE Funktion fuer die Tabelle im Reiter Einbindung
+ * (Schritt 2) und den Selbsttest gegen subscriptions.json (Regeln/07: Vorlage und Pruefung aus einer Funktion).
+ * Rueckgabe die Eintraege von ro_mqtt_namen() ('thema' voll mit Praefix, 'name', 'noncached', ...).
+ */
+function ro_mqtt_v2_soll()
+{
+    $aus = array();
+    foreach (ro_mqtt_namen_geraete() as $d) {
+        foreach (ro_mqtt_namen($d) as $z) { $aus[] = $z; }
+    }
+    return $aus;
+}
+
+/**
+ * Nachtwelle N3 (1.1.25): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten. Ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function ro_mqtt_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Nachtwelle N3 (1.1.25): Soll gegen Ist (Rein). Fehlt ein Thema der Hakenliste in den Abos, steht es in fehlt[];
+ * braucht es "Noncached" (N) und hat es nicht, steht es in ohne_nc[].
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function ro_mqtt_v2_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $nc = 0;
+    foreach ($soll as $e) {
+        if (!empty($e['noncached'])) { $nc++; }
+        if (!array_key_exists($e['thema'], $abo)) { $fehlt[] = $e['thema']; continue; }
+        $da++;
+        if (!empty($e['noncached']) && !$abo[$e['thema']]) { $ohne[] = $e['thema']; }
+        elseif (empty($e['noncached']) && $abo[$e['thema']]) { $zuviel[] = $e['thema']; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, count($soll), $nc, $zuviel);
+}
+
+/**
+ * Nachtwelle N3 (1.1.25): die Zeile "MQTT-Gateway V2: Datenpunkte angehakt" der Selbstpruefung (Reiter Test).
+ * Liest nur general.json (ro_mqtt_gateway_info()) und config/system/subscriptions.json. Rueckgabe array(1|0|2, Text):
+ * 1 alle Datenpunkte der Hakenliste angehakt und "Noncached" bei den mit N markierten; 0 es fehlt etwas (die Themen
+ * werden genannt); 2 trifft nicht zu (Gateway V1, MQTT aus) oder nicht feststellbar.
+ */
+function ro_mqtt_v2_haken_lage($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $g = ro_mqtt_gateway_info();
+    if ($g === null || (int) $g['fassung'] === 0) { return array(2, ro_t('PRUEF.V2_UNKLAR')); }
+    if ((int) $g['fassung'] < 2) { return array(2, ro_t('PRUEF.V2_V1')); }
+    if (empty($cfg['mqtt_enabled'])) { return array(2, ro_t('PRUEF.MQTT_AUS')); }
+    $roh = @file_get_contents(ro_paths()['lbhome'] . '/config/system/subscriptions.json');
+    $abo = ($roh === false || trim($roh) === '') ? null : ro_mqtt_v2_abos(json_decode($roh, true));
+    if ($abo === null) { return array(2, ro_t('PRUEF.V2_UNKLAR_DATEI')); }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = ro_mqtt_v2_abgleich(ro_mqtt_v2_soll(), $abo);
+    if ($soll === 0) { return array(2, ro_t('PRUEF.V2_LEER')); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array(1, sprintf(ro_t('PRUEF.V2_OK'), $soll, $nc)); }
+    $kurz = function ($l) {
+        if (!$l) { return '-'; }
+        return implode(', ', array_slice($l, 0, 8)) . (count($l) > 8 ? ' … (+' . (count($l) - 8) . ')' : '');
+    };
+    return array(0, sprintf(ro_t('PRUEF.V2_FEHLT'), $da, $soll, $kurz($fehlt), $kurz($ohne))
+        . ($zuviel ? '; ' . sprintf(ro_t('PRUEF.V2_NC_ZUVIEL'), $kurz($zuviel)) : ''));
+}
+
 /* ---------------- Befehlsbruecke (gemeinsames Modul, bin/befehlsbruecke.php) ---------------- */
 
 /** Der bin-Ordner mit der Befehlsbruecke: installiert <wurzel>/bin/plugins/<ordner>, im ausgepackten Archiv (und in
@@ -3142,11 +3241,41 @@ function ro_spaet_schluessel()
  * Protokoll nur die Kurzform ansage_kurz() - nie Text, Token oder die Adresse des Music Servers.
  */
 
-/** Die Ausgabewege der Sprachausgabe - EINE Liste fuer Formular, Pruefung und Ansage (wie bis 1.1.14). */
+/** Die Ausgabewege der Sprachausgabe - EINE Liste fuer Formular, Pruefung und Ansage (wie bis 1.1.14). Weitere
+ *  Ausgabeziele (Tabelle, 'ziele') seit 1.1.25 mit Stamm 1.2.1 - ro_mit_zielen() unten; ohne Tabelle wie bisher. */
 function ro_tts_wege()
 {
     // Gruppe 28 (1.1.23, E5; Pflegewelle 22): dazu Sonos4Lox und SonoX (Modul 1.1.4).
     return array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function ro_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (1.1.25), X-2: die sechs Felder der Tabelle (name[N]) fuer rb_eingabe_felder() - nur, wenn die
+ *  geladene Abschrift die Tabelle kann. */
+function ro_ziele_x2_felder()
+{
+    return ro_mit_zielen() ? array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein',
+                                   'tts_ziel_loeschen') : array();
+}
+
+/** Welle Mehrfach-Ziele (1.1.25), X-2: aus den Eingaben der Einmalmeldung (name => array(N => Wert)) wieder das POST der
+ *  Tabelle (ziele_post); null, wenn die Tabelle nicht darin steht (die gespeicherten Ziele bleiben sichtbar). */
+function ro_ziele_x2_post(array $werte)
+{
+    $p = array();
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        if (!isset($werte[$n]) || !is_array($werte[$n])) { continue; }
+        foreach ($werte[$n] as $i => $v) {
+            if (is_string($v) && preg_match('/^[2-9]\z/', (string) $i)) { $p[$n][(int) $i] = $v; }
+        }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
 }
 
 /**
@@ -4133,8 +4262,19 @@ function ro_sicherung_lesen($roh)
             $spaet[] = $ro_sk;
         }
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten,
-                 $spaet ? array(sprintf(ro_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $spaet))) : array());
+    $ro_zspaet = array();
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $rb_spaete = array();
+    if (isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($neu['tts'], $rb_spaete) = ansage_sicherung_spaet($neu['tts'],
+            (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null);
+    }
+    foreach ($rb_spaete as $rb_sn) { $ro_zspaet[] = $rb_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten, array_merge(
+                 $spaet ? array(sprintf(ro_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $spaet))) : array(),
+                 $ro_zspaet ? array(sprintf(ro_t('TEXT.SICH_SPAET'), implode(', ', $ro_zspaet))) : array()));
 }
 
 /**
@@ -4522,6 +4662,10 @@ function ro_selbsttest($opt = array())
         $add('PRUEF.MQTT', $g === null ? 2 : ($g['autostart'] ? 1 : 0),
             $g === null ? '' : ('V' . (int) $g['fassung']));
     }
+    /* Nachtwelle N3 (1.1.25): stehen unter Gateway V2 die Haken der Hakenliste (und "Noncached" bei den mit N
+     * markierten) in config/system/subscriptions.json? Liest nur eine Datei. */
+    list($v2_ok, $v2_txt) = ro_mqtt_v2_haken_lage($cfg);
+    $add('PRUEF.V2', $v2_ok, $v2_txt);
 
     // Konfigurationslage
     $lage = ro_cfg_lage();

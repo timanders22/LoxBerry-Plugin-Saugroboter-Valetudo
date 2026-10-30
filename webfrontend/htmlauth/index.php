@@ -169,7 +169,8 @@ function rb_eingabe_felder($formular)
                      'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis'),
-                     ansage_x2_felder(array('modi' => ro_tts_wege())));    // Nr. 36 b, Stufe 2: ohne Sprechtoken
+                     ansage_x2_felder(array('modi' => ro_tts_wege())),     // Nr. 36 b, Stufe 2: ohne Sprechtoken
+                     ro_ziele_x2_felder());     // Welle Mehrfach-Ziele (1.1.25): die Tabelle (name[N])
     }
     return array();
 }
@@ -209,7 +210,8 @@ function rb_eingaben_sammeln($formular)
         if (is_array($w)) {
             $zeilen = array();
             foreach ($w as $k => $v) {
-                if (count($zeilen) >= 4 || !preg_match('/^\d\z/', (string) $k)) { continue; }
+                // Welle Mehrfach-Ziele (1.1.25): die Tabelle hat bis zu fuenf Zeilen (N = 2..6), die Roboterliste vier
+                if (count($zeilen) >= (strpos($f, 'tts_ziel_') === 0 ? 9 : 4) || !preg_match('/^\d\z/', (string) $k)) { continue; }
                 if (rb_eingabe_tauglich($v)) { $zeilen[(string) (int) $k] = $v; }
             }
             $werte[$f] = $zeilen;
@@ -531,6 +533,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
         $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($rb_ar['kennung'], $rb_ak)));
     } else {
         $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ' ' . ansage_kennung_text($rb_ar['kennung'], $rb_ak));
+    }
+    rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
+}
+
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $rb_tk = ro_ansage_k();
+    $rb_tnur = (isset($_POST['ansage_test_ziel']) && ro_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $rb_tnur === 0) {
+        $rb_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($rb_tnur >= 1) {
+        $rb_tr = ansage_testansage(ro_tts(), $rb_tk, $rb_tnur);
+    } else {
+        $rb_tr = ansage_testansage(ro_tts(), $rb_tk);
+    }
+    ro_log('Testansage' . ($rb_tnur >= 1 ? ' an Ziel ' . $rb_tnur : '') . ': ' . ansage_kurz($rb_tr));
+    if ($rb_tr['stand'] === 1) {
+        $rb_meldungen[] = rb_e(ro_t('TEXT.TESTANSAGE_OK'));
+        if ($rb_tr['art'] === 'cc4lox') {
+            $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.GOOGLE_ANTWORT'), (int) $rb_tr['http'],
+                preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $rb_tr['zeile'], $rb_gm) ? $rb_gm[1] : '-'));
+        }
+    } elseif ($rb_tr['stand'] === -1) {
+        $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($rb_tr['kennung'], $rb_tk)));
+    } else {
+        $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ' ' . ansage_kennung_text($rb_tr['kennung'], $rb_tk));
     }
     rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
 }
@@ -919,8 +948,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
      * das Speichern (Nr. 16); die beanstandeten Felder werden markiert (X-2). */
     $rb_tmangel = array();
     $rb_tbean = array();
-    $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean, array('modi' => ro_tts_wege()),
-                                           ro_ansage_k());
+    $rb_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
+    $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean,
+        array('modi' => ro_tts_wege(), 'ziele' => ro_mit_zielen()), ro_ansage_k(), $rb_thinw);
     foreach ($rb_tmangel as $rb_tm) { $rb_hw[] = $rb_wert(ro_t('EINST.H_SPRACHAUSGABE'), $rb_tm['text']); }
     foreach ($rb_tbean as $rb_tb) { rb_bean($rb_tb); }
     /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
@@ -941,7 +971,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         rb_umleiten('tab-settings', array('fehler' => $rb_hw, 'eingaben' => rb_eingaben_sammeln('settings')));
     }
     if (ro_config_speichern($rb_neu)) {
-        rb_umleiten('tab-settings', array('saved' => 1));
+        foreach ($rb_thinw as $rb_th) { $rb_meldungen[] = $rb_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+        rb_umleiten('tab-settings', array('saved' => 1, 'meldungen' => $rb_meldungen));
     }
     rb_umleiten('tab-settings', array('fehler' => array(rb_e(ro_t('TEXT.NICHT_GESPEICHERT') . ' ' . $rb_cfgfile)),
         'eingaben' => rb_eingaben_sammeln('settings')));
@@ -1147,8 +1178,14 @@ $rb_kalt = $rb_klauf['ts'] > 0 ? time() - (int) $rb_klauf['ts'] : -1; ?>
     <td><b><?= rb_e(sprintf(ro_t('TEXT.KOPF_VERSPAETET_TEXT'), implode(', ', $rb_klauf['verspaetet']), RO_LAUF_FRIST)) ?></b></td></tr><?php } ?>
 <tr><td><?= rb_e(ro_t('TEXT.KOPF_ROBOTER')) ?></td>
     <td><?= rb_e(sprintf(ro_t('TEXT.KOPF_ROBOTER_ZAHL'), count($rb_robots), $rb_kok)) ?></td></tr>
+<?php /* Nachtwelle N3 (1.1.25): Zeile MQTT in der Hausform der Kopfkachel (Regeln/04 :798, wie Spotpreis aWATTar
+   1.2.40) - gross der Schalter DIESES Plugins, klein darunter der Autostart des Gateways aus ro_mqtt_gateway_info()
+   (null = general.json ohne Mqtt-Abschnitt oder nicht lesbar: nicht feststellbar, nicht "aus"). */
+$rb_k_gw = ro_mqtt_gateway_info(); ?>
 <tr><td><?= rb_e(ro_t('REITER.MQTT')) ?></td>
-    <td><?= rb_e(!empty($rb_cfg['mqtt_enabled']) ? ro_t('TEXT.KOPF_EIN') : ro_t('TEXT.KOPF_AUS')) ?></td></tr>
+    <td><b><?= rb_e(!empty($rb_cfg['mqtt_enabled']) ? ro_t('TEXT.KOPF_EIN') : ro_t('TEXT.KOPF_AUS')) ?></b>
+    <div class="sm-small"><?= rb_e(sprintf(ro_t('TEXT.KACHEL_MQTT_HILFE'), $rb_k_gw === null
+        ? ro_t('TEXT.KOPF_NICHT_FESTSTELLBAR') : ro_t($rb_k_gw['autostart'] ? 'TEXT.KOPF_EIN' : 'TEXT.KOPF_AUS'))) ?></div></td></tr>
 </table>
 
 <?php foreach ($rb_states as $rb_k => $rb_s) { ?>
@@ -1337,7 +1374,10 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
     'w' => function ($n, $g) { return rb_w($n, $g); },
     'm' => function ($n) { return rb_m($n); },
     'c' => function ($n, $g) { return rb_haken($n, $g); },
-    'modi' => ro_tts_wege()), ro_ansage_k()) ?>
+    'modi' => ro_tts_wege(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => ro_mit_zielen(),
+    'ziele_post' => rb_eingabe_aktiv('tts_ziel_art') ? ro_ziele_x2_post(rb_eingaben()['werte']) : null), ro_ansage_k()); ?>
 
 <?php /* U10 (Durchgang 01.10.2026): EINE Legende je Reiter, oben, ueber der
          ersten Knopfreihe, mit allen Farben des Reiters (Regeln/04). Bis
@@ -1630,10 +1670,8 @@ $rb_bliste = ro_befehle_liste();
 <div class="<?= $rb_lgwf === 1 ? 'sm-hinweis' : 'sm-warnung' ?>"><?= sprintf(ro_t('LOX.S2_V1'), '<span class="sm-mono">' . rb_e($rb_wurzel) . '/#</span>') ?></div>
 <?php } ?>
 <?php if ($rb_lgwf !== 1) {
-    $rb_haken = array();
-    foreach (ro_mqtt_namen_geraete() as $rb_hd) {
-        foreach (ro_mqtt_namen($rb_hd) as $rb_hz) { $rb_haken[] = $rb_hz; }
-    }
+    /* Nachtwelle N3 (1.1.25): dieselbe Funktion wie der Selbsttest gegen subscriptions.json. */
+    $rb_haken = ro_mqtt_v2_soll();
     $rb_nc = 0; ?>
 <div class="sm-hinweis"><?= ro_t('LOX.S2_V2') ?></div>
 <?php if ($rb_lgwf === 0) { ?><div class="sm-small"><?= ro_t('LOX.S2_UNBEKANNT') ?></div><?php } ?>
@@ -2019,6 +2057,9 @@ if (!empty($rb_cfg['endpunkt_ein'])) { ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <?= rb_fmt() ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_testansage" value="1"><?= rb_e(ro_t('TEST.K_TESTANSAGE')) ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (ro_mit_zielen()) { echo ansage_testknoepfe_html(ro_tts(), ro_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 </div>
 
