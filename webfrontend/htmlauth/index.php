@@ -169,6 +169,7 @@ function rb_eingabe_felder($formular)
                      'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis'),
+                     ansage_regeln_x2_felder(),
                      ansage_x2_felder(array('modi' => ro_tts_wege())),     // Nr. 36 b, Stufe 2: ohne Sprechtoken
                      ro_ziele_x2_felder());     // Welle Mehrfach-Ziele (1.1.25): die Tabelle (name[N])
     }
@@ -520,7 +521,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['neu_lesen'])) {
  * Protokoll nur die Kurzform, nie Text oder Token. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
     $rb_ak = ro_ansage_k();
-    $rb_ar = ansage_testansage(ro_tts(), $rb_ak);
+    $rb_ar = ansage_testansage(ro_ansage_vor_ort(), $rb_ak);
     ro_log('Testansage: ' . ansage_kurz($rb_ar));
     if ($rb_ar['stand'] === 1) {
         $rb_meldungen[] = rb_e(ro_t('TEXT.TESTANSAGE_OK'));
@@ -545,9 +546,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ansage_test']) || is
     if (isset($_POST['ansage_test_ziel']) && $rb_tnur === 0) {
         $rb_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($rb_tnur >= 1) {
-        $rb_tr = ansage_testansage(ro_tts(), $rb_tk, $rb_tnur);
+        $rb_tr = ansage_testansage(ro_ansage_vor_ort(), $rb_tk, $rb_tnur);
     } else {
-        $rb_tr = ansage_testansage(ro_tts(), $rb_tk);
+        $rb_tr = ansage_testansage(ro_ansage_vor_ort(), $rb_tk);
     }
     ro_log('Testansage' . ($rb_tnur >= 1 ? ' an Ziel ' . $rb_tnur : '') . ': ' . ansage_kurz($rb_tr));
     if ($rb_tr['stand'] === 1) {
@@ -950,7 +951,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_tbean = array();
     $rb_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean,
-        array('modi' => ro_tts_wege(), 'ziele' => ro_mit_zielen()), ro_ansage_k(), $rb_thinw);
+        array('modi' => ro_tts_wege(), 'ziele' => ro_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ro_ansage_k(), $rb_thinw);
+    list($rb_neu['ansage_regeln']) = ansage_regeln_formular($_POST, ro_ansage_regeln(), array(), $rb_tmangel, $rb_tbean, ro_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($rb_tmangel as $rb_tm) { $rb_hw[] = $rb_wert(ro_t('EINST.H_SPRACHAUSGABE'), $rb_tm['text']); }
     foreach ($rb_tbean as $rb_tb) { rb_bean($rb_tb); }
     /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
@@ -985,7 +987,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ---------- Daten fuer die Anzeige ---------- */
 $rb_notify = is_array($rb_cfg['notify']) ? $rb_cfg['notify'] : array();
-$rb_notify += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1);
+$rb_notify += array('audio' => 1, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1);
 list($rb_tts) = ansage_vervollstaendigen(is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array(), 'musicserver');
 $rb_robots = ro_robots();
 $rb_states = array();
@@ -1378,6 +1380,11 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => ro_mit_zielen(),
     'ziele_post' => rb_eingabe_aktiv('tts_ziel_art') ? ro_ziele_x2_post(rb_eingaben()['werte']) : null), ro_ansage_k()); ?>
+<?= ansage_regeln_html(ro_ansage_regeln(), array(), array(), array(
+    'w' => function ($n, $g) { return rb_w($n, $g); },
+    'm' => function ($n) { return rb_m($n); },
+    'c' => function ($n, $g) { return rb_haken($n, $g); },
+    'token_vor_ort' => true), ro_ansage_k()) ?>
 
 <?php /* U10 (Durchgang 01.10.2026): EINE Legende je Reiter, oben, ueber der
          ersten Knopfreihe, mit allen Farben des Reiters (Regeln/04). Bis
@@ -2061,6 +2068,7 @@ if (!empty($rb_cfg['endpunkt_ein'])) { ?>
    ohne weitere Ziele nichts. */
 if (ro_mit_zielen()) { echo ansage_testknoepfe_html(ro_tts(), ro_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
+<?= ro_ansage_lage_html() ?>
 </div>
 
 <?php

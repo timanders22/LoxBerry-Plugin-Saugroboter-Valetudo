@@ -415,8 +415,9 @@ function ro_config($erzeugen = true) {
         unset($cfg['ip']);
     }
     if (!is_array($cfg['notify'])) { $cfg['notify'] = array(); }
-    if (!is_array($cfg['tts'])) { $cfg['tts'] = array(); }
-    $cfg['notify'] += array('audio' => 0, 'push' => 0, 'fertig' => 1, 'fehler' => 1,
+    /* 1.1.27: nie gesetzt (Schluessel fehlt oder leerer Block aus den Vorgaben) = ab Werk EIN. Ein gespeicherter bleibt. */
+    if (!is_array($cfg['tts']) || !$cfg['tts']) { $cfg['tts'] = ansage_werk_block(); }
+    $cfg['notify'] += array('audio' => 1, 'push' => 0, 'fertig' => 1, 'fehler' => 1,
                             'material' => 1, 'ereignis' => 1);
     /* Nr. 36 b, Stufe 2 (1.1.15): die Vorgaben des Blocks tts kommen aus der gemeinsamen
      * Sprachausgabe - dieselben Werte wie bis 1.1.14 (ab Werk unveraendert: Music Server ohne
@@ -2014,7 +2015,10 @@ function ro_mqtt_behalten_liste(array $themen)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.1.26 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -3300,10 +3304,180 @@ function ro_ansage_k()
     );
 }
 
-/** Der Block tts der geltenden Konfiguration (vervollstaendigt, ab Werk musicserver). */
-function ro_tts()
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.1.27, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('RO_ANSAGE_HOECHSTALTER')) { define('RO_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function ro_ansage_regeln($cfg = null)
 {
+    if ($cfg === null) { $cfg = ro_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function ro_ansage_warte($fn)
+{
+    $d = ro_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function ro_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    ro_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; ro_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function ro_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(ro_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), ro_ansage_k());
+    if (!$g) { return false; }
     $cfg = ro_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!ro_config_speichern($cfg)) { return false; }
+    ro_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function ro_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    return ansage_token_fuer_lauf(ro_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), ro_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function ro_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $t = ro_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(ro_ansage_vor_ort($cfg), ro_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function ro_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $k = ro_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(ro_tts($cfg), ro_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function ro_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function ro_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = ro_config();
+    $k = ro_ansage_k();
+    $t = $tts === null ? ro_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, ro_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function ro_ansage_senden($jetzt = null)
+{
+    $d = ro_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = ro_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= RO_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = ro_config();
+        ro_ansage_token_pflegen($conf);
+        $conf = ro_config();
+        $a = ansage_regel_sprechen($frisch, ro_tts($conf), ro_ansage_regeln($conf), ro_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { ro_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            ro_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/** Der Block tts der geltenden Konfiguration (vervollstaendigt; ein nie gesetzter: ab Werk EIN). */
+function ro_tts($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
     return $cfg['tts'];
 }
 
@@ -3314,9 +3488,7 @@ function ro_tts()
  */
 function ro_say($text)
 {
-    $r = ansage_sprechen((string) $text, ro_tts(), ro_ansage_k());
-    ro_log('Ansage: ' . ansage_kurz($r));
-    return $r['stand'] === 1;
+    return ro_ansage_legen(array(array('schluessel' => 'satz', 'text' => (string) $text, 'sperre_min' => 0))) === 'gestartet';     // 1.1.27: nur noch aus dem Reiter Test
 }
 
 /**
@@ -3328,7 +3500,7 @@ function ro_pruef_ansage(array $cfg, $offen)
 {
     $k = ro_ansage_k();
     $k['e'] = function ($s) { return (string) $s; };     // die Oberflaeche maskiert die Zeile selbst
-    list($st, $text) = ansage_pruefzeile($cfg['tts'], (bool) $offen, $k);
+    list($st, $text) = ansage_pruefzeile(ro_ansage_pruefblock($cfg), (bool) $offen, $k);
     if (empty($cfg['notify']['audio'])) {
         return array(2, ro_t('PRUEF.ANSAGE_AUS') . ' ' . $text);
     }
@@ -3436,7 +3608,13 @@ function ro_events_check($zustaende = null) {
              * (Gruss davor) - ins Protokoll kommen nur die Anlaesse und seine Laenge. */
             ro_log('Meldung: ' . implode(', ', array_keys($meldungen)) . ' (' . ansage_zeichen($text) . ' Zeichen)');
             if (!empty($cfg['notify']['audio'])) {
-                ro_say(ro_t('MELDUNG.GRUSS') . ' ' . $text);
+                /* 1.1.27: je Anlass ein Eintrag (Sperre je Anlass und Roboter, Nachtruhe aus dem Stamm), der Gruss vor dem ersten. Gesprochen wird in einem eigenen Vorgang. */
+                $ro_legen = array();
+                foreach ($meldungen as $ro_ma => $ro_mt) {
+                    $ro_legen[] = array('schluessel' => $ro_ma . '|' . $n, 'text' => ($ro_legen ? '' : ro_t('MELDUNG.GRUSS') . ' ') . $ro_mt);
+                }
+                ro_ansage_token_pflegen($cfg);
+                ro_ansage_legen($ro_legen);
             }
         }
         ro_write_json($f, array('code' => $st['code'], 'ts' => time()));
@@ -4145,6 +4323,15 @@ function ro_sicherung_lesen($roh)
     foreach ($daten as $k => $w) {
         $k = (string) $k;
         if ($k !== '' && $k[0] === '_') { continue; }   // lesbarer Kopf
+        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
+            $s2_g = '';
+            $s2_r = ansage_regeln_wert($w, $s2_g);
+            if ($s2_r === null) {  continue; }
+            $neu['ansage_regeln'] = $s2_r;
+            
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(ro_t('TEXT.SICH_FREMD'), rb_e($k));
             continue;
@@ -4319,6 +4506,7 @@ function ro_sicherung_bauen()
     /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
      * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
      * geltende (ro_sicherung_lesen()). */
+    unset($aus['ansage_token_herkunft']);     // 1.1.27
     if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }   // Nr. 36 b: eine Quelle
     /* Gruppe 28 (1.1.23, E-E3): eine Xiaomi-Zeile mit Adresse, aber ohne Token wird nicht abgewiesen (Ganzstand wie
      * das Kennwort, S11) - der Kopf nennt sie. */

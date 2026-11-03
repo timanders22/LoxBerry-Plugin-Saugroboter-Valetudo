@@ -32,6 +32,10 @@ if [ -n "$HOME_LB" ] && [ -d "$HOME_LB/log/plugins/$ORDNER" ]; then
 else
     LOG="/tmp/$ORDNER-cron.log"
 fi
+# 1.1.27 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 1.1.26 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+( : >>"$LOG" ) 2>/dev/null || LOG=/dev/null
 
 if [ ! -f "$BIN/cron.php" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: $BIN/cron.php fehlt - Platzhalter nicht ersetzt?" >> "$LOG"

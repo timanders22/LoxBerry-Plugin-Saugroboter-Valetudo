@@ -129,7 +129,9 @@ header('Content-Type: text/plain; charset=utf-8');
  * Drei Antworten, nicht zwei: "falsches Token" und "noch keins vergeben" sind
  * beim Einrichten genau die Faelle, die man auseinanderhalten will.
  */
-if (isset($_GET['selftest'])) {
+/* 1.1.27 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.1.26 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     $lage = ro_token_lage();
     if ($lage === -1) {
         http_response_code(403);
