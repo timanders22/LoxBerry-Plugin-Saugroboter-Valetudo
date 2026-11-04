@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,11 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.28
+
+* **Ansagen auch auf den offenen Dashboard-Tafeln, ab Werk an.** Mit Dashboard ab 0.9.40 und einer offenen Tafel kommt jede Ansage dieses Plugins auch dort an: Gong, Sprache und der Text groß. Ohne Dashboard oder ohne offene Tafel wird das Ziel ohne Fehler übergangen. Ausschalten: Reiter *Einstellungen*, Haken „Auch auf offenen Dashboard-Tafeln ansagen“; ein gespeichertes Aus bleibt. Es gelten dieselben Regeln wie für die Lautsprecher.
+* **Gemeinsame Sprachausgabe 1.4.0.** Einstellungen und ein gespeichertes Aus bleiben, wie sie sind; am Gerät ist nichts einzurichten.
 
 ## Neu in 1.1.27
 
