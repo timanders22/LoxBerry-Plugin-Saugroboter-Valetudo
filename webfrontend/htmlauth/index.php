@@ -366,6 +366,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_befehle'])) {
         list(, $rb_vqf) = ro_befehle_liste();
         rb_umleiten('tab-loxone', array('fehler' => array(rb_e(sprintf(ro_t('BEFEHL.LISTE_FEHLT'), $rb_vqf)))));
     }
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $rb_vq[0] . '"');
     echo $rb_vq[1];
@@ -373,6 +374,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_befehle'])) {
 }
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_vo'])) {
     list($rb_vname, $rb_vinhalt) = ro_vo_vorlage(isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
     echo $rb_vinhalt;
@@ -382,6 +384,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
     list($rb_vname, $rb_vinhalt) = ro_vorlage(
         isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1,
         !empty($_POST['vorlage_belegt']));
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $rb_vname . '"');
     echo $rb_vinhalt;
@@ -403,6 +406,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_sichern'])) {
     $rb_js = json_encode($rb_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($rb_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="saugroboter_einstellungen_'
                . date('Ymd_His') . '.json"');
