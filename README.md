@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,16 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.30
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Formular:** Tafel- und HomePod-Felder gehören jetzt zu den Feldern, die eine Beanstandung im Formular mitführt und markiert. Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+- **Sicherung zurückspielen:** Ungültige Regeln der Sprachausgabe in der Datei werden gemeldet und die Datei wird abgewiesen, statt sie still zu übergehen.
+- **Ruhezeit:** `?cmd=ruhezeit&p=22:00-07:00` meint jetzt Ortszeit; das Plugin rechnet nach UTC um, wie Valetudo sie führt, und zeigt Ortszeit an. Bisher galt sie um eine (Winter) oder zwei Stunden (Sommer) versetzt. Valetudo speichert feste UTC-Zahlen: Nach dem Wechsel der Sommerzeit den Befehl einmal neu senden. Wer die Verschiebung von Hand ausgeglichen hat, stellt die Ruhezeit neu ein.
+- **Fertig-Meldung:** Sie kommt auch, wenn der Roboter pausiert und dann heimgeschickt wird; `letzte` zählt mit.
+- **Ereignisse:** Mehrere offene Valetudo-Ereignisse werden jedes für sich gemeldet, nicht erst nach dem Quittieren des letzten.
 
 ## Neu in 1.1.29
 

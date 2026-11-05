@@ -1146,7 +1146,7 @@ function ro_state($dev = 1, $force = false) {
                 'material_warn' => 0, 'material_fremd' => array(),
                 'behaelter' => -1, 'wassertank' => -1, 'wischer' => -1, 'dock' => -1,
                 'saugstufe' => -1, 'wasserstufe' => -1, 'modus' => -1,
-                'event' => 0, 'evtyp' => 0, 'evtext' => '', 'evmuell' => 0, 'evid' => '',
+                'event' => 0, 'evtyp' => 0, 'evtext' => '', 'evmuell' => 0, 'evid' => '', 'evoffen' => array(),
                 'evlesbar' => 0,
                 // Welche Nebenabfragen eine LISTE geliefert haben (siehe
                 // ro_mqtt_platzhalter()); 0 = Platzhalter.
@@ -1197,12 +1197,13 @@ function ro_state($dev = 1, $force = false) {
      * (ausser 3), ro_events_check() nur den nach 0/1/4. Beim Uebergang
      * "reinigt -> faehrt" schrieb das Protokoll deshalb "Reinigung beendet ...
      * in 0 min" und setzte den Zeitstempel, ohne dass eine Meldung herausging. */
-    if ($prevcode === 2 && ro_reinigung_beendet($st['code'])) {
+    $lief = ro_reinigung_lief($prev);
+    if ($lief && ro_reinigung_beendet($st['code'])) {
         $st['letzte'] = time();
         ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte']));
         ro_log('Reinigung beendet (' . $st['name'] . '): ' . $st['flaeche'] . ' m2 in ' . $st['dauer'] . ' min');
     } elseif ($prevcode !== $st['code']) {
-        ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte']));
+        ro_write_json($lastf, array('code' => $st['code'], 'letzte' => $st['letzte'], 'lief' => ro_lief_danach($lief, $st['code'])));
     }
     // C3: der letzte erfolgreiche Zustand, mit der Adresse, unter der er gemessen wurde.
     $st['messung_ts'] = $st['ts'];
@@ -1219,6 +1220,35 @@ function ro_state($dev = 1, $force = false) {
 function ro_reinigung_beendet($code)
 {
     return in_array((int) $code, array(0, 1, 4), true);
+}
+
+/**
+ * 1.1.30 (SR-2): lief eine Reinigung, als der Merker geschrieben wurde? Bis 1.1.29 zaehlte nur der direkte Vorgaenger 2:
+ * nach 2 -> 3 -> 4 (Pause, dann heim) oder 2 -> 5 -> 4 blieben die Fertig-Meldung und der Zeitstempel aus. Pause und Code 5
+ * halten den Merker, ohne selbst das Ende zu sein (ro_reinigung_beendet). Ein Merker der Vorfassung kennt nur "code".
+ */
+function ro_reinigung_lief(array $prev)
+{
+    return !empty($prev['lief']) || (isset($prev['code']) && (int) $prev['code'] === 2);
+}
+
+function ro_lief_danach($lief, $code)
+{
+    return (int) $code === 2 || ($lief && in_array((int) $code, array(3, 5), true));
+}
+
+/**
+ * 1.1.30 (SR-1): Valetudo fuehrt die Ruhezeit in UTC (frontend/.../DoNotDisturb.tsx setUTCHours/getUTCHours, Anzeige "UTC:";
+ * backend RoborockDoNotDisturbCapability: "Valetudo aims to use UTC only and leave timezone conversion stuff to the
+ * frontend"). Im Plugin gilt Ortszeit: "22:00-07:00" hiess bis 1.1.29 im Winter 23:00-08:00. Der Abstand ist der von heute,
+ * wie in der Oberflaeche von Valetudo; nach einem Wechsel der Sommerzeit verschiebt sich eine gesetzte Ruhezeit um eine Stunde.
+ */
+function ro_ruhezeit_utc($stunde, $minute, $nach_utc, $abstand_s = null)
+{
+    $abstand = (int) (($abstand_s === null ? (int) date('Z') : (int) $abstand_s) / 60);
+    $m = (int) $stunde * 60 + (int) $minute + ($nach_utc ? -$abstand : $abstand);
+    $m = (($m % 1440) + 1440) % 1440;
+    return array('hour' => (int) ($m / 60), 'minute' => $m % 60);
 }
 
 /* ---------------- Steuerung ---------------- */
@@ -1351,8 +1381,8 @@ function ro_command($cmd, $dev = 1, $param = '') {
             }
             list($code, $body) = ro_put($base . 'DoNotDisturbCapability', array(
                 'enabled' => true,
-                'start' => array('hour' => (int) $m[1], 'minute' => (int) $m[2]),
-                'end'   => array('hour' => (int) $m[3], 'minute' => (int) $m[4])), 4, $r);
+                'start' => ro_ruhezeit_utc((int) $m[1], (int) $m[2], true),
+                'end'   => ro_ruhezeit_utc((int) $m[3], (int) $m[4], true)), 4, $r);
             break;
         case 'evquittieren': // offenes Ereignis wegdruecken
             $st = ro_state($dev);
@@ -3563,8 +3593,7 @@ function ro_events_check($zustaende = null) {
          * zugleich Ansagetext; die Sprache der Ansage ist die der Oberflaeche (ro_sprache()). */
         $meldungen = array();
         // Reinigung beendet
-        if (!empty($cfg['notify']['fertig']) && isset($prev['code']) && (int) $prev['code'] === 2
-            && ro_reinigung_beendet($st['code'])) {
+        if (!empty($cfg['notify']['fertig']) && ro_reinigung_lief($prev) && ro_reinigung_beendet($st['code'])) {
             /* Gruppe 2 (1.1.22, -1-Regel): ohne Reinigungsbilanz vom Geraet (-1, beim T12 immer) nur "ist fertig." */
             $meldungen['fertig'] = ($st['flaeche'] < 0 || $st['dauer'] < 0)
                 ? sprintf(ro_t('MELDUNG.FERTIG'), $st['name'])
@@ -3579,12 +3608,21 @@ function ro_events_check($zustaende = null) {
                 : sprintf(ro_t('MELDUNG.FEHLER'), $st['name']);
         }
         // Valetudo-Ereignis (hoechstens einmal je Ereignis)
-        if (!empty($cfg['notify']['ereignis']) && $st['event'] > 0 && $st['evtyp'] > 0) {
-            $evm = ro_tmpdir() . '/evm_' . $n . '_' . substr(md5((string) $st['evid'] . '|' . $st['evtyp']), 0, 12);
-            if (!is_file($evm)) {
-                @file_put_contents($evm, '1');
-                $meldungen['ereignis'] = sprintf(ro_t('MELDUNG.EREIGNIS'), $st['name'], ro_event_text($st['evtyp']));
+        /* 1.1.30 (SR-3): je offenes Ereignis. Bis 1.1.29 zaehlte nur das letzte der Liste, die anderen kamen erst, wenn es
+         * quittiert war. Ein Zustand der Vorfassung (Zwischenspeicher) kennt evoffen nicht. */
+        if (!empty($cfg['notify']['ereignis']) && $st['event'] > 0) {
+            $ev_offen = isset($st['evoffen']) && is_array($st['evoffen']) ? $st['evoffen']
+                      : array(array('id' => (string) $st['evid'], 'typ' => (int) $st['evtyp']));
+            $ev_saetze = array();
+            foreach ($ev_offen as $ev) {
+                if ((int) $ev['typ'] <= 0) { continue; }
+                $evm = ro_tmpdir() . '/evm_' . $n . '_' . substr(md5((string) $ev['id'] . '|' . $ev['typ']), 0, 12);
+                if (!is_file($evm)) {
+                    @file_put_contents($evm, '1');
+                    $ev_saetze[] = sprintf(ro_t('MELDUNG.EREIGNIS'), $st['name'], ro_event_text($ev['typ']));
+                }
             }
+            if ($ev_saetze) { $meldungen['ereignis'] = implode(' ', $ev_saetze); }
         }
         // Verbrauchsmaterial (hoechstens einmal taeglich)
         if (!empty($cfg['notify']['material']) && $st['material_warn']) {
@@ -3617,7 +3655,7 @@ function ro_events_check($zustaende = null) {
                 ro_ansage_legen($ro_legen);
             }
         }
-        ro_write_json($f, array('code' => $st['code'], 'ts' => time()));
+        ro_write_json($f, array('code' => $st['code'], 'ts' => time(), 'lief' => ro_lief_danach(ro_reinigung_lief($prev), $st['code'])));
     }
     foreach (glob(ro_tmpdir() . '/mat_*') ?: array() as $g) {
         if (substr(basename($g), -8) !== date('Ymd')) { @unlink($g); }
@@ -4327,7 +4365,10 @@ function ro_sicherung_lesen($roh)
         if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
             $s2_g = '';
             $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) {  continue; }
+            if ($s2_r === null) {     // 1.1.30: bis 1.1.29 stillschweigend uebergangen, die Datei galt als heil
+                $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e('config.ansage_regeln'), rb_e(ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', ro_ansage_k())));
+                continue;
+            }
             $neu['ansage_regeln'] = $s2_r;
             
             continue;
@@ -5014,10 +5055,12 @@ function ro_selbsttest($opt = array())
     if ($ro_v1) {
         $dnd = ro_ruhezeit($ro_v1);
         if (is_array($dnd) && isset($dnd['enabled'])) {
+            // 1.1.30 (SR-1): Valetudo liefert UTC, gezeigt wird Ortszeit.
+            $ro_von = ro_ruhezeit_utc((int) $dnd['start']['hour'], (int) $dnd['start']['minute'], false);
+            $ro_bis = ro_ruhezeit_utc((int) $dnd['end']['hour'], (int) $dnd['end']['minute'], false);
             $add('PRUEF.RUHEZEIT', empty($dnd['enabled']) ? 1 : 2,
                 empty($dnd['enabled']) ? '' : sprintf('%02d:%02d-%02d:%02d',
-                    (int) $dnd['start']['hour'], (int) $dnd['start']['minute'],
-                    (int) $dnd['end']['hour'], (int) $dnd['end']['minute']));
+                    $ro_von['hour'], $ro_von['minute'], $ro_bis['hour'], $ro_bis['minute']));
         } else {
             $add('PRUEF.RUHEZEIT', 2, '');
         }
@@ -6045,6 +6088,7 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
             $st['evtyp'] = $c;
             $st['evtext'] = ro_event_text($c);
             $st['evid'] = isset($e['id']) ? (string) $e['id'] : '';
+            $st['evoffen'][] = array('id' => $st['evid'], 'typ' => $c);     // 1.1.30 (SR-3)
         }
     }
     return $st;

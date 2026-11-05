@@ -60,7 +60,7 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde nichts gesichert."
-    exit 1
+    exit 2
 fi
 
 # ---------- I1: Marke "Aktualisierung laeuft" - als Erstes ----------
@@ -104,10 +104,41 @@ TMPDIR="$ARGV6"
 if [ -z "$TMPDIR" ] || [ ! -d "$TMPDIR" ]; then
     TMPDIR="$PWD/$ARGV1"
 fi
-[ -n "$TMPDIR" ] || exit 0
+[ -n "$TMPDIR" ] || { echo "<FAIL> Kein Arbeitsordner - nichts gesichert, die Aktualisierung wird abgebrochen."; rm -f "$MARKE" 2>/dev/null; exit 2; }
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_sichere() {   # $1 Quelle, $2 Ziel: fehlt die Datei oder ist sie leer, ist ein Fehlschlag keiner
+    [ -f "$1" ] || return 0
+    zs_hinlegen "$1" "$2" && return 0
+    [ -s "$1" ] || return 1
+    echo "<WARNING> $(basename "$1") liess sich nicht sichern ($2)."
+    ZS_FEHL="$ZS_FEHL $(basename "$1")"
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 mkdir -p "$TMPDIR" 2>/dev/null
 
-cp -p "$BASE/config/plugins/$PFOLDER/robo.json" "$TMPDIR/robo.json" 2>/dev/null
+zs_sichere "$BASE/config/plugins/$PFOLDER/robo.json" "$TMPDIR/robo.json"
 cp -p "$BASE/log/plugins/$PFOLDER/robo.log"     "$TMPDIR/robo.log"  2>/dev/null
 
 # Der Zeitpunkt der letzten Reinigung, je Roboter.
@@ -124,6 +155,7 @@ cp -p "$BASE/data/plugins/$PFOLDER"/last_*.json "$TMPDIR/data/" 2>/dev/null
 # M3 (Durchgang 01.10.2026): die Vormerkungen zum Abraeumen zurueckbehaltener
 # MQTT-Themen (altes Praefix, ausgetragener Roboter, MQTT aus) - sonst stuenden
 # sie nach dem Update weiter im Broker, und die Deinstallation kennte sie nicht.
-cp -p "$BASE/data/plugins/$PFOLDER/mqtt_raeumen.json" "$TMPDIR/data/" 2>/dev/null
+zs_sichere "$BASE/data/plugins/$PFOLDER/mqtt_raeumen.json" "$TMPDIR/data/mqtt_raeumen.json"
 
+zs_schluss
 exit 0

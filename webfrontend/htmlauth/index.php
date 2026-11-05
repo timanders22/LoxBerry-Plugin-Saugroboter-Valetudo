@@ -169,7 +169,7 @@ function rb_eingabe_felder($formular)
                      'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis'),
-                     ansage_regeln_x2_felder(),
+                     ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     // 1.1.30: Tafel und HomePod dazu
                      ansage_x2_felder(array('modi' => ro_tts_wege())),     // Nr. 36 b, Stufe 2: ohne Sprechtoken
                      ro_ziele_x2_felder());     // Welle Mehrfach-Ziele (1.1.25): die Tabelle (name[N])
     }
@@ -957,6 +957,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean,
         array('modi' => ro_tts_wege(), 'ziele' => ro_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ro_ansage_k(), $rb_thinw);
     list($rb_neu['ansage_regeln']) = ansage_regeln_formular($_POST, ro_ansage_regeln(), array(), $rb_tmangel, $rb_tbean, ro_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.1.30: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.1.29 ueberschrieb es der naechste Abgleich.
+    $rb_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($rb_neu['ansage_token_herkunft']) ? $rb_neu['ansage_token_herkunft'] : array());
     foreach ($rb_tmangel as $rb_tm) { $rb_hw[] = $rb_wert(ro_t('EINST.H_SPRACHAUSGABE'), $rb_tm['text']); }
     foreach ($rb_tbean as $rb_tb) { rb_bean($rb_tb); }
     /* Dieselbe Wache wie beim Zurueckspielen - eine zweite Wahrheit ueber
