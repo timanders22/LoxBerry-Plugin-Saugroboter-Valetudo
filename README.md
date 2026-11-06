@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,15 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.31
+
+- **Saugen, wenn alle weg sind – ohne eigene Loxone-Logik.** Im Reiter *Einstellungen*, Abschnitt „Automatik“, gibt es je Roboter den Haken „Automatisch saugen, wenn alle weg sind“ (ab Werk aus). Ist er an, startet das Plugin den Roboter selbst, sobald alle seit mindestens 10 Minuten weg sind – nur zwischen 09:00 und 18:00, höchstens einmal am Tag, nur wenn er in der Station steht, mit mindestens 80 % Akku und ohne Störung. Alle Werte sind einstellbar.
+- **Zurück zur Station, wenn jemand heimkommt** (Haken, ab Werk an) – aber nur, wenn die Automatik die Reinigung selbst gestartet hat. Was von Hand, in der App oder aus Loxone gestartet wurde, fährt weiter.
+- **Woher das Plugin weiß, wer da ist:** vom Plugin BLE-Scanner NG (dort „Anwesenheit für andere Plugins bereitstellen“ einschalten; das Plugin liest `haus/anwesenheit/jemand` und das Lebenszeichen `haus/anwesenheit/zaehler`). Kommt nichts an, tut die Automatik nichts – sie folgert nie „alle weg“ aus Stille. Der Reiter *Test* zeigt „Anwesenheit empfangen: …, zuletzt um …“ und je Roboter, worauf die Automatik gerade wartet.
+- **Wer das schon in Loxone gebaut hat** (Seite „Saugroboter“, Schalter „nur reinigen, wenn alle abwesend“), lässt die neuen Haken aus – sonst starten zwei Stellen den Roboter.
+- Jede automatische Aktion steht im Protokoll; mit dem neuen Haken „Automatik“ unter *Meldungen* (ab Werk an) kommt dazu eine kurze Meldung wie „Saugroboter OG startet, weil alle weg sind.“ – als Ansage (wenn die Sprachausgabe an ist) und im Meldefenster für Loxone und MQTT.
+- Nach einer Beanstandung im Formular bleibt jetzt auch die Eingabe in der fünften Roboterzeile stehen (bisher nur vier).
 
 ## Neu in 1.1.30
 

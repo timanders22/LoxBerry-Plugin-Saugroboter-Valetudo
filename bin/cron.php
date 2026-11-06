@@ -6,6 +6,7 @@
  * 2. Ereignisse erkennen und melden: Reinigung fertig, Fehler, Wartung
  *    faellig, Valetudo-Ereignis (Staubbehaelter voll und Verwandte).
  * 3. Lebenszeichen fortschreiben.
+ * 3a. Seit 1.1.31: Automatik "Saugen, wenn alle weg sind" (haus/anwesenheit, abgekoppelter Leser --haus-lesen).
  * 4. MQTT: vorgemerkte Altwerte abraeumen (auch bei MQTT aus), dann die
  *    geaenderten Werte, alle 30 Minuten der volle Satz, und das
  *    Lebenszeichen einmal je Lauf (Durchgang 01.10.2026, M1-M5).
@@ -77,6 +78,14 @@ if (ro_upgrade_marke_frisch()) {
     exit(0);
 }
 
+/* 1.1.31: der abgekoppelte Leser fuer haus/anwesenheit (ro_haus_leser_starten() unten). Eigene Sperre haus_lesen.lock,
+ * NICHT cron.lock - er bleibt bis 65 s am Broker, und der Minutenlauf wartet nie auf ihn. Er fragt keinen Roboter und
+ * sendet nichts; er schreibt nur haus_quellen.json im Zwischenordner. */
+if (in_array('--haus-lesen', $ro_argv, true)) {
+    echo ro_haus_leser_lauf(65) . "\n";
+    exit(0);
+}
+
 /* ==================================================================
  * Nur ein Durchgang zur Zeit
  * ==================================================================
@@ -142,6 +151,12 @@ if ($ro_verspaetet || is_file(ro_tmpdir() . '/last_lauf_frist.txt')) {
 }
 
 ro_events_check($ro_zustaende);
+/* 1.1.31: Automatik "Saugen, wenn alle weg sind" - nach der Ereignispruefung (eine Meldung derselben Minute wird
+ * angehaengt, nicht ueberschrieben) und vor dem MQTT-Block (die Meldung geht im selben Lauf hinaus). Sie liest den
+ * Stand des Lesers aus dem vorigen Lauf und startet danach hoechstens einen neuen Leser; ohne eingeschalteten
+ * Roboter tut sie nichts und startet keinen. */
+ro_auto_lauf($ro_zustaende);
+ro_haus_leser_starten(__FILE__);
 // Gruppe 28 (1.1.23): abgelaufene Zwischenstaende des Cloud-Abrufs (Captcha, Zweitfaktor, Auswahlliste) wegraeumen -
 // 10 Minuten. Seit dem dritten Nachbau ueber das Stammmodul xiaomi_cloud.php (ro_xc() setzt die Ablage).
 ro_xc();

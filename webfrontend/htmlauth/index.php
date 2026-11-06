@@ -168,7 +168,9 @@ function rb_eingabe_felder($formular)
         return array_merge(array('r_name', 'r_ip', 'r_port', 'r_user', 'r_pass_loeschen', 'r_typ', 'r_token_loeschen',
                      'cache_sec', 'warn_hours',
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
-                     'n_ereignis'),
+                     'n_ereignis', 'n_automatik',
+                     // 1.1.31: Automatik "alle weg" (auto_ein[<Geraetenummer>])
+                     'auto_ein', 'auto_heim', 'auto_minuten', 'auto_von', 'auto_bis', 'auto_akku'),
                      ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     // 1.1.30: Tafel und HomePod dazu
                      ansage_x2_felder(array('modi' => ro_tts_wege())),     // Nr. 36 b, Stufe 2: ohne Sprechtoken
                      ro_ziele_x2_felder());     // Welle Mehrfach-Ziele (1.1.25): die Tabelle (name[N])
@@ -200,6 +202,9 @@ function rb_bean_aus_wert($schluessel, $wert)
         return;
     }
     if (in_array($schluessel, array('cache_sec', 'warn_hours', 'warn_prozent'), true)) { rb_bean($schluessel); }
+    if ($schluessel === 'auto') {     // 1.1.31
+        foreach (array('auto_minuten', 'auto_von', 'auto_bis', 'auto_akku') as $rb_af) { rb_bean($rb_af); }
+    }
 }
 /* Die Eingaben eines Formulars aus $_POST sammeln - nur die Felder der Liste. */
 function rb_eingaben_sammeln($formular)
@@ -212,7 +217,8 @@ function rb_eingaben_sammeln($formular)
             $zeilen = array();
             foreach ($w as $k => $v) {
                 // Welle Mehrfach-Ziele (1.1.25): die Tabelle hat bis zu fuenf Zeilen (N = 2..6), die Roboterliste vier
-                if (count($zeilen) >= (strpos($f, 'tts_ziel_') === 0 ? 9 : 4) || !preg_match('/^\d\z/', (string) $k)) { continue; }
+                // 1.1.31: RO_ROBOTER_MAX statt 4 - die Roboterliste hat seit dem Nachbau 27.10. fuenf Zeilen, auto_ein bis zu fuenf Haken
+                if (count($zeilen) >= (strpos($f, 'tts_ziel_') === 0 ? 9 : RO_ROBOTER_MAX) || !preg_match('/^\d\z/', (string) $k)) { continue; }
                 if (rb_eingabe_tauglich($v)) { $zeilen[(string) (int) $k] = $v; }
             }
             $werte[$f] = $zeilen;
@@ -946,7 +952,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'fehler' => isset($_POST['n_fehler']) ? 1 : 0,
         'material' => isset($_POST['n_material']) ? 1 : 0,
         'ereignis' => isset($_POST['n_ereignis']) ? 1 : 0,
+        'automatik' => isset($_POST['n_automatik']) ? 1 : 0,     // 1.1.31
     );
+    /* --- 1.1.31: Automatik "Saugen, wenn alle weg sind". Ein Haken je Roboter (auto_ein[<Geraetenummer>]) - nur fuer
+     * Nummern, die in diesem Speichern eine Adresse tragen; dazu Heimschicken, Minuten, Zeitfenster, Mindestakku. Ein
+     * unzulaessiger Wert verhindert das Speichern (Nr. 16) und wird markiert (X-2). "9:00" gilt als "09:00". */
+    $rb_auto = ro_auto_einst(isset($rb_neu['auto']) ? $rb_neu['auto'] : null);
+    $rb_auto['roboter'] = array();
+    $rb_auto_nrn = array();
+    foreach ($rb_neu['robots'] as $rb_rz) { $rb_auto_nrn[] = (int) $rb_rz['nr']; }
+    if (isset($_POST['auto_ein']) && is_array($_POST['auto_ein'])) {
+        foreach ($_POST['auto_ein'] as $rb_ak => $rb_av) {
+            if (preg_match('/^[1-9]\z/', (string) $rb_ak) && in_array((int) $rb_ak, $rb_auto_nrn, true)) { $rb_auto['roboter'][] = (int) $rb_ak; }
+        }
+    }
+    sort($rb_auto['roboter']);
+    $rb_auto['heim'] = isset($_POST['auto_heim']) ? 1 : 0;
+    foreach (array('auto_minuten' => array('minuten', 1, 240, 'AUTO.MINUTEN'), 'auto_akku' => array('akku', 10, 100, 'AUTO.AKKU')) as $rb_ak => $rb_ab) {
+        $rb_az = $rb_zahl($rb_text($rb_ak), $rb_ab[1], $rb_ab[2]);
+        if ($rb_az === null) {
+            $rb_hw[] = $rb_wert(ro_t($rb_ab[3]), sprintf(ro_t('GRUND.BEREICH'), $rb_ab[1], $rb_ab[2]));
+            rb_bean($rb_ak);
+        } else {
+            $rb_auto[$rb_ab[0]] = $rb_az;
+        }
+    }
+    foreach (array('auto_von' => array('von', 'AUTO.VON'), 'auto_bis' => array('bis', 'AUTO.BIS')) as $rb_ak => $rb_ab) {
+        $rb_au = $rb_text($rb_ak);
+        if (is_string($rb_au) && preg_match('/^[0-9]:[0-5][0-9]\z/', $rb_au)) { $rb_au = '0' . $rb_au; }
+        if (!ro_auto_uhrzeit_ok($rb_au)) {
+            $rb_hw[] = $rb_wert(ro_t($rb_ab[1]), ro_t('AUTO.GRUND_UHRZEIT'));
+            rb_bean($rb_ak);
+        } else {
+            $rb_auto[$rb_ab[0]] = $rb_au;
+        }
+    }
+    $rb_neu['auto'] = $rb_auto;
     /* --- Sprachausgabe (Nr. 36 b, Stufe 2, 1.1.15): ansage_formular_lesen() - Adresse und Vorlage im
      * Heimnetz, Token leer = behalten, Haken = loeschen, beides zugleich ein Widerspruch, Alexa-NG/
      * Google ohne Token beanstandet; kein Token steht in einer Meldung. Jede Beanstandung verhindert
@@ -993,7 +1034,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ---------- Daten fuer die Anzeige ---------- */
 $rb_notify = is_array($rb_cfg['notify']) ? $rb_cfg['notify'] : array();
-$rb_notify += array('audio' => 1, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1);
+$rb_notify += array('audio' => 1, 'push' => 0, 'fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1, 'automatik' => 1);
 list($rb_tts) = ansage_vervollstaendigen(is_array($rb_cfg['tts']) ? $rb_cfg['tts'] : array(), 'musicserver');
 $rb_robots = ro_robots();
 $rb_states = array();
@@ -1347,6 +1388,54 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
     </div>
 </div>
 
+<?php /* 1.1.31: Automatik "Saugen, wenn alle weg sind" (haus/anwesenheit). Ab Werk fuer keinen Roboter an; der Hinweis
+         zur Loxone-Logik steht direkt ueber den Haken (sonst starten zwei Stellen den Roboter). */
+$rb_auto = ro_auto_einst(isset($rb_cfg['auto']) ? $rb_cfg['auto'] : null); ?>
+<h2 id="automatik"><?= rb_e(ro_t('AUTO.H')) ?></h2>
+<div class="sm-hinweis"><?= rb_e(ro_t('AUTO.ERKLAERUNG')) ?><br><?= rb_e(ro_t('AUTO.BEISPIEL')) ?></div>
+<div class="sm-warnung"><b><?= rb_e(ro_t('AUTO.WARNUNG_TITEL')) ?></b> <?= rb_e(ro_t('AUTO.WARNUNG_LOXONE')) ?></div>
+<?php if (!ro_robots()) { ?>
+<div class="sm-small"><?= rb_e(ro_t('AUTO.ERST_ROBOTER')) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('AUTO.SPALTE')) ?></th></tr>
+<?php foreach (ro_robots() as $rb_an => $rb_ar) { ?>
+<tr><td><?= (int) $rb_an ?></td><td><?= rb_e($rb_ar['name']) ?></td>
+<td><label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin:0;">
+<input data-role="none" type="checkbox" name="auto_ein[<?= (int) $rb_an ?>]" value="1"<?= rb_haken('auto_ein', ro_auto_ein($rb_auto, $rb_an), $rb_an) ? ' checked' : '' ?>> <?= rb_e(ro_t('AUTO.SCHALTER')) ?></label></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+<div style="margin:10px 0;">
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="auto_heim" <?= rb_haken('auto_heim', !empty($rb_auto['heim'])) ? 'checked' : '' ?>> <?= rb_e(ro_t('AUTO.HEIM')) ?>
+    </label>
+    <div class="sm-small"><?= rb_e(ro_t('AUTO.HEIM_HINWEIS')) ?></div>
+</div>
+<div class="sm-row">
+    <div>
+        <label><?= rb_e(ro_t('AUTO.MINUTEN')) ?></label>
+        <input data-role="none" type="number" name="auto_minuten" value="<?= rb_e(rb_w('auto_minuten', (int) $rb_auto['minuten'])) ?>"<?= rb_m('auto_minuten') ?> min="1" max="240">
+        <div class="sm-small"><?= rb_e(ro_t('AUTO.MINUTEN_HINWEIS')) ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('AUTO.VON')) ?></label>
+        <input data-role="none" type="text" name="auto_von" value="<?= rb_e(rb_w('auto_von', $rb_auto['von'])) ?>"<?= rb_m('auto_von') ?> maxlength="5" placeholder="09:00">
+        <div class="sm-small"><?= rb_e(ro_t('AUTO.FENSTER_HINWEIS')) ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('AUTO.BIS')) ?></label>
+        <input data-role="none" type="text" name="auto_bis" value="<?= rb_e(rb_w('auto_bis', $rb_auto['bis'])) ?>"<?= rb_m('auto_bis') ?> maxlength="5" placeholder="18:00">
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('AUTO.AKKU')) ?></label>
+        <input data-role="none" type="number" name="auto_akku" value="<?= rb_e(rb_w('auto_akku', (int) $rb_auto['akku'])) ?>"<?= rb_m('auto_akku') ?> min="10" max="100">
+        <div class="sm-small"><?= rb_e(ro_t('AUTO.AKKU_HINWEIS')) ?></div>
+    </div>
+</div>
+<div class="sm-small"><?= rb_e(ro_t('AUTO.REGELN')) ?></div>
+<div class="sm-small"><?= rb_e(ro_t('AUTO.QUELLE')) ?></div>
+
 <h2><?= rb_e(ro_t('EINST.H_MELDUNGEN')) ?></h2>
 <div style="margin-bottom:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;font-weight:400;">
@@ -1369,6 +1458,9 @@ for ($rb_i = 0; $rb_i < RO_ROBOTER_MAX; $rb_i++) {
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
         <input data-role="none" type="checkbox" name="n_ereignis" <?= rb_haken('n_ereignis', !empty($rb_notify['ereignis'])) ? 'checked' : '' ?>> <?= rb_e(ro_t('EINST.N_EREIGNIS')) ?>
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
+        <input data-role="none" type="checkbox" name="n_automatik" <?= rb_haken('n_automatik', !empty($rb_notify['automatik'])) ? 'checked' : '' ?>> <?= rb_e(ro_t('AUTO.N_AUTOMATIK')) ?>
     </label>
 </div>
 

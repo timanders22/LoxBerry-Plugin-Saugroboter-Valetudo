@@ -254,6 +254,7 @@ function ro_vorgaben()
     'tts' => array(),
     'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
     'endpunkt_ein' => 0,         // Gruppe 28 (1.1.23, E-E12): HTTP-Lesezweig fuer Loxone; Neuinstallation aus, Update an (ro_config())
+    'auto' => ro_auto_vorgaben(), // 1.1.31: "Automatisch saugen, wenn alle weg sind" - ab Werk fuer keinen Roboter an
 );
 }
 
@@ -418,7 +419,10 @@ function ro_config($erzeugen = true) {
     /* 1.1.27: nie gesetzt (Schluessel fehlt oder leerer Block aus den Vorgaben) = ab Werk EIN. Ein gespeicherter bleibt. */
     if (!is_array($cfg['tts']) || !$cfg['tts']) { $cfg['tts'] = ansage_werk_block(); }
     $cfg['notify'] += array('audio' => 1, 'push' => 0, 'fertig' => 1, 'fehler' => 1,
-                            'material' => 1, 'ereignis' => 1);
+                            'material' => 1, 'ereignis' => 1, 'automatik' => 1);
+    /* 1.1.31: der Block der Automatik in geltender Form - eine Konfiguration aus 1.1.30 kennt ihn nicht (Vorgabe: fuer
+     * keinen Roboter an), eine teilweise bekommt die fehlenden Eintraege. */
+    $cfg['auto'] = ro_auto_einst($cfg['auto']);
     /* Nr. 36 b, Stufe 2 (1.1.15): die Vorgaben des Blocks tts kommen aus der gemeinsamen
      * Sprachausgabe - dieselben Werte wie bis 1.1.14 (ab Werk unveraendert: Music Server ohne
      * IP; eingeschaltet wird mit dem Haken notify.audio), seit Modul 1.1.x dazu sonos_zone und
@@ -1271,7 +1275,7 @@ function ro_command($cmd, $dev = 1, $param = '') {
         $param = (string) $param;
         list($ok, $info) = ro_miot_command($cmd, $r, $param);
         ro_log('Befehl "' . $cmd . ($param !== '' ? ' ' . $param : '') . '" an ' . $r['name'] . ' -> Xiaomi MIoT '
-               . $info . (ro_befehl_quelle() === 'mqtt' ? ' (MQTT)' : ''));
+               . $info . ro_befehl_quelle_zusatz());
         if ($ok) { @unlink(ro_tmpdir() . '/state_' . (int) $dev . '.json'); }
         return array($ok, $info);
     }
@@ -1413,7 +1417,7 @@ function ro_command($cmd, $dev = 1, $param = '') {
     $ok = ($code >= 200 && $code < 300) ? 1 : 0;
     // Gruppe 2 (1.1.22): ein Befehl ueber die Befehlsbruecke traegt "(MQTT)" (ro_befehl_quelle(), Entwurf sv 3.3).
     ro_log('Befehl "' . $cmd . ($param !== '' ? ' ' . $param : '') . '" an ' . $r['name'] . ' -> HTTP ' . $code . ($ok ? '' : ' FEHLER ' . substr($body, 0, 120))
-           . (ro_befehl_quelle() === 'mqtt' ? ' (MQTT)' : ''));
+           . ro_befehl_quelle_zusatz());
     if ($ok) {
         // Der Zustand ist nach einem Befehl veraltet - sonst zeigt die
         // Oberflaeche bis zu cache_sec Sekunden lang den alten.
@@ -3167,12 +3171,19 @@ function ro_param_pruefen($p)
     return preg_match('#^[A-Za-z0-9,:_/\-]+$#', $p) ? $p : false;
 }
 
-/** Woher kommt der laufende Befehl ('http' oder 'mqtt')? Nur fuer die Protokollzeile von ro_command(). */
+/** Woher kommt der laufende Befehl ('http', 'mqtt' oder seit 1.1.31 'auto')? Nur fuer die Protokollzeile von ro_command(). */
 function ro_befehl_quelle($setzen = null)
 {
     static $quelle = 'http';
-    if ($setzen !== null) { $quelle = ($setzen === 'mqtt') ? 'mqtt' : 'http'; }
+    if ($setzen !== null) { $quelle = in_array($setzen, array('mqtt', 'auto'), true) ? $setzen : 'http'; }     // 1.1.31: auto
     return $quelle;
+}
+
+/** 1.1.31: der Zusatz der Protokollzeile eines Befehls - "(MQTT)" ueber die Befehlsbruecke, "(Automatik)" aus ro_auto_lauf(). */
+function ro_befehl_quelle_zusatz()
+{
+    $q = ro_befehl_quelle();
+    return $q === 'mqtt' ? ' (MQTT)' : ($q === 'auto' ? ' (Automatik)' : '');
 }
 
 /**
@@ -3253,7 +3264,7 @@ function ro_befehl_quittung(array $e)
  *  der Datei fehlen und gelten dann mit ihrer Vorgabe (aus). Bauart awm_spaet_schluessel() (Abfuhrkalender 1.4.25). */
 function ro_spaet_schluessel()
 {
-    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern');
+    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern', 'auto');     // 1.1.31: auto (fehlt -> Vorgabe: fuer keinen Roboter an)
 }
 
 /* ---------------- Sprachausgabe ----------------
@@ -4281,7 +4292,7 @@ function ro_wert_pruefen($schluessel, $wert)
         case 'notify':
             if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
             foreach ($wert as $k => $v) {
-                if (!in_array($k, array('audio', 'push', 'fertig', 'fehler', 'material', 'ereignis'), true)) {
+                if (!in_array($k, array('audio', 'push', 'fertig', 'fehler', 'material', 'ereignis', 'automatik'), true)) {     // 1.1.31: automatik
                     return sprintf(ro_t('GRUND.SCHALTER'), $k);
                 }
                 if (!((is_int($v) || is_string($v)) && in_array((string) $v, array('0', '1'), true))) {
@@ -4301,6 +4312,8 @@ function ro_wert_pruefen($schluessel, $wert)
                 return ansage_kennung_text($g, ro_ansage_k());
             }
             return '';
+        case 'auto':     // 1.1.31: Automatik "alle weg"
+            return ro_auto_pruefen($wert);
     }
     return ro_t('GRUND.UNBEKANNT');
 }
@@ -5091,6 +5104,10 @@ function ro_selbsttest($opt = array())
     $nt_ab = array_merge(array_diff($nt_ist, $nt_soll), array_diff($nt_soll, $nt_ist));
     $add('PRUEF.NAMEN', $nt_ab ? 0 : 1, $nt_ab ? sprintf(ro_t('PRUEF.NAMEN_AB'), implode(', ', $nt_ab))
                                                : sprintf(ro_t('PRUEF.NAMEN_OK'), count($nt_ist)));
+
+    /* 1.1.31: "Anwesenheit empfangen: ..., zuletzt um ..." und je Roboter mit Automatik der Stand - nur aus den Ablagen
+     * (haus_quellen.json, auto_<n>.json), keine Sitzung am Broker beim Seitenaufbau. */
+    ro_auto_pruefzeilen($cfg, $add);
 
     return $z;
 }
@@ -6422,3 +6439,690 @@ function ro_meldung_abloesen($dev, array $st)
  * index.php: sonst steht er dem Endpunkt und jedem weiteren
  * Aufrufer nicht zur Verfuegung (Hausform, REGELN_2). */
 function rb_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+
+/* ==================================================================
+ * 1.1.31: Automatik "Saugen, wenn alle weg sind" - Abnehmer haus/anwesenheit (Regeln/07, Haus-Themen Nr. 15)
+ * ==================================================================
+ *
+ * Gelesen werden genau zwei Themen des Anbieters (BLE-Scanner NG, Reiter Einstellungen "Anwesenheit fuer andere Plugins
+ * bereitstellen"):
+ *   haus/anwesenheit/jemand   1 = jemand da, 0 = alle mit Aussage weg, '-' = ohne Aussage (retained)
+ *   haus/anwesenheit/zaehler  0...999 alle 30 s, nie retained - das Lebenszeichen des Anbieters
+ * Verwendet wird jemand nur, solange sich der Zaehler binnen 120 s LIVE geaendert hat. Aus Stille, '-' oder einem
+ * fehlenden Wert folgt NIE "alle weg": die Automatik tut dann nichts (auch kein Heimschicken).
+ *
+ * Technik nach der Hausform der Linien ohne Dauerdienst (Abfahrts-Assistent 1.6.32, abfahrt_haus_*): der Minutenlauf
+ * startet hoechstens einen abgekoppelten Leser (bin/cron.php --haus-lesen, eigene Sperre haus_lesen.lock) und wartet
+ * nie auf ihn. Der Leser bleibt bis 65 s am Broker, bis der Zaehler einmal live kam, und schreibt haus_quellen.json;
+ * der naechste Minutenlauf und die Oberflaeche nehmen den letzten Stand. Das Plugin schreibt nichts unter haus/.
+ *
+ * Gesteuert wird nur ueber die vorhandenen Befehle start und home (ro_befehl_ausfuehren(), Quelle 'auto') - fuer
+ * Valetudo und Xiaomi dieselben Wege wie aus Loxone. Zurueckgeschickt wird nur eine Reinigung, die die Automatik
+ * selbst gestartet hat (Merker auto_<n>.json im Datenordner, uebersteht einen Neustart).
+ */
+
+/** Frist der Haus-Themen (Regeln/07 Nr. 15). */
+define('RO_HAUS_FRIST', 120);
+/** Die Themen, die gelesen werden - nur diese zwei. */
+define('RO_HAUS_JEMAND', 'haus/anwesenheit/jemand');
+define('RO_HAUS_ZAEHLER', 'haus/anwesenheit/zaehler');
+
+/** Die Vorgaben des Blocks 'auto' (ab Werk fuer keinen Roboter an). */
+function ro_auto_vorgaben()
+{
+    return array(
+        'roboter' => array(),   // Geraetenummern mit "Automatisch saugen, wenn alle weg sind" - ab Werk keine
+        'heim'    => 1,         // kommt jemand heim: eine von der Automatik gestartete Reinigung zur Station schicken
+        'minuten' => 10,        // so lange muessen alle weg sein (1-240)
+        'von'     => '09:00',   // Zeitfenster, Ortszeit; von = bis heisst rund um die Uhr
+        'bis'     => '18:00',
+        'akku'    => 80,        // Mindestladung in % (10-100)
+    );
+}
+
+/** Eine Uhrzeit HH:MM? */
+function ro_auto_uhrzeit_ok($w)
+{
+    return is_string($w) && preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]\z/', $w) === 1;
+}
+
+/** Der Block in geltender Form: fehlende Eintraege mit ihrer Vorgabe (Upgrade), Zahlen als Zahl, Nummern sortiert. */
+function ro_auto_einst($w)
+{
+    $v = ro_auto_vorgaben();
+    if (!is_array($w)) { return $v; }
+    $aus = $v;
+    if (isset($w['roboter']) && is_array($w['roboter'])) {
+        $nrn = array();
+        foreach ($w['roboter'] as $nr) {
+            if (ro_ganz_ok($nr, 1, RO_ROBOTER_MAX)) { $nrn[(int) $nr] = (int) $nr; }
+        }
+        ksort($nrn);
+        $aus['roboter'] = array_values($nrn);
+    }
+    if (isset($w['heim']) && (is_int($w['heim']) || is_string($w['heim']))) { $aus['heim'] = ((string) $w['heim'] === '1') ? 1 : 0; }
+    if (isset($w['minuten']) && ro_ganz_ok($w['minuten'], 1, 240)) { $aus['minuten'] = (int) $w['minuten']; }
+    if (isset($w['akku']) && ro_ganz_ok($w['akku'], 10, 100)) { $aus['akku'] = (int) $w['akku']; }
+    foreach (array('von', 'bis') as $k) {
+        if (isset($w[$k]) && ro_auto_uhrzeit_ok($w[$k])) { $aus[$k] = $w[$k]; }
+    }
+    return $aus;
+}
+
+/** Die zweite Wache fuer den Block (ro_wert_pruefen()): '' oder der Grund. */
+function ro_auto_pruefen($w)
+{
+    if (!is_array($w)) { return ro_t('GRUND.LISTE'); }
+    foreach ($w as $k => $x) {
+        if (!in_array((string) $k, array_keys(ro_auto_vorgaben()), true)) { return sprintf(ro_t('GRUND.SCHALTER'), (string) $k); }
+    }
+    if (isset($w['roboter'])) {
+        if (!is_array($w['roboter']) || count($w['roboter']) > RO_ROBOTER_MAX) { return ro_t('AUTO.GRUND_ROBOTER'); }
+        foreach ($w['roboter'] as $nr) {
+            if (!ro_ganz_ok($nr, 1, RO_ROBOTER_MAX)) { return ro_t('AUTO.GRUND_ROBOTER'); }
+        }
+    }
+    if (isset($w['heim']) && !((is_int($w['heim']) || is_string($w['heim'])) && in_array((string) $w['heim'], array('0', '1'), true))) {
+        return ro_t('GRUND.NULL_EINS');
+    }
+    if (isset($w['minuten']) && !ro_ganz_ok($w['minuten'], 1, 240)) { return sprintf(ro_t('GRUND.BEREICH'), 1, 240); }
+    if (isset($w['akku']) && !ro_ganz_ok($w['akku'], 10, 100)) { return sprintf(ro_t('GRUND.BEREICH'), 10, 100); }
+    foreach (array('von', 'bis') as $k) {
+        if (isset($w[$k]) && !ro_auto_uhrzeit_ok($w[$k])) { return ro_t('AUTO.GRUND_UHRZEIT'); }
+    }
+    return '';
+}
+
+/** Ist fuer diesen Roboter die Automatik an? */
+function ro_auto_ein(array $a, $n)
+{
+    return in_array((int) $n, $a['roboter'], true);
+}
+
+/** Liegt $jetzt im Fenster von-bis (Ortszeit)? von = bis: immer; von > bis: ueber Mitternacht. */
+function ro_auto_im_fenster($von, $bis, $jetzt)
+{
+    if (!ro_auto_uhrzeit_ok($von) || !ro_auto_uhrzeit_ok($bis)) { return false; }
+    $m = function ($s) { return (int) substr($s, 0, 2) * 60 + (int) substr($s, 3, 2); };
+    $v = $m($von);
+    $b = $m($bis);
+    $j = (int) date('G', $jetzt) * 60 + (int) date('i', $jetzt);
+    if ($v === $b) { return true; }
+    return $v < $b ? ($j >= $v && $j < $b) : ($j >= $v || $j < $b);
+}
+
+/* ---------------- Der Leser (abgekoppelt, wie Abfahrts-Assistent 1.6.32) ---------------- */
+
+/**
+ * Eine kurze Lesesitzung am Broker: CONNECT, SUBSCRIBE (QoS 0) auf genaue Themen, warten, bis jedes Thema aus $warten
+ * einmal LIVE (Retain-Bit 0) kam oder $fenster Sekunden um sind, DISCONNECT. Abschrift von abfahrt_haus_sitzung()
+ * (Abfahrts-Assistent 1.6.34) ohne Sendeteil. Das Kennwort steht nur im CONNECT-Paket - nie in einer Befehlszeile oder
+ * im Protokoll. Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true).
+ */
+function ro_haus_sitzung(array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array());
+    $p = ro_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    if (!$soll) { $aus['lage'] = 'ok'; return $aus; }
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies_bis = microtime(true) + $fenster + 5.0;
+    $lies = function ($n) use ($s, $lies_bis) {
+        $d = '';
+        while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('srhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 90);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) === false) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $sub = pack('n', 1);
+    foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+    @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+    $lage = 'zeit';
+    $ende = microtime(true) + 3.0;
+    while (microtime(true) < $ende) {
+        $pk = $paket();
+        if ($pk === null) { if (feof($s)) { break; } continue; }
+        $art = $pk[0] >> 4;
+        if ($art === 9) {
+            $rc = (string) substr($pk[1], 2);
+            if (strlen($rc) !== count($soll)) { break; }
+            $lage = 'ok';
+            for ($i = 0; $i < strlen($rc); $i++) {
+                if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+            }
+            break;
+        } elseif ($art === 3) {
+            $merke($pk);
+        }
+    }
+    $suback_zeit = microtime(true);
+    if ($lage === 'ok') {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    @fwrite($s, chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/** Die Ablage des Lesers (Zwischenordner): jemand, zaehler, seit (letzte LIVE-Aenderung des Zaehlers), sitzung. */
+function ro_haus_quellen_datei()
+{
+    return ro_tmpdir() . '/haus_quellen.json';
+}
+
+function ro_haus_quellen()
+{
+    $f = ro_haus_quellen_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/**
+ * Ein Sitzungsergebnis einarbeiten (rein, ohne Datei - der Probelauf prueft sie): 'jemand' = retained gelesener Wert
+ * (ein bestaetigtes Abo ohne Wert heisst ''), 'zaehler' = zuletzt LIVE gesehener Zaehler, 'seit' = Zeitpunkt seiner
+ * letzten Aenderung. Ein live gesehener, aber unveraenderter Zaehler verlaengert nichts (Anbieter klemmt).
+ */
+function ro_haus_merken(array $alt, array $erg, $jetzt)
+{
+    $c = $alt + array('jemand' => '', 'zaehler' => null, 'seit' => 0);
+    $w = isset($erg['werte']) && is_array($erg['werte']) ? $erg['werte'] : array();
+    if (array_key_exists(RO_HAUS_ZAEHLER, $w) && !empty($erg['live'][RO_HAUS_ZAEHLER])
+            && (string) $w[RO_HAUS_ZAEHLER] !== (string) $c['zaehler']) {
+        $c['zaehler'] = (string) $w[RO_HAUS_ZAEHLER];
+        $c['seit'] = (int) $jetzt;
+    }
+    if (array_key_exists(RO_HAUS_JEMAND, $w)) {
+        $c['jemand'] = substr(trim((string) $w[RO_HAUS_JEMAND]), 0, 8);
+    } elseif (isset($erg['lage']) && $erg['lage'] === 'ok') {
+        $c['jemand'] = '';
+    }
+    return $c;
+}
+
+/** Frisch? 0 < jetzt - seit <= 120 und seit nicht in der Zukunft (Uhr zurueckgestellt = nicht frisch). */
+function ro_haus_frisch(array $c, $jetzt)
+{
+    $seit = isset($c['seit']) ? (int) $c['seit'] : 0;
+    return $seit > 0 && $seit <= (int) $jetzt && (int) $jetzt - $seit <= RO_HAUS_FRIST;
+}
+
+/** Lage der Anwesenheit: da | weg | schweigt (Zaehler nicht frisch) | unbekannt (frisch, aber kein 0/1, z. B. '-'). */
+function ro_anwesenheit_lage(array $c, $jetzt)
+{
+    if (!ro_haus_frisch($c, $jetzt)) { return 'schweigt'; }
+    $w = isset($c['jemand']) ? (string) $c['jemand'] : '';
+    return $w === '1' ? 'da' : ($w === '0' ? 'weg' : 'unbekannt');
+}
+
+/** Braucht die Automatik den Leser? Ja, wenn sie fuer einen eingerichteten Roboter an ist oder eine eigene Reinigung laeuft. */
+function ro_auto_braucht_leser($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $a = ro_auto_einst(isset($cfg['auto']) ? $cfg['auto'] : null);
+    foreach (array_keys(ro_robots_aus($cfg)) as $n) {
+        if (ro_auto_ein($a, $n)) { return true; }
+        $m = ro_auto_merker($n);
+        if (!empty($m['lauf'])) { return true; }
+    }
+    return false;
+}
+
+function ro_haus_leser_sperre()
+{
+    return ro_tmpdir() . '/haus_lesen.lock';
+}
+
+/**
+ * Aus dem Minutenlauf: hoechstens einen abgekoppelten Leser starten (bin/cron.php --haus-lesen), nie warten. Der Kind-
+ * prozess erbt keine Deskriptoren (die Schale schliesst vor dem exec jede Nummer ueber 2 - sonst hielte er cron.lock
+ * fest). Ohne Bedarf: haus_quellen.json weg, kein Leser. Rueckgabe aus | laeuft | gestartet | kein_start.
+ */
+function ro_haus_leser_starten($skript, $cfg = null)
+{
+    if (!ro_auto_braucht_leser($cfg)) {
+        $d = ro_haus_quellen_datei();
+        if (is_file($d)) { @unlink($d); }
+        return 'aus';
+    }
+    $fh = @fopen(ro_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)
+            && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der abgekoppelte Leser selbst (--haus-lesen): eigene Sperre, bis $fenster s am Broker. Rueckgabe laeuft | aus | Lage. */
+function ro_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(ro_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $datei = ro_haus_quellen_datei();
+    if (!ro_auto_braucht_leser()) {
+        if (is_file($datei)) { @unlink($datei); }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return 'aus';
+    }
+    $erg = ro_haus_sitzung(array(RO_HAUS_JEMAND, RO_HAUS_ZAEHLER), array(RO_HAUS_ZAEHLER), $fenster);
+    /* Bis zu 65 s am Broker: wurde die Automatik inzwischen abgeschaltet, wird die Ablage nicht wieder angelegt. */
+    if (!ro_auto_braucht_leser()) {
+        if (is_file($datei)) { @unlink($datei); }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return 'aus';
+    }
+    $c = ro_haus_merken(ro_haus_quellen(), $erg, time());
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
+    $lage = ro_anwesenheit_lage($c, time());
+    ro_log_if_changed('haus_anwesenheit', 'Haus-Thema haus/anwesenheit: ' . $lage
+        . ($lage === 'schweigt' || $lage === 'unbekannt' ? ' - die Automatik tut nichts' : ''));
+    if ($erg['lage'] !== 'ok') {
+        ro_log_if_changed('haus_sitzung', 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
+    } else {
+        ro_log_if_changed('haus_sitzung', 'Haus-Themen lesen: Sitzung am Broker in Ordnung');
+    }
+    ro_write_json($datei, $c, 0644);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg['lage'];
+}
+
+/* ---------------- Die Entscheidung (rein, ohne Datei, ohne Netz - bin/../vb_sr131_skripte prueft sie) ---------------- */
+
+function ro_auto_merker_datei($n)
+{
+    return ro_datadir() . '/auto_' . (int) $n . '.json';
+}
+
+/** Merker je Roboter: tag (JJJJMMTT des letzten Automatikstarts), lauf (1 = eigene Reinigung laeuft), start (Zeit),
+ *  gesehen (1 = Reinigung wirklich gesehen), heim_n/heim_ts (Heimschick-Versuche), fehl_n/fehl_ts/fehl_tag (gescheiterte
+ *  Starts), grund (letzter Wartegrund). */
+function ro_auto_merker($n)
+{
+    $f = ro_auto_merker_datei($n);
+    $m = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return ro_auto_merker_form(is_array($m) ? $m : array());
+}
+
+function ro_auto_merker_form(array $m)
+{
+    return $m + array('tag' => '', 'lauf' => 0, 'start' => 0, 'gesehen' => 0, 'heim_n' => 0, 'heim_ts' => 0,
+                      'fehl_n' => 0, 'fehl_ts' => 0, 'fehl_tag' => '', 'grund' => '', 'zahl' => '');
+}
+
+/**
+ * Was tut die Automatik fuer EINEN Roboter in diesem Lauf?
+ *   $a        Block 'auto' (ro_auto_einst())
+ *   $ein      Schalter dieses Roboters
+ *   $lage     da | weg | schweigt | unbekannt
+ *   $weg_seit Zeitpunkt, seit dem "alle weg" ununterbrochen gilt (0 = nicht weg)
+ *   $st       Zustand aus ro_state() (ok, code, batterie, fehler); gestartet wird nur aus der Station (code 0)
+ *   $m        Merker (ro_auto_merker_form())
+ * Rueckgabe array('aktion' => ''|start|heim, 'grund' => Kennung, 'zahl' => Zusatz fuer den Text, 'merker' => neuer Merker).
+ * Der Rufer fuehrt die Aktion aus und traegt das Ergebnis mit ro_auto_ergebnis() ein.
+ */
+function ro_auto_entscheiden(array $a, $ein, $lage, $weg_seit, array $st, array $m, $jetzt)
+{
+    $m = ro_auto_merker_form($m);
+    $ok = isset($st['ok']) && (int) $st['ok'] === 1 && empty($st['verspaetet']);
+    $code = isset($st['code']) ? (int) $st['code'] : 8;
+    $raus = function ($aktion, $grund, $zahl, $m) {
+        $m['grund'] = $grund;
+        $m['zahl'] = (string) $zahl;
+        return array('aktion' => $aktion, 'grund' => $grund, 'zahl' => (string) $zahl, 'merker' => $m);
+    };
+
+    /* 1. Eine eigene Reinigung verfolgen: erst wenn sie wirklich lief (Code 2 gesehen) und danach beendet ist (0/1/4) oder
+     *    ein Fehler kam (9), ist sie vorbei. Wird sie binnen 10 Minuten nie gesehen, kam der Start nicht an. Nach 6 h
+     *    gilt sie in jedem Fall als vorbei (Sicherheitsnetz - danach wird nichts mehr heimgeschickt). */
+    if (!empty($m['lauf'])) {
+        if ($ok && $code === 2) { $m['gesehen'] = 1; }
+        $vorbei = '';
+        if ($ok && !empty($m['gesehen']) && in_array($code, array(0, 1, 4, 9), true)) { $vorbei = 'LAUF_ENDE'; }
+        elseif (empty($m['gesehen']) && $jetzt - (int) $m['start'] > 600) { $vorbei = 'LAUF_NIE'; }
+        elseif ($jetzt - (int) $m['start'] > 21600 || (int) $m['start'] > $jetzt) { $vorbei = 'LAUF_ALT'; }
+        if ($vorbei !== '') {
+            $m['lauf'] = 0;
+            $m['gesehen'] = 0;
+            $m['heim_n'] = 0;
+            $m['heim_ts'] = 0;
+            return $raus('', $vorbei, '', $m);
+        }
+        /* 2. Heim: nur die eigene Reinigung, nur mit dem Schalter, nur wenn jemand LIVE da ist. Hoechstens drei
+         *    Versuche, mindestens drei Minuten auseinander. */
+        if (!empty($a['heim']) && $lage === 'da' && $ok && in_array($code, array(2, 3, 5), true)) {
+            if ((int) $m['heim_n'] >= 3) { return $raus('', 'HEIM_AUFGEGEBEN', '', $m); }
+            if ((int) $m['heim_ts'] > 0 && $jetzt - (int) $m['heim_ts'] < 180 && (int) $m['heim_ts'] <= $jetzt) {
+                return $raus('', 'HEIM_GESCHICKT', '', $m);
+            }
+            return $raus('heim', 'HEIM', '', $m);
+        }
+        return $raus('', 'LAEUFT', '', $m);
+    }
+
+    /* 3. Start - alle Bedingungen, die erste unerfuellte ist der Grund. */
+    if (!$ein) { return $raus('', 'AUS', '', $m); }
+    if ($lage === 'schweigt') { return $raus('', 'SCHWEIGT', '', $m); }
+    if ($lage === 'unbekannt') { return $raus('', 'UNBEKANNT', '', $m); }
+    if ($lage === 'da') { return $raus('', 'DA', '', $m); }
+    $tag = date('Ymd', $jetzt);
+    if ((string) $m['tag'] === $tag) { return $raus('', 'HEUTE', '', $m); }
+    $weg_seit = (int) $weg_seit;
+    if ($weg_seit <= 0 || $weg_seit > $jetzt) { return $raus('', 'WEG_KURZ', 0, $m); }
+    $weg_min = (int) floor(($jetzt - $weg_seit) / 60);
+    if ($jetzt - $weg_seit < (int) $a['minuten'] * 60) { return $raus('', 'WEG_KURZ', $weg_min, $m); }
+    if (!ro_auto_im_fenster($a['von'], $a['bis'], $jetzt)) { return $raus('', 'FENSTER', $a['von'] . '-' . $a['bis'], $m); }
+    if (!$ok) { return $raus('', 'NICHT_ERREICHBAR', '', $m); }
+    if ($code === 9 || (isset($st['fehler']) && (int) $st['fehler'] > 0)) { return $raus('', 'FEHLER', '', $m); }
+    /* Nur aus der Station (Code 0, Entscheidung des Hausherrn 06.11.2026): "bereit" (1) ausserhalb der Station heisst
+     * meist, dass der Roboter irgendwo stehen geblieben ist oder getragen wurde - dann startet die Automatik nicht. */
+    if ($code !== 0) { return $raus('', 'NICHT_BEREIT', $code, $m); }
+    $akku = isset($st['batterie']) ? (int) $st['batterie'] : -1;
+    if ($akku < 0) { return $raus('', 'AKKU_UNBEKANNT', '', $m); }
+    if ($akku < (int) $a['akku']) { return $raus('', 'AKKU', $akku, $m); }
+    /* Gescheiterte Starts: hoechstens drei je Tag, mindestens fuenf Minuten auseinander. */
+    if ((string) $m['fehl_tag'] === $tag) {
+        if ((int) $m['fehl_n'] >= 3) { return $raus('', 'START_AUFGEGEBEN', '', $m); }
+        if ((int) $m['fehl_ts'] <= $jetzt && $jetzt - (int) $m['fehl_ts'] < 300) { return $raus('', 'START_WARTET', '', $m); }
+    }
+    return $raus('start', 'START', $weg_min, $m);
+}
+
+/** Das Ergebnis einer ausgefuehrten Aktion in den Merker eintragen (rein). */
+function ro_auto_ergebnis(array $m, $aktion, $ok, $jetzt)
+{
+    $m = ro_auto_merker_form($m);
+    $tag = date('Ymd', $jetzt);
+    if ($aktion === 'start') {
+        if ($ok) {
+            $m['tag'] = $tag;
+            $m['lauf'] = 1;
+            $m['start'] = (int) $jetzt;
+            $m['gesehen'] = 0;
+            $m['heim_n'] = 0;
+            $m['heim_ts'] = 0;
+            $m['fehl_n'] = 0;
+            $m['fehl_tag'] = '';
+        } else {
+            if ((string) $m['fehl_tag'] !== $tag) { $m['fehl_n'] = 0; }
+            $m['fehl_tag'] = $tag;
+            $m['fehl_n'] = (int) $m['fehl_n'] + 1;
+            $m['fehl_ts'] = (int) $jetzt;
+        }
+        $m['grund'] = $ok ? 'LAEUFT' : ((int) $m['fehl_n'] >= 3 ? 'START_AUFGEGEBEN' : 'START_WARTET');
+    } elseif ($aktion === 'heim') {
+        $m['heim_n'] = (int) $m['heim_n'] + 1;
+        $m['heim_ts'] = (int) $jetzt;
+        $m['grund'] = $ok ? 'HEIM_GESCHICKT' : ((int) $m['heim_n'] >= 3 ? 'HEIM_AUFGEGEBEN' : 'HEIM_WARTET');
+    }
+    $m['zahl'] = '';
+    return $m;
+}
+
+/** "Alle weg seit": bleibt stehen, solange die Lage weg ist; jede andere Lage (auch Stille) setzt zurueck (rein). */
+function ro_auto_weg_seit($lage, $alt_seit, $jetzt)
+{
+    if ($lage !== 'weg') { return 0; }
+    $alt_seit = (int) $alt_seit;
+    return ($alt_seit > 0 && $alt_seit <= $jetzt) ? $alt_seit : (int) $jetzt;
+}
+
+/* ---------------- Der Lauf (aus bin/cron.php, nach ro_events_check()) ---------------- */
+
+/** Eine kurze Meldung ueber die vorhandenen Wege: Meldefenster und Text fuer Loxone/MQTT (ann_N, anntext_N), Ansage
+ *  ueber die Warteliste - nur mit dem Haken "Automatik" unter Meldungen. Ins Protokoll immer. */
+function ro_auto_melden($n, $text, $cfg)
+{
+    $n = (int) $n;
+    if (empty($cfg['notify']['automatik'])) { return; }
+    $tf = ro_tmpdir() . '/anntext_' . $n;
+    $jf = ro_tmpdir() . '/annteile_' . $n . '.json';
+    $teile = array();
+    /* Kam in derselben Minute schon eine andere Meldung (ro_events_check()), wird angehaengt, nicht ueberschrieben. */
+    if (is_file($tf) && is_file($jf) && time() - (int) @filemtime($tf) < 60) {
+        $j = json_decode((string) @file_get_contents($jf), true);
+        if (is_array($j) && isset($j['teile']) && is_array($j['teile'])
+                && implode(' ', $j['teile']) === trim((string) @file_get_contents($tf))) {
+            $teile = $j['teile'];
+        }
+    }
+    $teile['automatik'] = $text;
+    @touch(ro_tmpdir() . '/ann_' . $n);
+    @file_put_contents($tf, implode(' ', $teile));
+    ro_write_json($jf, array('teile' => $teile, 'ts' => time()));
+    ro_log('Meldung: automatik (' . ansage_zeichen($text) . ' Zeichen)');
+    if (!empty($cfg['notify']['audio'])) {
+        ro_ansage_token_pflegen($cfg);
+        ro_ansage_legen(array(array('schluessel' => 'automatik|' . $n, 'text' => ro_t('MELDUNG.GRUSS') . ' ' . $text)));
+    }
+}
+
+/**
+ * Der Minutenlauf der Automatik: Lage aus haus_quellen.json, "weg seit" fortschreiben, je Roboter entscheiden und
+ * ausfuehren. Rueckgabe: Nummer => Ergebnis der Entscheidung (fuer Pruefzwecke).
+ */
+function ro_auto_lauf(array $zustaende, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $cfg = ro_config();
+    $a = ro_auto_einst(isset($cfg['auto']) ? $cfg['auto'] : null);
+    $robots = ro_robots_aus($cfg);
+    $bedarf = false;
+    foreach (array_keys($robots) as $n) {
+        if (ro_auto_ein($a, $n) || !empty(ro_auto_merker($n)['lauf'])) { $bedarf = true; }
+    }
+    $wf = ro_tmpdir() . '/auto_anwesenheit.json';
+    if (!$bedarf) {
+        if (is_file($wf)) { @unlink($wf); }
+        return array();
+    }
+    $lage = ro_anwesenheit_lage(ro_haus_quellen(), $jetzt);
+    $w = is_file($wf) ? json_decode((string) @file_get_contents($wf), true) : null;
+    $weg_seit = ro_auto_weg_seit($lage, is_array($w) && isset($w['weg_seit']) ? $w['weg_seit'] : 0, $jetzt);
+    ro_write_json($wf, array('lage' => $lage, 'weg_seit' => $weg_seit, 'ts' => $jetzt));
+
+    $aus = array();
+    foreach ($robots as $n => $r) {
+        $m = ro_auto_merker($n);
+        $ein = ro_auto_ein($a, $n);
+        if (!$ein && empty($m['lauf'])) {
+            if (is_file(ro_auto_merker_datei($n)) && $m['grund'] !== 'AUS') {
+                $m['grund'] = 'AUS';
+                ro_write_json(ro_auto_merker_datei($n), $m, 0644);
+            }
+            continue;
+        }
+        $st = isset($zustaende[$n]) && is_array($zustaende[$n]) ? $zustaende[$n] : array('ok' => 0);
+        $e = ro_auto_entscheiden($a, $ein, $lage, $weg_seit, $st, $m, $jetzt);
+        $m = $e['merker'];
+        if ($e['aktion'] !== '') {
+            $erg = ro_befehl_ausfuehren($e['aktion'], $n, '', 'auto');
+            $ok = !empty($erg['ok']);
+            $m = ro_auto_ergebnis($m, $e['aktion'], $ok, $jetzt);
+            if ($e['aktion'] === 'start') {
+                ro_log('Automatik: ' . $r['name'] . ' - Start, weil alle seit ' . (int) $e['zahl'] . ' min weg sind (Akku '
+                    . (int) $st['batterie'] . ' %, Fenster ' . $a['von'] . '-' . $a['bis'] . ') -> '
+                    . ($ok ? 'angenommen' : 'NICHT angenommen, Versuch ' . (int) $m['fehl_n'] . ' von 3'));
+                if ($ok) { ro_auto_melden($n, sprintf(ro_t('MELDUNG.AUTO_START'), $r['name']), $cfg); }
+            } else {
+                ro_log('Automatik: ' . $r['name'] . ' - zur Station, weil jemand heimgekommen ist -> '
+                    . ($ok ? 'angenommen' : 'NICHT angenommen') . ' (Versuch ' . (int) $m['heim_n'] . ' von 3)');
+                if ($ok) { ro_auto_melden($n, sprintf(ro_t('MELDUNG.AUTO_HEIM'), $r['name']), $cfg); }
+            }
+        } elseif (in_array($e['grund'], array('LAUF_ENDE', 'LAUF_NIE', 'LAUF_ALT'), true)) {
+            ro_log('Automatik: ' . $r['name'] . ' - ' . ro_auto_grund_text($e['grund'], $e['zahl']));     // einmal je Lauf
+        } elseif (in_array($e['grund'], array('HEIM_AUFGEGEBEN', 'START_AUFGEGEBEN'), true)) {
+            ro_log_if_changed('auto_' . $n, date('d.m.', $jetzt) . ' ' . $r['name'] . ' - ' . ro_auto_grund_text($e['grund'], $e['zahl']));
+        }
+        ro_write_json(ro_auto_merker_datei($n), $m, 0644);
+        $aus[$n] = $e;
+    }
+    return $aus;
+}
+
+/** Der Wartegrund als Satz (Reiter Test, Protokoll). */
+function ro_auto_grund_text($grund, $zahl = '')
+{
+    $s = ro_t('AUTO.G_' . $grund);
+    if ($grund === 'NICHT_BEREIT' && is_numeric($zahl)) { $zahl = ro_state_text((int) $zahl, 1); }
+    return strpos($s, '%s') !== false ? sprintf($s, (string) $zahl) : $s;
+}
+
+/** Zeilen fuer ro_selbsttest(): die Anwesenheit (immer) und je Roboter mit Automatik ihr Stand. */
+function ro_auto_pruefzeilen($cfg, $add)
+{
+    $a = ro_auto_einst(isset($cfg['auto']) ? $cfg['auto'] : null);
+    $robots = ro_robots_aus($cfg);
+    $jetzt = time();
+    $bedarf = ro_auto_braucht_leser($cfg);
+    $c = ro_haus_quellen();
+    if (!$bedarf) {
+        $add('AUTO.PRUEF_ANWESENHEIT', 2, ro_t('AUTO.A_NICHT_GELESEN'));
+    } else {
+        $lage = ro_anwesenheit_lage($c, $jetzt);
+        $seit = isset($c['seit']) ? (int) $c['seit'] : 0;
+        $zuletzt = $seit > 0 ? date('H:i:s', $seit) : '';
+        $wort = ro_t('AUTO.L_' . strtoupper($lage));
+        if ($lage === 'weg') {
+            $w = @json_decode((string) @file_get_contents(ro_tmpdir() . '/auto_anwesenheit.json'), true);
+            if (is_array($w) && !empty($w['weg_seit']) && (int) $w['weg_seit'] <= $jetzt) {
+                $wort .= ' ' . sprintf(ro_t('AUTO.L_WEG_SEIT'), (int) floor(($jetzt - (int) $w['weg_seit']) / 60));
+            }
+        }
+        $text = $zuletzt !== '' ? sprintf(ro_t('AUTO.A_EMPFANGEN'), $wort, $zuletzt) : sprintf(ro_t('AUTO.A_NIE'), $wort);
+        $s = isset($c['sitzung']) && is_array($c['sitzung']) ? $c['sitzung'] : array();
+        if (isset($s['lage']) && $s['lage'] !== 'ok') { $text .= ' ' . sprintf(ro_t('AUTO.A_SITZUNG'), (string) $s['lage']); }
+        $add('AUTO.PRUEF_ANWESENHEIT', ($lage === 'da' || $lage === 'weg') ? 1 : 0, $text);
+    }
+    foreach ($robots as $n => $r) {
+        $m = ro_auto_merker($n);
+        if (!ro_auto_ein($a, $n) && empty($m['lauf'])) { continue; }
+        $g = (string) $m['grund'];
+        $text = $r['name'] . ': ' . ($g === '' ? ro_t('AUTO.G_NOCH_NICHT') : ro_auto_grund_text($g, $m['zahl']));
+        if ((string) $m['tag'] !== '') {
+            $text .= ' ' . sprintf(ro_t('AUTO.A_LETZTER_START'), substr($m['tag'], 6, 2) . '.' . substr($m['tag'], 4, 2) . '.'
+                . ((int) $m['start'] > 0 ? ' ' . date('H:i', (int) $m['start']) : ''));
+        }
+        $add('AUTO.PRUEF_ROBOTER', in_array($g, array('START_AUFGEGEBEN', 'HEIM_AUFGEGEBEN', 'NICHT_ERREICHBAR', 'FEHLER'), true) ? 0 : 2, $text);
+    }
+}
