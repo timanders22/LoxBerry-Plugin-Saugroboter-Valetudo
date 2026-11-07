@@ -255,6 +255,12 @@ function ro_vorgaben()
     'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
     'endpunkt_ein' => 0,         // Gruppe 28 (1.1.23, E-E12): HTTP-Lesezweig fuer Loxone; Neuinstallation aus, Update an (ro_config())
     'auto' => ro_auto_vorgaben(), // 1.1.31: "Automatisch saugen, wenn alle weg sind" - ab Werk fuer keinen Roboter an
+    /* 1.1.33: die beiden Schluessel des Sprachmoduls (Regeln "Wann gesprochen wird", Herkunft uebernommener Sprechtoken).
+     * Bis 1.1.32 fehlten sie hier: das Formular und ro_ansage_token_pflegen() schrieben sie in robo.json, ro_cfg_lage()
+     * nannte sie "fremd", und Healthcheck und Reiter Test meldeten Rot (am Geraet gemessen 07.11.2026: status 3,
+     * fremd = ansage_token_herkunft). Dazu ging ansage_regeln nicht in die Sicherung. Bauart Pumpenwacht 1.0.16. */
+    'ansage_regeln' => ansage_regeln_vorgaben(),
+    'ansage_token_herkunft' => array(),
 );
 }
 
@@ -3107,6 +3113,40 @@ function ro_vorlage_befehle()
              'publish ' . $b['thema'] . ' ' . $bsp[$b['name']][0], '', false);
         $xml = str_replace("\t" . $kom, $neu, $xml);
     }
+    /* 1.1.33: fuer jeden eingerichteten Roboter ab Nummer 2 die Befehle als echte Zeilen statt der 17 Kommentare
+     * "Muster {nr}/...: je Wert selbst anlegen" (Hinweis eines Pruefers). Gebaut wie bb_vorlage() fuer Roboter 1,
+     * mit eingesetzter Geraetenummer; ohne zweiten Roboter bleibt die Vorlage wie bisher. bb_vorlage() selbst ist
+     * Stammcode der Befehlsbruecke und bleibt unveraendert. */
+    $nrn = array();
+    foreach (array_keys(ro_robots()) as $n) { if ((int) $n >= 2) { $nrn[] = (int) $n; } }
+    if ($nrn) {
+        $zeilen = array();
+        foreach ($nrn as $n) {
+            foreach ($l['befehle'] as $b) {
+                if (!$b['muster']) { continue; }
+                $titel = str_replace(' Roboter N ', ' Roboter ' . $n . ' ', $b['titel']);
+                $ers = function ($s) use ($n) { return str_replace('{nr}', (string) $n, (string) $s); };
+                $kom = $b['art'] . ($b['eingreifend'] ? ', eingreifend' : '') . ', nie retain';
+                if ($b['art'] === 'auswahl') {
+                    foreach ($b['loxone']['je_wert'] as $wert => $ein) {
+                        $zeilen[] = bb_vorlage_befehl(preg_replace('/ \(MQTT\)\z/', ' ' . $wert . ' (MQTT)', $titel), $kom, $ers($ein), '', false);
+                    }
+                    continue;
+                }
+                if ($b['art'] === 'text') {
+                    $roh = substr($b['name'], strlen('{nr}/'));
+                    if (!isset($bsp[$roh]) || $bsp[$roh][0] === '') { continue; }
+                    $zeilen[] = bb_vorlage_befehl($titel, 'text bis ' . (int) $b['max_byte'] . ' Byte, Beispielwert - im Befehl aendern'
+                        . ($b['eingreifend'] ? ', eingreifend' : '') . ', nie retain', 'publish ' . $ers($b['thema']) . ' ' . $bsp[$roh][0], '', false);
+                    continue;
+                }
+                if ($b['art'] === 'ganz' || $b['art'] === 'zahl') { $kom = $b['min'] . ' bis ' . $b['max'] . ', ' . $kom; }
+                $zeilen[] = bb_vorlage_befehl($titel, $kom, $ers($b['loxone']['ein']), $ers($b['loxone']['aus']), $b['loxone']['analog']);
+            }
+        }
+        $xml = preg_replace('/\t<!-- Muster [^\r\n]*-->\r\n/', '', $xml);
+        $xml = str_replace('</VirtualOut>', implode("\r\n", $zeilen) . "\r\n" . '</VirtualOut>', $xml);
+    }
     return array('VQ_saugroboter_mqtt.xml', $xml);
 }
 
@@ -3264,7 +3304,9 @@ function ro_befehl_quittung(array $e)
  *  der Datei fehlen und gelten dann mit ihrer Vorgabe (aus). Bauart awm_spaet_schluessel() (Abfuhrkalender 1.4.25). */
 function ro_spaet_schluessel()
 {
-    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern', 'auto');     // 1.1.31: auto (fehlt -> Vorgabe: fuer keinen Roboter an)
+    /* 1.1.31: auto (fehlt -> Vorgabe: fuer keinen Roboter an). 1.1.33: ansage_regeln - bis 1.1.32 trug keine Sicherung
+     * den Schluessel (er stand nicht in ro_vorgaben()); fehlt er, gelten die Regeln ab Werk, wie bisher nach dem Zurueckspielen. */
+    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern', 'auto', 'ansage_regeln');
 }
 
 /* ---------------- Sprachausgabe ----------------
@@ -4314,6 +4356,18 @@ function ro_wert_pruefen($schluessel, $wert)
             return '';
         case 'auto':     // 1.1.31: Automatik "alle weg"
             return ro_auto_pruefen($wert);
+        case 'ansage_regeln':     // 1.1.33: gegen den Stamm, wie ro_sicherung_lesen()
+            $g = '';
+            return ansage_regeln_wert($wert, $g) !== null ? ''
+                : ansage_kennung_text($g !== '' ? $g : 'M_R_BLOCK', ro_ansage_k());
+        case 'ansage_token_herkunft':     // 1.1.33: nur Namen der Sprechtoken mit dem Vermerk 'nachbar'
+            if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
+            foreach ($wert as $hk => $hv) {
+                if (!in_array((string) $hk, array_values(ansage_token_felder()), true) || $hv !== 'nachbar') {
+                    return ro_t('GRUND.UNBEKANNT');
+                }
+            }
+            return '';
     }
     return ro_t('GRUND.UNBEKANNT');
 }
@@ -4416,6 +4470,13 @@ function ro_sicherung_lesen($roh)
                 $mangel[] = ro_t('TEXT.SICH_GOOGLE_TOKEN');
                 $sprech_mangel++;
             }
+            /* 1.1.33: die uebrigen Sprechtoken aus der Liste des Stamms (ansage_geheim(), seit Stamm 1.4.0 auch
+             * homepod_token) - bis 1.1.32 nannte diese Stelle nur die beiden oben. */
+            foreach (ansage_sicherung_mangel($w) as $ro_sn) {
+                if ($ro_sn === 'tts.alexa_token' || $ro_sn === 'tts.google_token') { continue; }
+                $mangel[] = sprintf(ro_t('TEXT.SICH_SPRECHTOKEN'), rb_e($ro_sn));
+                $sprech_mangel++;
+            }
             if ($sprech_mangel) { continue; }
         }
         if ($k === 'aktionstoken' && $w === '') {
@@ -4457,14 +4518,14 @@ function ro_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = ro_t('TEXT.SICH_LEER');
     }
-    // Ansage-2: das geltende Sprechtoken bleibt (die Sicherung traegt keines).
+    /* Ansage-2/-3: die geltenden Sprechtoken bleiben (die Sicherung traegt keine). 1.1.33: alle aus der Liste des
+     * Stamms (ansage_sicherung_tokens_behalten()), dazu ihre Herkunft - ein uebernommenes Token bleibt uebernommen. */
     if (isset($neu['tts']) && is_array($neu['tts'])) {
-        $neu['tts']['alexa_token'] = (isset($jetzt['tts']['alexa_token']) && is_string($jetzt['tts']['alexa_token']))
-            ? $jetzt['tts']['alexa_token'] : '';
-        // Ansage-3: ebenso das geltende Sprechtoken fuer Chromecast 4 Lox NG.
-        $neu['tts']['google_token'] = (isset($jetzt['tts']['google_token']) && is_string($jetzt['tts']['google_token']))
-            ? $jetzt['tts']['google_token'] : '';
+        $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'], isset($jetzt['tts']) ? $jetzt['tts'] : null);
     }
+    $neu['ansage_token_herkunft'] = (isset($jetzt['ansage_token_herkunft']) && is_array($jetzt['ansage_token_herkunft'])
+        && ro_wert_pruefen('ansage_token_herkunft', $jetzt['ansage_token_herkunft']) === '')
+        ? $jetzt['ansage_token_herkunft'] : array();
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
      *
      * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
@@ -4484,6 +4545,7 @@ function ro_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(ro_vorgaben()) as $fk) {
+        if ($fk === 'ansage_token_herkunft') { continue; }     // 1.1.33: steht nie in einer Sicherung (s. oben)
         // Gruppe 2 (1.1.22): die Haken der Befehlsbruecke darf eine aeltere Sicherung nicht kennen (ro_spaet_schluessel()).
         if (!array_key_exists($fk, $daten) && !in_array($fk, ro_spaet_schluessel(), true)
             && !in_array($fk, ro_spaet_geltend(), true)) {
@@ -5419,6 +5481,10 @@ function ro_miot_modelle()
                           'mop_pct' => array(7, 14), 'mop_h' => array(7, 15), 'dauer' => array(7, 22),
                           'flaeche' => array(7, 23), 'wasser' => array(7, 6)),
         'wasser' => array(0 => 2, 1 => 3, 2 => 4),                // 7/6 water-state: Low, Mid, High
+        /* 1.1.33: Wischwasser setzen ueber 7/6 (Spezifikation: read, notify, write; 0 Low, 1 Mid, 2 High). Am T12 des
+         * Hausherrn gemessen 07.11.2026 in der Station (Status 4): 1 gelesen, 2 geschrieben (MIOT 0) und 2 gelesen,
+         * 1 zurueckgeschrieben und 1 gelesen. Nur die drei Stufen des Geraets; off/min/max -> NICHT_UNTERSTUETZT. */
+        'wasser_setzen' => array(7, 6, array('low' => 0, 'medium' => 1, 'high' => 2)),
         'gemessen' => '26.10.2026 lesend: Gruss 18 ms, status 4, fault 2105, 2/11 -4003, Akku 100, Firmware 4.3.3_0010;'
                     . ' 27.10.2026: Belegung greift, Verbrauchsmaterial/Dauer/Flaeche/Wasser lesbar;'
                     . ' 27.10.2026 nachts Fahrprobe: home/start/stop MIOT 0, Reinigen status 6 fault 2108, Station 4/2105',
@@ -5550,6 +5616,8 @@ function ro_miot_befehle()
         'modus'    => array('pruef' => 'ja', 'werte' => array('vacuum' => 0, 'vacuum_and_mop' => 1, 'mop' => 2,
                                                               'vacuum_then_mop' => 3)),
         'segments' => array('pruef' => 'ungeprueft'),
+        // 1.1.33: nur Modelle mit 'wasser_setzen' in der Tabelle (T12, gemessen 07.11.2026); sonst NICHT_UNTERSTUETZT.
+        'wasser'   => array('pruef' => 'ja', 'werte' => array('low' => 0, 'medium' => 1, 'high' => 2)),
     );
 }
 
@@ -5574,6 +5642,12 @@ function ro_miot_befehl(array &$z, $cmd, $param = '', $tab = null)
             if (!isset($s[2][$param])) { return array(0, 'NICHT_UNTERSTUETZT'); }
             $r = ro_miio_rufen($z, 'set_properties', array(array('did' => $cmd === 'fan' ? 'saug' : 'modus', 'siid' => $s[0],
                 'piid' => $s[1], 'value' => $s[2][$param])));
+            break;
+        case 'wasser':     // 1.1.33
+            if (!isset($tab['wasser_setzen'][2][$param])) { return array(0, 'NICHT_UNTERSTUETZT'); }
+            $s = $tab['wasser_setzen'];
+            $r = ro_miio_rufen($z, 'set_properties', array(array('did' => 'wasser', 'siid' => $s[0], 'piid' => $s[1],
+                'value' => $s[2][$param])));
             break;
         case 'segments':
             // Raum-IDs, bis 16 je hoechstens 4 Ziffern; "x2" (Durchgaenge) kann der Roboter nicht. Wertform am Geraet messen.
@@ -6466,6 +6540,54 @@ define('RO_HAUS_FRIST', 120);
 /** Die Themen, die gelesen werden - nur diese zwei. */
 define('RO_HAUS_JEMAND', 'haus/anwesenheit/jemand');
 define('RO_HAUS_ZAEHLER', 'haus/anwesenheit/zaehler');
+/* 1.1.33: Kalender aus FerienFeiertage (Regeln/07, haus/kalender) - nur, wenn die Automatik eine Kalenderwahl traegt.
+ * Verwendet nur bei datum = heute und Zaehler binnen 120 s live geaendert; sonst startet die Automatik nicht. */
+define('RO_KAL_DATUM', 'haus/kalender/datum');
+define('RO_KAL_FEIERTAG', 'haus/kalender/heute/feiertag');
+define('RO_KAL_RUHETAG', 'haus/kalender/heute/ruhetag');
+define('RO_KAL_ZAEHLER', 'haus/kalender/zaehler');
+
+/** 1.1.33: Braucht der Leser den Kalender? Nur mit Kalenderwahl und eingeschalteter Automatik. */
+function ro_auto_braucht_kalender($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $a = ro_auto_einst(isset($cfg['auto']) ? $cfg['auto'] : null);
+    if ($a['kalender'] === '') { return false; }
+    foreach (array_keys(ro_robots_aus($cfg)) as $n) { if (ro_auto_ein($a, $n)) { return true; } }
+    return false;
+}
+
+/** 1.1.33: Kalenderteil eines Sitzungsergebnisses einarbeiten (rein) - Ablage unter 'kal' in haus_quellen.json. */
+function ro_kalender_merken(array $alt, array $erg, $jetzt)
+{
+    $k = (isset($alt['kal']) && is_array($alt['kal']) ? $alt['kal'] : array())
+        + array('datum' => '', 'feiertag' => '', 'ruhetag' => '', 'zaehler' => null, 'seit' => 0);
+    $w = isset($erg['werte']) && is_array($erg['werte']) ? $erg['werte'] : array();
+    if (array_key_exists(RO_KAL_ZAEHLER, $w) && !empty($erg['live'][RO_KAL_ZAEHLER])
+            && (string) $w[RO_KAL_ZAEHLER] !== (string) $k['zaehler']) {
+        $k['zaehler'] = (string) $w[RO_KAL_ZAEHLER];
+        $k['seit'] = (int) $jetzt;
+    }
+    foreach (array('datum' => RO_KAL_DATUM, 'feiertag' => RO_KAL_FEIERTAG, 'ruhetag' => RO_KAL_RUHETAG) as $s => $t) {
+        if (array_key_exists($t, $w)) { $k[$s] = substr(trim((string) $w[$t]), 0, 10); }
+    }
+    $alt['kal'] = $k;
+    return $alt;
+}
+
+/**
+ * 1.1.33: Lage des Kalenders fuer heute (rein). Rueckgabe array(lage, wert): lage ok | schweigt (Zaehler nicht frisch)
+ * | anderer_tag (datum nicht heute) | unbekannt (kein 0/1); wert 1 = der gewaehlte Tag ist heute, 0 = nicht.
+ */
+function ro_kalender_lage(array $c, $art, $jetzt)
+{
+    $k = isset($c['kal']) && is_array($c['kal']) ? $c['kal'] : array();
+    $seit = isset($k['seit']) ? (int) $k['seit'] : 0;
+    if (!($seit > 0 && $seit <= (int) $jetzt && (int) $jetzt - $seit <= RO_HAUS_FRIST)) { return array('schweigt', -1); }
+    if (!isset($k['datum']) || (string) $k['datum'] !== date('Ymd', $jetzt)) { return array('anderer_tag', -1); }
+    $w = isset($k[$art]) ? (string) $k[$art] : '';
+    return ($w === '1' || $w === '0') ? array('ok', (int) $w) : array('unbekannt', -1);
+}
 
 /** Die Vorgaben des Blocks 'auto' (ab Werk fuer keinen Roboter an). */
 function ro_auto_vorgaben()
@@ -6477,7 +6599,23 @@ function ro_auto_vorgaben()
         'von'     => '09:00',   // Zeitfenster, Ortszeit; von = bis heisst rund um die Uhr
         'bis'     => '18:00',
         'akku'    => 80,        // Mindestladung in % (10-100)
+        /* 1.1.33 (Wunsch des Hausherrn 07.11.2026), beide ab Werk ohne Wirkung: */
+        'kalender' => '',       // '' keine Einschraenkung | feiertag | ruhetag (Sonn- und Feiertage) - aus FerienFeiertage
+        'raeume'   => array(),  // Geraetenummer => Raum-IDs ("1,4", Valetudo auch "1,4x2"); fehlt/leer = ganze Wohnung
     );
+}
+
+/** 1.1.33: die Kalenderwahl der Automatik - eine Liste fuer Formular, Pruefung und Entscheidung. */
+function ro_auto_kalender_werte()
+{
+    return array('', 'feiertag', 'ruhetag');
+}
+
+/** 1.1.33: Raum-IDs fuer die Automatik - bis 16 IDs zu hoechstens 4 Ziffern, Valetudo dazu "x1".."x9" (Durchgaenge). */
+function ro_auto_raeume_ok($w, $typ = 'valetudo')
+{
+    if (!is_string($w)) { return false; }
+    return preg_match($typ === 'miot' ? '/^\d{1,4}(,\d{1,4}){0,15}\z/' : '/^\d{1,4}(,\d{1,4}){0,15}(x[1-9])?\z/', $w) === 1;
 }
 
 /** Eine Uhrzeit HH:MM? */
@@ -6506,6 +6644,15 @@ function ro_auto_einst($w)
     foreach (array('von', 'bis') as $k) {
         if (isset($w[$k]) && ro_auto_uhrzeit_ok($w[$k])) { $aus[$k] = $w[$k]; }
     }
+    if (isset($w['kalender']) && is_string($w['kalender']) && in_array($w['kalender'], ro_auto_kalender_werte(), true)) {
+        $aus['kalender'] = $w['kalender'];
+    }
+    if (isset($w['raeume']) && is_array($w['raeume'])) {
+        foreach ($w['raeume'] as $nr => $ids) {
+            if (ro_ganz_ok($nr, 1, RO_ROBOTER_MAX) && ro_auto_raeume_ok($ids) && $ids !== '') { $aus['raeume'][(string) (int) $nr] = $ids; }
+        }
+        ksort($aus['raeume']);
+    }
     return $aus;
 }
 
@@ -6529,6 +6676,15 @@ function ro_auto_pruefen($w)
     if (isset($w['akku']) && !ro_ganz_ok($w['akku'], 10, 100)) { return sprintf(ro_t('GRUND.BEREICH'), 10, 100); }
     foreach (array('von', 'bis') as $k) {
         if (isset($w[$k]) && !ro_auto_uhrzeit_ok($w[$k])) { return ro_t('AUTO.GRUND_UHRZEIT'); }
+    }
+    if (isset($w['kalender']) && !(is_string($w['kalender']) && in_array($w['kalender'], ro_auto_kalender_werte(), true))) {
+        return ro_t('AUTO.GRUND_KALENDER');
+    }
+    if (isset($w['raeume'])) {
+        if (!is_array($w['raeume']) || count($w['raeume']) > RO_ROBOTER_MAX) { return ro_t('AUTO.GRUND_RAEUME'); }
+        foreach ($w['raeume'] as $nr => $ids) {
+            if (!ro_ganz_ok($nr, 1, RO_ROBOTER_MAX) || !ro_auto_raeume_ok($ids) || $ids === '') { return ro_t('AUTO.GRUND_RAEUME'); }
+        }
     }
     return '';
 }
@@ -6823,7 +6979,16 @@ function ro_haus_leser_lauf($fenster = 65)
         fclose($fh);
         return 'aus';
     }
-    $erg = ro_haus_sitzung(array(RO_HAUS_JEMAND, RO_HAUS_ZAEHLER), array(RO_HAUS_ZAEHLER), $fenster);
+    /* 1.1.33: mit Kalenderwahl dazu die vier Kalenderthemen; gewartet wird auch auf dessen Zaehler (FerienFeiertage zaehlt
+     * je Minutenlauf, kommt also im Fenster von 65 s). */
+    $mit_kal = ro_auto_braucht_kalender();
+    $lesen = array(RO_HAUS_JEMAND, RO_HAUS_ZAEHLER);
+    $warten = array(RO_HAUS_ZAEHLER);
+    if ($mit_kal) {
+        $lesen = array_merge($lesen, array(RO_KAL_DATUM, RO_KAL_FEIERTAG, RO_KAL_RUHETAG, RO_KAL_ZAEHLER));
+        $warten[] = RO_KAL_ZAEHLER;
+    }
+    $erg = ro_haus_sitzung($lesen, $warten, $fenster);
     /* Bis zu 65 s am Broker: wurde die Automatik inzwischen abgeschaltet, wird die Ablage nicht wieder angelegt. */
     if (!ro_auto_braucht_leser()) {
         if (is_file($datei)) { @unlink($datei); }
@@ -6832,6 +6997,7 @@ function ro_haus_leser_lauf($fenster = 65)
         return 'aus';
     }
     $c = ro_haus_merken(ro_haus_quellen(), $erg, time());
+    if ($mit_kal) { $c = ro_kalender_merken($c, $erg, time()); } else { unset($c['kal']); }
     $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
     $lage = ro_anwesenheit_lage($c, time());
     ro_log_if_changed('haus_anwesenheit', 'Haus-Thema haus/anwesenheit: ' . $lage
@@ -6881,8 +7047,10 @@ function ro_auto_merker_form(array $m)
  * Rueckgabe array('aktion' => ''|start|heim, 'grund' => Kennung, 'zahl' => Zusatz fuer den Text, 'merker' => neuer Merker).
  * Der Rufer fuehrt die Aktion aus und traegt das Ergebnis mit ro_auto_ergebnis() ein.
  */
-function ro_auto_entscheiden(array $a, $ein, $lage, $weg_seit, array $st, array $m, $jetzt)
+function ro_auto_entscheiden(array $a, $ein, $lage, $weg_seit, array $st, array $m, $jetzt, $kal = null)
 {
+    /* 1.1.33: $kal = Ergebnis von ro_kalender_lage() fuer die Kalenderwahl in $a['kalender'] (null = nicht gelesen). Ohne
+     * Kalenderwahl wirkt er nicht; mit Kalenderwahl startet die Automatik nur bei gelesenem "heute nicht" (geschlossen). */
     $m = ro_auto_merker_form($m);
     $ok = isset($st['ok']) && (int) $st['ok'] === 1 && empty($st['verspaetet']);
     $code = isset($st['code']) ? (int) $st['code'] : 8;
@@ -6927,6 +7095,11 @@ function ro_auto_entscheiden(array $a, $ein, $lage, $weg_seit, array $st, array 
     if ($lage === 'da') { return $raus('', 'DA', '', $m); }
     $tag = date('Ymd', $jetzt);
     if ((string) $m['tag'] === $tag) { return $raus('', 'HEUTE', '', $m); }
+    if (isset($a['kalender']) && $a['kalender'] !== '') {     // 1.1.33
+        $kl = is_array($kal) && isset($kal[0]) ? (string) $kal[0] : 'schweigt';
+        if ($kl !== 'ok') { return $raus('', 'KALENDER_OFFEN', $kl, $m); }
+        if ((int) $kal[1] === 1) { return $raus('', $a['kalender'] === 'feiertag' ? 'KALENDER_FEIERTAG' : 'KALENDER_RUHETAG', '', $m); }
+    }
     $weg_seit = (int) $weg_seit;
     if ($weg_seit <= 0 || $weg_seit > $jetzt) { return $raus('', 'WEG_KURZ', 0, $m); }
     $weg_min = (int) floor(($jetzt - $weg_seit) / 60);
@@ -7036,7 +7209,9 @@ function ro_auto_lauf(array $zustaende, $jetzt = null)
         if (is_file($wf)) { @unlink($wf); }
         return array();
     }
-    $lage = ro_anwesenheit_lage(ro_haus_quellen(), $jetzt);
+    $hq = ro_haus_quellen();
+    $lage = ro_anwesenheit_lage($hq, $jetzt);
+    $kal = $a['kalender'] !== '' ? ro_kalender_lage($hq, $a['kalender'], $jetzt) : null;     // 1.1.33
     $w = is_file($wf) ? json_decode((string) @file_get_contents($wf), true) : null;
     $weg_seit = ro_auto_weg_seit($lage, is_array($w) && isset($w['weg_seit']) ? $w['weg_seit'] : 0, $jetzt);
     ro_write_json($wf, array('lage' => $lage, 'weg_seit' => $weg_seit, 'ts' => $jetzt));
@@ -7053,14 +7228,17 @@ function ro_auto_lauf(array $zustaende, $jetzt = null)
             continue;
         }
         $st = isset($zustaende[$n]) && is_array($zustaende[$n]) ? $zustaende[$n] : array('ok' => 0);
-        $e = ro_auto_entscheiden($a, $ein, $lage, $weg_seit, $st, $m, $jetzt);
+        $e = ro_auto_entscheiden($a, $ein, $lage, $weg_seit, $st, $m, $jetzt, $kal);
         $m = $e['merker'];
         if ($e['aktion'] !== '') {
-            $erg = ro_befehl_ausfuehren($e['aktion'], $n, '', 'auto');
+            /* 1.1.33: mit eingetragenen Raeumen startet die Automatik ueber segments statt start (ganze Wohnung). */
+            $raeume = ($e['aktion'] === 'start' && isset($a['raeume'][(string) (int) $n])) ? $a['raeume'][(string) (int) $n] : '';
+            $erg = $raeume !== '' ? ro_befehl_ausfuehren('segments', $n, $raeume, 'auto') : ro_befehl_ausfuehren($e['aktion'], $n, '', 'auto');
             $ok = !empty($erg['ok']);
             $m = ro_auto_ergebnis($m, $e['aktion'], $ok, $jetzt);
             if ($e['aktion'] === 'start') {
-                ro_log('Automatik: ' . $r['name'] . ' - Start, weil alle seit ' . (int) $e['zahl'] . ' min weg sind (Akku '
+                ro_log('Automatik: ' . $r['name'] . ' - Start' . ($raeume !== '' ? ' (Raeume ' . $raeume . ')' : '')
+                    . ', weil alle seit ' . (int) $e['zahl'] . ' min weg sind (Akku '
                     . (int) $st['batterie'] . ' %, Fenster ' . $a['von'] . '-' . $a['bis'] . ') -> '
                     . ($ok ? 'angenommen' : 'NICHT angenommen, Versuch ' . (int) $m['fehl_n'] . ' von 3'));
                 if ($ok) { ro_auto_melden($n, sprintf(ro_t('MELDUNG.AUTO_START'), $r['name']), $cfg); }
@@ -7085,6 +7263,9 @@ function ro_auto_grund_text($grund, $zahl = '')
 {
     $s = ro_t('AUTO.G_' . $grund);
     if ($grund === 'NICHT_BEREIT' && is_numeric($zahl)) { $zahl = ro_state_text((int) $zahl, 1); }
+    if ($grund === 'KALENDER_OFFEN' && in_array($zahl, array('schweigt', 'anderer_tag', 'unbekannt'), true)) {     // 1.1.33
+        $zahl = ro_t('AUTO.KL_' . strtoupper($zahl));
+    }
     return strpos($s, '%s') !== false ? sprintf($s, (string) $zahl) : $s;
 }
 
@@ -7113,6 +7294,13 @@ function ro_auto_pruefzeilen($cfg, $add)
         $s = isset($c['sitzung']) && is_array($c['sitzung']) ? $c['sitzung'] : array();
         if (isset($s['lage']) && $s['lage'] !== 'ok') { $text .= ' ' . sprintf(ro_t('AUTO.A_SITZUNG'), (string) $s['lage']); }
         $add('AUTO.PRUEF_ANWESENHEIT', ($lage === 'da' || $lage === 'weg') ? 1 : 0, $text);
+        /* 1.1.33: mit Kalenderwahl die Zeile "Kalender empfangen" - ok nur mit frischem Zaehler und datum = heute. */
+        if ($a['kalender'] !== '') {
+            list($kl, $kw) = ro_kalender_lage($c, $a['kalender'], $jetzt);
+            $add('AUTO.PRUEF_KALENDER', $kl === 'ok' ? 1 : 0, $kl === 'ok'
+                ? sprintf(ro_t('AUTO.K_HEUTE'), ro_t('AUTO.K_' . strtoupper($a['kalender'])), ro_t($kw === 1 ? 'WORT.JA' : 'WORT.NEIN'))
+                : ro_t('AUTO.KL_' . strtoupper($kl)));
+        }
     }
     foreach ($robots as $n => $r) {
         $m = ro_auto_merker($n);

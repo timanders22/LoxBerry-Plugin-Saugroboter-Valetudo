@@ -51,7 +51,7 @@ ro_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \n   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33: wie preinstall.sh (Regeln/06)
     BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -152,6 +152,11 @@ cp -p "$BASE/log/plugins/$PFOLDER/robo.log"     "$TMPDIR/robo.log"  2>/dev/null
 # danach wurde anders bewertet als vorher.
 mkdir -p "$TMPDIR/data" 2>/dev/null
 cp -p "$BASE/data/plugins/$PFOLDER"/last_*.json "$TMPDIR/data/" 2>/dev/null
+# 1.1.33: die Merker der Automatik "alle weg" je Roboter (auto_<n>.json, ro_auto_merker_datei()): Tag des letzten
+# Automatikstarts und "eigene Reinigung laeuft". Bis 1.1.32 gingen sie beim Update verloren - danach konnte der
+# Roboter am selben Tag ein zweites Mal automatisch starten, und eine laufende Reinigung wurde beim Heimkommen
+# nicht mehr zur Station geschickt (Hinweis eines Pruefers, am Code bestaetigt 07.11.2026).
+cp -p "$BASE/data/plugins/$PFOLDER"/auto_*.json "$TMPDIR/data/" 2>/dev/null
 # M3 (Durchgang 01.10.2026): die Vormerkungen zum Abraeumen zurueckbehaltener
 # MQTT-Themen (altes Praefix, ausgetragener Roboter, MQTT aus) - sonst stuenden
 # sie nach dem Update weiter im Broker, und die Deinstallation kennte sie nicht.

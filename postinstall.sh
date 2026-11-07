@@ -53,7 +53,7 @@ ro_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \n   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33: wie preinstall.sh (Regeln/06)
     BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -65,6 +65,10 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# 1.1.33: der Ordnername darf keinen Pfadtrenner tragen (wie preinstall.sh, preupgrade.sh, postupgrade.sh).
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts angelegt."; exit 1 ;;
+esac
 CDIR="$BASE/config/plugins/$PFOLDER"
 DDIR="$BASE/data/plugins/$PFOLDER"
 LDIR="$BASE/log/plugins/$PFOLDER"

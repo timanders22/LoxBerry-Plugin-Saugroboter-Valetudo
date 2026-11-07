@@ -37,7 +37,7 @@ ro_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \n   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33: wie preinstall.sh (Regeln/06)
     BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -165,6 +165,15 @@ if [ -d "$TMPDIR/data" ]; then
     done
     if [ "$ANZ" -gt 0 ]; then
         echo "<OK> Zeitpunkt der letzten Reinigung uebernommen ($ANZ Datei(en))."
+    fi
+    # 1.1.33: die Merker der Automatik "alle weg" (siehe preupgrade.sh).
+    ANZ=0
+    for F in "$TMPDIR/data"/auto_*.json; do
+        [ -f "$F" ] || continue
+        cp -p "$F" "$DDIR/" 2>/dev/null && ANZ=$((ANZ + 1))
+    done
+    if [ "$ANZ" -gt 0 ]; then
+        echo "<OK> Merker der Automatik uebernommen ($ANZ Datei(en))."
     fi
     # M3: die Vormerkungen zum Abraeumen zurueckbehaltener MQTT-Themen.
     if [ -f "$TMPDIR/data/mqtt_raeumen.json" ]; then

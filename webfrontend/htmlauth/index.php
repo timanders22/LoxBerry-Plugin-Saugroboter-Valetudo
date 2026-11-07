@@ -170,7 +170,8 @@ function rb_eingabe_felder($formular)
                      'warn_prozent', 'notify_audio', 'notify_push', 'n_fertig', 'n_fehler', 'n_material',
                      'n_ereignis', 'n_automatik',
                      // 1.1.31: Automatik "alle weg" (auto_ein[<Geraetenummer>])
-                     'auto_ein', 'auto_heim', 'auto_minuten', 'auto_von', 'auto_bis', 'auto_akku'),
+                     'auto_ein', 'auto_heim', 'auto_minuten', 'auto_von', 'auto_bis', 'auto_akku',
+                     'auto_kalender', 'auto_raeume'),     // 1.1.33
                      ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'),     // 1.1.30: Tafel und HomePod dazu
                      ansage_x2_felder(array('modi' => ro_tts_wege())),     // Nr. 36 b, Stufe 2: ohne Sprechtoken
                      ro_ziele_x2_felder());     // Welle Mehrfach-Ziele (1.1.25): die Tabelle (name[N])
@@ -528,29 +529,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['neu_lesen'])) {
 /* --- Testansage (U14, Durchgang 01.10.2026; Nr. 36 b, Stufe 2: ansage_testansage()) ---
  * Spricht den Testsatz der gemeinsamen Sprachausgabe ueber den eingestellten Ausgabeweg - auch ueber
  * Alexa-NG und Google-Lautsprecher -, mit den GESPEICHERTEN Einstellungen. POST, danach 303. Ins
- * Protokoll nur die Kurzform, nie Text oder Token. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_testansage'])) {
-    $rb_ak = ro_ansage_k();
-    $rb_ar = ansage_testansage(ro_ansage_vor_ort(), $rb_ak);
-    ro_log('Testansage: ' . ansage_kurz($rb_ar));
-    if ($rb_ar['stand'] === 1) {
-        $rb_meldungen[] = rb_e(ro_t('TEXT.TESTANSAGE_OK'));
-        /* Bei Google steht die Antwort dabei (HTTP-Code und GRUND, z. B. EINGEREIHT) - nie Token oder Text. */
-        if ($rb_ar['art'] === 'cc4lox') {
-            $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.GOOGLE_ANTWORT'), (int) $rb_ar['http'],
-                preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $rb_ar['zeile'], $rb_gm) ? $rb_gm[1] : '-'));
-        }
-    } elseif ($rb_ar['stand'] === -1) {
-        $rb_meldungen[] = rb_e(sprintf(ro_t('TEXT.TESTANSAGE_NICHTS'), ansage_kennung_text($rb_ar['kennung'], $rb_ak)));
-    } else {
-        $rb_fehler[] = rb_e(ro_t('TEXT.TESTANSAGE_FEHL') . ' ' . ansage_kennung_text($rb_ar['kennung'], $rb_ak));
-    }
-    rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
-}
-
+ * Protokoll nur die Kurzform, nie Text oder Token. Bei Google steht die Antwort dabei (HTTP-Code und GRUND).
+ * 1.1.33: EIN Zweig fuer beide Knoepfe - bis 1.1.32 stand fuer ro_testansage ein zweiter, gleichlautender davor,
+ * und dieser hier wartete zusaetzlich auf einen Knopf 'ansage_test', den keine Seite anbietet. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ro_testansage']) || isset($_POST['ansage_test_ziel']))) {
     $rb_tk = ro_ansage_k();
     $rb_tnur = (isset($_POST['ansage_test_ziel']) && ro_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
     if (isset($_POST['ansage_test_ziel']) && $rb_tnur === 0) {
@@ -805,11 +789,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             /* Gruppe 28 (1.1.23, S2; Entscheidung 1): eine Zeile OHNE Adresse, aber mit Inhalt (Name, Port ausser
              * 80/54321, Benutzer, Kennwort, Token) wuerde still verworfen - beanstanden. Eine ganz leere Zeile bleibt
              * still ungenutzt. */
+            /* 1.1.33: nur die Felder des gewaehlten Treibers zaehlen. Die des anderen sind in der Seite grau und nur
+             * lesbar (rb-nur-valetudo bzw. rb-nur-miot-feld) - bis 1.1.32 liess sich eine Xiaomi-Zeile mit einem
+             * Benutzernamen aus ihrer Valetudo-Zeit nicht austragen, weil das gesperrte Feld nicht zu leeren war
+             * (Hinweis eines Pruefers, am Code bestaetigt 07.11.2026). */
+            $rb_lmiot = ($rb_zeile('r_typ', $rb_i) === 'miot');
             $rb_lp = $rb_zeile('r_port', $rb_i);
-            $rb_inhalt = (string) $rb_zeile('r_name', $rb_i) !== '' || (string) $rb_zeile('r_user', $rb_i) !== ''
-                || !in_array((string) $rb_lp, array('', '80', '54321'), true)
-                || (isset($_POST['r_pass'][$rb_i]) && is_string($_POST['r_pass'][$rb_i]) && $_POST['r_pass'][$rb_i] !== '')
-                || (isset($_POST['r_token'][$rb_i]) && is_string($_POST['r_token'][$rb_i]) && trim($_POST['r_token'][$rb_i]) !== '');
+            $rb_inhalt = (string) $rb_zeile('r_name', $rb_i) !== ''
+                || (!$rb_lmiot && (string) $rb_zeile('r_user', $rb_i) !== '')
+                || (!$rb_lmiot && !in_array((string) $rb_lp, array('', '80', '54321'), true))
+                || (!$rb_lmiot && isset($_POST['r_pass'][$rb_i]) && is_string($_POST['r_pass'][$rb_i]) && $_POST['r_pass'][$rb_i] !== '')
+                || ($rb_lmiot && isset($_POST['r_token'][$rb_i]) && is_string($_POST['r_token'][$rb_i]) && trim($_POST['r_token'][$rb_i]) !== '');
             if ($rb_inhalt) {
                 $rb_hw[] = rb_e(sprintf(ro_t('TEXT.ADRESSE_FEHLT'), $rb_nr));
                 rb_bean('r_ip', $rb_i);
@@ -986,6 +976,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         } else {
             $rb_auto[$rb_ab[0]] = $rb_au;
         }
+    }
+    /* 1.1.33: Kalenderwahl (nur aus der Liste) und Raeume je Roboter (leer = ganze Wohnung; Leerzeichen werden nicht
+     * entfernt, sondern beanstandet - eine Eingabe wird nicht zurechtgebogen). Nur fuer Nummern mit Adresse. */
+    $rb_ak = $rb_text('auto_kalender');
+    if ($rb_ak === null || !in_array($rb_ak, ro_auto_kalender_werte(), true)) {
+        $rb_hw[] = $rb_wert(ro_t('AUTO.KALENDER'), ro_t('AUTO.GRUND_KALENDER'));
+        rb_bean('auto_kalender');
+    } else {
+        $rb_auto['kalender'] = $rb_ak;
+    }
+    $rb_auto['raeume'] = array();
+    $rb_auto_typ = array();
+    foreach ($rb_neu['robots'] as $rb_rz) { $rb_auto_typ[(int) $rb_rz['nr']] = isset($rb_rz['typ']) ? (string) $rb_rz['typ'] : 'valetudo'; }
+    if (isset($_POST['auto_raeume']) && is_array($_POST['auto_raeume'])) {
+        foreach ($_POST['auto_raeume'] as $rb_rk => $rb_rv) {
+            if (!preg_match('/^[1-9]\z/', (string) $rb_rk) || !isset($rb_auto_typ[(int) $rb_rk])) { continue; }
+            if (!is_string($rb_rv) || $rb_rv === '') { continue; }
+            if (!ro_auto_raeume_ok($rb_rv, $rb_auto_typ[(int) $rb_rk])) {
+                $rb_hw[] = $rb_wert(sprintf(ro_t('AUTO.RAEUME_FELD'), (int) $rb_rk), ro_t($rb_auto_typ[(int) $rb_rk] === 'miot'
+                    ? 'AUTO.GRUND_RAEUME_MIOT' : 'AUTO.GRUND_RAEUME'));
+                rb_bean('auto_raeume', (int) $rb_rk);
+                continue;
+            }
+            $rb_auto['raeume'][(string) (int) $rb_rk] = $rb_rv;
+        }
+        ksort($rb_auto['raeume']);
     }
     $rb_neu['auto'] = $rb_auto;
     /* --- Sprachausgabe (Nr. 36 b, Stufe 2, 1.1.15): ansage_formular_lesen() - Adresse und Vorlage im
@@ -1398,13 +1414,15 @@ $rb_auto = ro_auto_einst(isset($rb_cfg['auto']) ? $rb_cfg['auto'] : null); ?>
 <div class="sm-small"><?= rb_e(ro_t('AUTO.ERST_ROBOTER')) ?></div>
 <?php } else { ?>
 <table class="sm-tbl">
-<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('AUTO.SPALTE')) ?></th></tr>
+<tr><th style="width:34px;"><?= rb_e(ro_t('WORT.NR')) ?></th><th><?= rb_e(ro_t('EINST.NAME')) ?></th><th><?= rb_e(ro_t('AUTO.SPALTE')) ?></th><th><?= rb_e(ro_t('AUTO.RAEUME')) ?></th></tr>
 <?php foreach (ro_robots() as $rb_an => $rb_ar) { ?>
 <tr><td><?= (int) $rb_an ?></td><td><?= rb_e($rb_ar['name']) ?></td>
 <td><label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin:0;">
-<input data-role="none" type="checkbox" name="auto_ein[<?= (int) $rb_an ?>]" value="1"<?= rb_haken('auto_ein', ro_auto_ein($rb_auto, $rb_an), $rb_an) ? ' checked' : '' ?>> <?= rb_e(ro_t('AUTO.SCHALTER')) ?></label></td></tr>
+<input data-role="none" type="checkbox" name="auto_ein[<?= (int) $rb_an ?>]" value="1"<?= rb_haken('auto_ein', ro_auto_ein($rb_auto, $rb_an), $rb_an) ? ' checked' : '' ?>> <?= rb_e(ro_t('AUTO.SCHALTER')) ?></label></td>
+<td><input data-role="none" type="text" name="auto_raeume[<?= (int) $rb_an ?>]" value="<?= rb_e(rb_w('auto_raeume', isset($rb_auto['raeume'][(string) (int) $rb_an]) ? $rb_auto['raeume'][(string) (int) $rb_an] : '', $rb_an)) ?>"<?= rb_m('auto_raeume', $rb_an) ?> maxlength="64" placeholder="<?= rb_e(ro_t('AUTO.RAEUME_LEER')) ?>"></td></tr>
 <?php } ?>
 </table>
+<div class="sm-small"><?= rb_e(ro_t('AUTO.RAEUME_HINWEIS')) ?></div>
 <?php } ?>
 <div style="margin:10px 0;">
     <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;">
@@ -1431,6 +1449,16 @@ $rb_auto = ro_auto_einst(isset($rb_cfg['auto']) ? $rb_cfg['auto'] : null); ?>
         <label><?= rb_e(ro_t('AUTO.AKKU')) ?></label>
         <input data-role="none" type="number" name="auto_akku" value="<?= rb_e(rb_w('auto_akku', (int) $rb_auto['akku'])) ?>"<?= rb_m('auto_akku') ?> min="10" max="100">
         <div class="sm-small"><?= rb_e(ro_t('AUTO.AKKU_HINWEIS')) ?></div>
+    </div>
+    <div>
+        <label><?= rb_e(ro_t('AUTO.KALENDER')) ?></label>
+        <?php $rb_akw = rb_w('auto_kalender', $rb_auto['kalender']); ?>
+        <select data-role="none" name="auto_kalender"<?= rb_m('auto_kalender') ?>>
+<?php foreach (ro_auto_kalender_werte() as $rb_kv) { ?>
+            <option value="<?= rb_e($rb_kv) ?>"<?= (string) $rb_akw === $rb_kv ? ' selected' : '' ?>><?= rb_e(ro_t('AUTO.K_' . ($rb_kv === '' ? 'KEINE' : strtoupper($rb_kv)))) ?></option>
+<?php } ?>
+        </select>
+        <div class="sm-small"><?= rb_e(ro_t('AUTO.KALENDER_HINWEIS')) ?></div>
     </div>
 </div>
 <div class="sm-small"><?= rb_e(ro_t('AUTO.REGELN')) ?></div>

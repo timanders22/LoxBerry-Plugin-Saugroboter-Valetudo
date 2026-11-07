@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.32 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.33 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,18 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.33
+
+- **Healthcheck und Reiter *Test* melden nach dem Speichern der Einstellungen keinen Konfigurationsfehler mehr.** Bis 1.1.32 galten die beiden Einstellungen der Sprachausgabe „Wann gesprochen wird“ und die Herkunft übernommener Sprechtoken als fremde Schlüssel; sobald sie in der Konfiguration standen, zeigte der LoxBerry-Healthcheck Rot („Die Konfiguration ist beschädigt oder trägt fremde Schlüssel“), obwohl alles in Ordnung war.
+- „Einstellungen sichern“ nimmt jetzt auch die Regeln „Wann gesprochen wird“ mit. Eine Sicherung aus einer früheren Fassung wird weiter angenommen; die Regeln gelten dann ab Werk. Übernommene Sprechtoken bleiben beim Zurückspielen übernommen.
+- Ein Update merkt sich, ob die Automatik „Saugen, wenn alle weg sind“ heute schon gestartet hat und ob ihre Reinigung gerade läuft. Bisher ging das beim Update verloren: der Roboter konnte am selben Tag ein zweites Mal starten.
+- Eine Xiaomi-Zeile lässt sich austragen, auch wenn in ihren grauen Valetudo-Feldern noch ein Benutzername steht. Die Meldung „Adresse fehlt“ sagt, was zum Austragen zu leeren ist.
+- Die Loxone-Vorlage der MQTT-Befehle enthält für jeden eingerichteten Roboter ab Nummer 2 die fertigen Befehle (bisher nur Hinweise zum Abtippen).
+- **Automatik: an Feiertagen oder an Sonn- und Feiertagen nicht saugen** (Reiter *Einstellungen*, Abschnitt „Automatik“, ab Werk: keine Einschränkung). Das Plugin liest dafür den Kalender des Plugins Ferien und Feiertage (dort im Reiter MQTT „Kalendertage an andere Plugins geben“ einschalten). Kommt kein Kalender an oder gilt er nicht für heute, startet die Automatik nicht; der Reiter *Test* zeigt die Zeile „Kalender empfangen“.
+- **Automatik: nur bestimmte Räume** – je Roboter ein Feld für Raum-IDs (zum Beispiel `1,4`, bei Valetudo auch `1,4x2`). Leer heißt wie bisher die ganze Wohnung. Die IDs zeigt der Reiter *Test* unter „Räume (Segment-IDs)“. Beim Xiaomi T12 ist die Raumreinigung am Gerät noch nicht geprüft.
+- **Xiaomi T12: Wischwasser einstellbar** (Befehl `wasser` mit `low`, `medium` oder `high`; der T12 kennt nur diese drei Stufen, `off`, `min` und `max` werden mit „nicht unterstützt“ abgewiesen). Am Gerät gemessen: umgestellt, nachgelesen, zurückgestellt.
+- Kleinigkeiten: `cron.php` weist unbekannte Schalter ab, statt einen vollen Lauf zu starten; die Installationsskripte prüfen die LoxBerry-Wurzel überall gleich; die Deinstallation prüft den Ordnernamen vor dem Löschen; die Testansage hat nur noch einen Zweig im Code.
 
 ## Neu in 1.1.32
 
@@ -115,7 +127,7 @@ Gateway V2 und mehrere Lautsprecher gleichzeitig für die Ansagen:
   das miIO-Protokoll angesprochen (UDP 54321, AES-128 mit seinem Token, nur PHP mit openssl – kein python-miio, kein
   Cloud-Weg im Betrieb). Dieselben MQTT-Themen und Befehle wie Valetudo: Zustand, Fehler, Akku, Betriebsart,
   Saugstufe; **was der T12 nicht meldet, steht auf -1, was er nicht kann, quittiert das Plugin mit „nicht
-  unterstützt“** (Reiter Einbindung: Spalte „Xiaomi T12“). Befehle start, stop, home, fan, modus, segments (Raum-IDs
+  unterstützt“** (Reiter Einbindung: Spalte „Xiaomi T12“). Befehle start, stop, home, fan, modus, wasser (ab 1.1.33; T12: low, medium, high), segments (Raum-IDs
   ungeprüft bis zum Gerätetest). Reiter Test: Verbindungsprüfung ohne Bewegung (Gruß, Token, Raum-IDs, Modell).
 * **Token:** Passwortfeld (32 Hex, nie angezeigt, nie im Protokoll, in der Sicherung wie das Kennwort), Haken
   „löschen“. **„Token aus der Xiaomi-Cloud holen“** im Reiter Einstellungen (Mi-Home-Konto; Kennwort und Anmeldung

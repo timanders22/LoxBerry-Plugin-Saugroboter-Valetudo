@@ -59,6 +59,14 @@ require_once $ro_htmldir . '/robo_lib.php';
  * Protokoll der Anlage (siehe ro_keine_wurzel_abbruch()). Die Pruefung steht
  * VOR der Sperre, denn schon die legt eine Datei an. */
 $ro_argv = (isset($argv) && is_array($argv)) ? array_slice($argv, 1) : array();
+/* 1.1.33: ein unbekannter oder ein zweiter Schalter ist ein Tippfehler, kein Minutenlauf. Bis 1.1.32 lief z. B.
+ * "cron.php --hilfe" in den vollen Takt - mit Abfrage, MQTT und der Automatik, die einen Roboter starten kann. Aufrufer
+ * sind cron.01min (ohne Schalter), uninstall (--mqtt-leeren) und ro_haus_leser_starten() (--haus-lesen). */
+if (count($ro_argv) > 1 || ($ro_argv && !in_array($ro_argv[0], array('--mqtt-leeren', '--haus-lesen'), true))) {
+    fwrite(STDERR, 'cron.php: unbekannter Schalter ' . preg_replace('/[^\x20-\x7E]/', '?', substr(implode(' ', $ro_argv), 0, 80))
+        . " - erlaubt sind keiner, --mqtt-leeren oder --haus-lesen\n");
+    exit(2);
+}
 if (in_array('--mqtt-leeren', $ro_argv, true)) {
     /* Aus uninstall/uninstall: die zurueckbehaltenen Themen der Linie
      * leeren (ro_mqtt_leeren()). Keine Abfrage, keine Sperre, keine Datei,

@@ -31,6 +31,11 @@ fi
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="saugrobo"
+# 1.1.33: der Ordnername geht unten in rm -rf "/tmp/$PDIR" und "$BASE/data/plugins/$PDIR/befehle" - ohne Pfadtrenner
+# und ohne "..", wie in preinstall.sh, preupgrade.sh und postupgrade.sh (bis 1.1.32 hier ungeprueft).
+case "$PDIR" in
+    */*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - nichts entfernt."; exit 1 ;;
+esac
 BASE="${5:-$LBHOMEDIR}"
 # Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
 # ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
@@ -63,7 +68,7 @@ ro_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \n   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33: wie preinstall.sh (Regeln/06)
     BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
 fi
 if [ -z "$BASE" ]; then
