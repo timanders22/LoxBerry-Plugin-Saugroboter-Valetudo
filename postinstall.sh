@@ -53,7 +53,8 @@ ro_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \n   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33: wie preinstall.sh (Regeln/06)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then     # 1.1.33/1.1.34: wie preinstall.sh (Regeln/06)
     BASE=$(ro_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
 fi
 if [ -z "$BASE" ]; then
