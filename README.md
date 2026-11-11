@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.35 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.36 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,14 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.36
+
+- **Konfiguration wird vervollständigt:** Fehlen in `robo.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutenlauf (`bin/cron.php`) sie jetzt einmal mit ihrer Vorgabe in die Datei ein. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Am Gerät fehlte am 11.11.2026 `ansage_regeln` (die Einstellungen „Wann gesprochen wird“, in den Vorgaben seit 1.1.33). Das Protokoll nennt die ergänzten Namen in einer Zeile, nie die Werte.
+- Geschrieben werden die Werte, die in der Datei stehen, plus die fehlenden Vorgaben, mit Rechten 0600 und samt Zweitschrift. Einstellungen, die das Plugin nicht kennt, bleiben stehen; geschrieben wird nur, wenn etwas fehlt. Fehlen in einer eingerichteten Datei `mqtt_enabled` oder `endpunkt_ein`, wird wie beim Lesen 0 bzw. 1 eingetragen; am Verhalten ändert sich also nichts. Steht in der Datei ein Wert, den auch das Speichern im Formular abweisen würde, wird nichts geschrieben, und das Protokoll nennt den Grund einmal.
+- Nicht angefasst werden eine fehlende, leere oder beschädigte Datei und eine Datei ohne Aktionstoken; das bleibt Sache der Selbstheilung. Während einer Aktualisierung und im Nur-Lesen-Betrieb des Endpunkts geschieht nichts. Das Aktionstoken selbst wird nie eingetragen.
+- Gemessen ist das im Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, an einer `robo.json` in der Gestalt vom Gerät (mit `ansage_token_herkunft`, ohne `ansage_regeln`). Nicht gemessen ist es an einem LoxBerry und nicht an einem vollständigen Minutenlauf; die Aufrufstelle ist nur im Quelltext geprüft.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht zu leeren Listen (`[]`).
 
 ## Neu in 1.1.35
 

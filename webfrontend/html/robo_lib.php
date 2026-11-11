@@ -4221,6 +4221,127 @@ function ro_config_speichern($cfg)
     return true;
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026, Muster
+ *  bw_json_leere_objekte() aus Bewaesserung 0.9.56), damit json_encode() sie als {} und nicht als [] schreibt - oben,
+ *  verschachtelt und unter fremden Schluesseln. Nur fuer ro_config_vervollstaendigen(); das Speichern im Formular
+ *  bleibt, wie es ist. */
+function ro_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = ro_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = ro_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Einstellungen EINMAL mit ihrer Vorgabe in robo.json schreiben (1.1.36; Regeln/05, Bauform Docker NG
+ * 1.3.7).
+ *
+ * Bis 1.1.35 ergaenzte ro_config() fehlende Schluessel nur im Speicher; in die Datei kamen sie erst beim naechsten
+ * Speichern im Formular. Am Geraet gemessen 11.11.2026: in robo.json fehlte ansage_regeln (in den Vorgaben seit
+ * 1.1.33). Aufgerufen vom Minutenlauf (bin/cron.php) nach seiner Sperre und vor dem ersten Lesen der
+ * Konfiguration.
+ *
+ *  - nur mit LoxBerry-Wurzel (nicht im Archivmodus), nicht im Nur-Lesen-Betrieb (ro_config_erzeugen_erlauben()
+ *    false: Endpunkt, Deinstallation) und nicht, solange eine frische Upgrade-Marke liegt (ro_upgrade_marke_frisch(),
+ *    dieselbe Regel wie der Minutenlauf);
+ *  - nur eine Datei, die ein JSON-Objekt ist und ein NICHT LEERES Aktionstoken traegt (das Merkwort; postinstall.sh
+ *    legt {} an, ro_config() behandelt {} als leer). Eine fehlende, leere oder beschaedigte Datei ist Sache der
+ *    Selbstheilung in ro_config(); aktionstoken selbst wird nie ergaenzt;
+ *  - geschrieben werden die WERTE AUS DER DATEI, so wie sie dort stehen, plus die fehlenden Vorgaben - nicht das,
+ *    was ro_config() daraus macht (notify und tts aufgefuellt, auto in geltender Form, ip-Altschluessel
+ *    umgezogen). Fuer zwei Schluessel gilt die Lese-Regel aus ro_config(), nicht die Vorgabe: eine eingerichtete
+ *    Datei ohne mqtt_enabled bekommt 0 (MQTT war dort ab Werk aus), ohne endpunkt_ein bekommt sie 1 (der
+ *    Lesezweig war offen). Am Verhalten aendert das Eintragen damit nichts;
+ *  - nur Schluessel aus ro_vorgaben(); das Speichern im Formular schreibt dieselben (es speichert ro_config()),
+ *    ansage_regeln und ansage_token_herkunft eingeschlossen (dort ebenso mit der Vorgabe, wenn sie fehlen);
+ *  - dieselben zwei Wachen wie ro_config_speichern() (ro_wert_taugt(), ro_wert_pruefen()): faellt ein Wert der
+ *    Datei durch, wird GAR NICHTS geschrieben und der Grund einmal gemeldet - zurechtgebogen wird nichts;
+ *  - fremde Schluessel bleiben stehen; geschrieben wird nur, wenn etwas fehlt; Weg, Rechte (0600) und Zweitschrift
+ *    wie in ro_config_speichern(), aber ohne dessen Nachlauf (Altwerte vormerken, Zwischenspeicher leeren): es
+ *    aendert sich kein geltender Wert. Eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: array('stand' => ohne_wurzel|nur_lesen|ruht|ohne_datei|ohne_merkwort|ungueltig|vollstaendig|
+ *                  ergaenzt|fehler, 'schluessel' => Namen der eingetragenen bzw. fehlenden Schluessel)
+ */
+function ro_config_vervollstaendigen()
+{
+    $p = ro_paths();
+    if ($p['lbhome'] === '') {
+        return array('stand' => 'ohne_wurzel', 'schluessel' => array());
+    }
+    if (!ro_config_erzeugen_erlauben()) {
+        return array('stand' => 'nur_lesen', 'schluessel' => array());
+    }
+    if (ro_upgrade_marke_frisch()) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $roh = trim((string) @file_get_contents($p['config']));
+    $datei = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    if (!is_array($datei) || !isset($datei['aktionstoken']) || !is_string($datei['aktionstoken'])
+        || trim($datei['aktionstoken']) === '') {
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    $lese_regel = array('mqtt_enabled' => 0, 'endpunkt_ein' => 1);
+    $fehlend = array();
+    foreach (ro_vorgaben() as $k => $w) {
+        if ($k === 'aktionstoken' || array_key_exists($k, $datei)) {
+            continue;
+        }
+        $datei[$k] = array_key_exists($k, $lese_regel) ? $lese_regel[$k] : $w;
+        $fehlend[] = $k;
+    }
+    if (!$fehlend) {
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    $vorgaben = ro_vorgaben();
+    foreach ($datei as $k => $v) {
+        $grund = !ro_wert_taugt($v) ? 'Steuerzeichen oder zu lang'
+               : (array_key_exists($k, $vorgaben) ? ro_wert_pruefen($k, $v) : '');
+        if ($grund !== '') {
+            ro_log_if_changed('vervollstaendigen', 'Die Konfiguration wurde nicht vervollstaendigt: unzulaessiger '
+                . 'Wert bei "' . $k . '" - ' . $grund . '. Fehlend: ' . implode(', ', $fehlend) . '.');
+            return array('stand' => 'ungueltig', 'schluessel' => $fehlend);
+        }
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
+    // als [] zurueck - die leeren Objekte des Rohtextes bleiben Objekte (11.11.2026). Erst NACH der Wertpruefung:
+    // ro_wert_pruefen() verlangt fuer notify, tts und ansage_token_herkunft ein Feld und wiese ein Objekt ab.
+    $datei = ro_json_leere_objekte($datei, json_decode($roh));
+    $js = json_encode($datei, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false || !ro_write_atomic($p['config'], $js, 0600)) {
+        ro_log_if_changed('vervollstaendigen', 'Die Konfiguration liess sich nicht vervollstaendigen - '
+            . $p['config'] . ' liess sich nicht schreiben (fehlend: ' . implode(', ', $fehlend) . ').');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    if (!ro_write_atomic($p['backup'], $js, 0600)) {
+        ro_log_if_changed('zweitschrift', 'Die Zweitschrift ' . $p['backup'] . ' liess sich nicht schreiben - '
+            . 'ein Update wuerde einen aelteren Stand zurueckspielen. Platz und Rechte im Ordner pruefen.');
+    } elseif (is_file($p['tmp'] . '/last_zweitschrift.txt')) {
+        @unlink($p['tmp'] . '/last_zweitschrift.txt');
+    }
+    // Die Bremse der Fehlerzeile zuruecksetzen - ueber $p['tmp'], ohne den Zwischenordner anzulegen.
+    if (is_file($p['tmp'] . '/last_vervollstaendigen.txt')) {
+        @unlink($p['tmp'] . '/last_vervollstaendigen.txt');
+    }
+    ro_log('Konfiguration vervollstaendigt: ' . count($fehlend) . ' fehlende Einstellung(en) mit der Vorgabe '
+        . 'eingetragen (' . implode(', ', $fehlend) . ').');
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
 /** Zwischenspeicher der Zustaende wegraeumen - ueber ro_paths(), nicht ueber
  *  einen fest verdrahteten Pfad. */
 function ro_cache_leeren()

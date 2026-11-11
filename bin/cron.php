@@ -125,6 +125,11 @@ if (!flock($ro_lock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
 
+/* 1.1.36 (Regeln/05): fehlende Vorgaben einmal in robo.json schreiben - nach der Sperre und vor dem ersten Lesen
+ * der Konfiguration in diesem Lauf (ro_robots() unten). Waehrend einer Aktualisierung ist der Lauf oben schon
+ * ausgestiegen; die Funktion prueft die Marke trotzdem selbst. Schreibt nur, wenn etwas fehlt. */
+ro_config_vervollstaendigen();
+
 /* Den Zustand EINMAL holen und weiterreichen.
  *
  * Bis 1.0.14 riefen ro_events_check() und die Schleife danach ro_state()
