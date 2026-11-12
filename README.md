@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.36 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.37 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,15 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.37
+
+- **Berichtigt: Dauer und Fläche der letzten Reinigung werden bei Valetudo auf ihren Wertebereich geprüft.** Ein Roborock S5 mit Valetudo 2026.05.0 lieferte als Dauer der aktuellen Statistik den Rohwert 1794060600. Bis 1.1.36 teilte das Plugin ihn ohne Prüfung durch 60 und sandte `saugrobo/dauer 29901010` (retained); der Miniserver meldete für den Eingang „Außerhalb des Wertebereichs“. Valetudo reicht den Wert des Roboters unverändert durch. Der Rohwert passt zu einem Unix-Zeitstempel; am Roboter gemessen ist das nicht.
+- Jetzt gelten für Valetudo dieselben Grenzen wie für den Xiaomi-Treiber und wie der Feldbereich der Vorlage: Dauer 0 bis 600 min, Fläche 0 bis 1000 m². Liegt ein Wert außerhalb oder ist er keine Zahl, gilt -1 („meldet das Gerät nicht“). Das Plugin rechnet den Wert nicht um und rät nicht, was er bedeuten könnte. Das Protokoll nennt den Rohwert einmal je Wechsel und meldet einmal, wenn der Wert wieder im Bereich liegt.
+- Ein schon gesendeter Wert außerhalb des Bereichs wird beim nächsten Lauf durch -1 ersetzt, auch wenn der Roboter gerade nicht antwortet oder die Statistik nicht lesbar ist. Eine ältere Messung im Zwischenspeicher (`/tmp/<ordner>/gemessen_N.json`) mit einem solchen Wert wird beim Lesen ebenfalls zu -1.
+- Neue Zeile im Reiter Test: „Messwerte im Wertebereich der Felder“. Sie nennt einen abgewiesenen Rohwert mit Roboter und Grenze und prüft alle übrigen Felder gegen ihren Bereich (ohne `ALTER`).
+- Die Anzeige „Letzte Reinigung“ zeigt bei einer Dauer von -1 einen Strich statt „-1 min“.
+- Gemessen im Prüfstand unter PHP 7.4, 8.4 und 8.5 auf dem Arbeitsrechner, mit einer Valetudo-Attrappe und einem UDP-Lauscher statt des Gateways. Nicht gemessen am LoxBerry und am Roboter.
 
 ## Neu in 1.1.36
 

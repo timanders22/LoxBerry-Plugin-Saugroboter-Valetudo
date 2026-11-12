@@ -1101,7 +1101,8 @@ function ro_gemessen_lesen($dev, $r)
         || (string) $d['adresse'] !== ro_gemessen_adresse($r) || !isset($d['st']['ts'])) {
         return null;
     }
-    return $d['st'];
+    // 1.1.37: eine Messung einer Vorfassung mit Dauer/Flaeche ausserhalb des Feldbereichs traegt -1 weiter.
+    return ro_bilanz_gespeichert($d['st']);
 }
 
 /** Ausfall: die Werte des letzten erfolgreichen Abrufs, OK=0, CODE=8. */
@@ -2616,6 +2617,15 @@ function ro_mqtt_senden($st, $dev = 1, $voll = false) {
     if ($alt['lage'] === 'belegt') { $voll = true; }
     $raeumen = array_flip($alt['themen']);
     $gesendet = $gilt ? $abbild['werte'] : array();
+    /* 1.1.37: ein frueher GESENDETER Wert der Reinigungsbilanz ausserhalb des Feldbereichs (Befund 12.11.2026: retained
+     * saugrobo/dauer 29901010) wird durch -1 ersetzt, auch wenn das Thema in diesem Lauf sonst nicht hinausginge
+     * (Ausfall, Teilausfall der Statistik) - sonst bliebe er im Broker stehen, bis die naechste Messung gelingt.
+     * Geht das Thema ohnehin hinaus, entscheidet der Vergleich unten gegen das gesendete Abbild. */
+    foreach (ro_bilanz_gespeichert(array_intersect_key($gesendet, ro_bilanz_grenzen())) as $k => $v) {
+        if (!array_key_exists($k, $werte) && $v === -1 && (string) $gesendet[$k] !== '-1' && (string) $gesendet[$k] !== '-1.0') {
+            $werte[$k] = ro_feldwert(strtoupper($k), array($k => -1, 'dev' => (int) $dev));
+        }
+    }
     $zeilen = array();
     foreach ($werte as $k => $v) {
         $w = ro_mqtt_wert_saeubern($v);
@@ -5014,8 +5024,10 @@ function ro_selbsttest($opt = array())
 
     $erreicht = 0; $modelle = array(); $unbekannt = array();
     $evlesbar = 0; $evzahl = 0; $evgeprueft = 0;
+    $ro_bil_zustaende = array();
     foreach (array_keys($robots) as $n) {
         $st = ro_state($n);
+        $ro_bil_zustaende[$n] = $st;
         if ($st['ok']) { $erreicht++; }
         /* Aus dem schon geholten Zustand, nicht aus einer neuen Abfrage:
          * der Reiter Test wird bei JEDEM Seitenaufbau mitgerendert. */
@@ -5064,6 +5076,9 @@ function ro_selbsttest($opt = array())
     } else {
         $add('PRUEF.MATFREMD', $unbekannt ? 0 : 1, implode(', ', array_keys($unbekannt)));
     }
+    /* 1.1.37: Werte im Feldbereich, abgewiesene Rohwerte der Reinigungsbilanz (Befund saugrobo_dauer 29901010). */
+    list($ro_bil_s, $ro_bil_t) = ro_bilanz_pruefen($ro_bil_zustaende);
+    $add('PRUEF.BILANZ', $ro_bil_s, $ro_bil_t);
 
     /* Laeuft der Cron?
      *
@@ -6233,11 +6248,19 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
     // 2) Statistik aktuell
     $j = @json_decode((string) ro_get($base . '/capabilities/CurrentStatisticsCapability', 2, $dev), true);
     $st['teil_ok']['statistik'] = ro_ist_liste($j) ? 1 : 0;
+    /* 1.1.37: nur im Feldbereich (ro_bilanz_wert()), sonst -1 und eine Protokollzeile mit dem Rohwert je Wechsel.
+     * Befund 12.11.2026: "time" 1794060600 wurde bis 1.1.36 zu 29901010 min. */
+    $st['bilanz_roh'] = array();
+    $ro_bil_gesehen = array();
     foreach ((array) $j as $e) {
         if (!isset($e['type']) || !isset($e['value'])) { continue; }
-        if ($e['type'] === 'area') { $st['flaeche'] = round(((float) $e['value']) / 10000, 1); }   // cm2 -> m2
-        if ($e['type'] === 'time') { $st['dauer'] = (int) round(((float) $e['value']) / 60); }      // s -> min
+        $ro_bil_art = $e['type'] === 'area' ? 'flaeche' : ($e['type'] === 'time' ? 'dauer' : '');  // cm2 -> m2, s -> min
+        if ($ro_bil_art === '') { continue; }
+        list($st[$ro_bil_art], $ro_bil_roh) = ro_bilanz_wert($ro_bil_art, $e['value']);
+        if ($ro_bil_roh !== '') { $st['bilanz_roh'][$ro_bil_art] = $ro_bil_roh; }
+        $ro_bil_gesehen[$ro_bil_art] = $ro_bil_roh;
     }
+    foreach ($ro_bil_gesehen as $ro_bil_art => $ro_bil_roh) { ro_bilanz_melden($dev, $ro_bil_art, $ro_bil_roh); }
     // 3) Statistik gesamt
     $j = @json_decode((string) ro_get($base . '/capabilities/TotalStatisticsCapability', 2, $dev), true);
     $st['teil_ok']['gesamt'] = ro_ist_liste($j) ? 1 : 0;
@@ -6409,6 +6432,118 @@ function ro_gesamt_stunden($roh, $anzahl)
     if ($sek == 0 || ($n > 0 ? $sek / $n <= 6 * 3600 : $passt($sek))) { return array(round($sek / 3600, 1), 's'); }
     if ($passt($sek / 1000)) { return array(round($sek / 3600000, 1), 'ms'); }
     return array(-1, 'unplausibel');
+}
+
+/*
+ * 1.1.37: Dauer und Flaeche der LETZTEN Reinigung nur im Feldbereich.
+ *
+ * Befund 12.11.2026 (am Geraet gemessen, Roborock S5 mit Valetudo 2026.05.0): der Miniserver meldete fuer saugrobo_dauer
+ * "Ausserhalb des Wertebereichs", im Broker lag retained saugrobo/dauer 29901010. Valetudo reicht clean_time ohne
+ * Umrechnung oder Pruefung durch (RoborockValetudoRobot.js: currentStatistics.time = parseInt(data["clean_time"])),
+ * das Plugin teilte bis 1.1.36 ohne Pruefung durch 60. 29901010 x 60 = 1794060600 liegt 35 bis 95 s vor dem Zeitpunkt
+ * "letzte Reinigung" in last_1.json (1794060665 = 07.11.2026 15:11:05 MEZ) - der Rohwert passt zu einem
+ * Unix-Zeitstempel (Schluss, am Roboter nicht gemessen). Der Xiaomi-Treiber prueft dieselben Werte (ro_miot_zusatz_abbilden()), die Gesamtzeit prueft
+ * ro_gesamt_stunden(); der Valetudo-Zweig der letzten Reinigung war die Luecke.
+ *
+ * Grenzen: dieselben wie im Xiaomi-Treiber und wie der Feldbereich der Vorlage (ro_felder(): DAUER -1 bis 600 min,
+ * FLAECHE -1 bis 1000 m2) - EINE Stelle, ro_felder(). Ausserhalb: -1 (die -1-Regel, "meldet das Geraet nicht"), keine
+ * Umdeutung (kein Raten, ob es Millisekunden oder ein Zeitstempel sind), und eine Protokollzeile mit dem Rohwert.
+ */
+function ro_bilanz_grenzen()
+{
+    $f = ro_felder();
+    return array('dauer' => array(0, (float) $f['DAUER'][2], 'min'), 'flaeche' => array(0, (float) $f['FLAECHE'][2], 'm2'));
+}
+
+/**
+ * Ein Rohwert der aktuellen Statistik von Valetudo (Dauer in s, Flaeche in cm2) in den Feldwert (min, m2 mit einer
+ * Stelle). Rueckgabe array(Wert | -1, '' | Rohwert als Text, hoechstens 40 Zeichen). Geprueft wird der Wert, der
+ * hinausginge (die Dauer gerundet auf Minuten, die Flaeche ungerundet), vor jeder Umwandlung in eine ganze Zahl.
+ */
+function ro_bilanz_wert($art, $roh)
+{
+    $g = ro_bilanz_grenzen();
+    $text = is_scalar($roh) ? (string) $roh : (string) json_encode($roh);
+    $text = substr(preg_replace('/[\x00-\x1f\x7f]/', '?', $text), 0, 40);
+    if (!isset($g[$art]) || !is_numeric($roh)) { return array(-1, $text !== '' ? $text : '?'); }
+    $v = $art === 'dauer' ? round(((float) $roh) / 60) : ((float) $roh) / 10000;
+    if (is_nan($v) || $v < $g[$art][0] || $v > $g[$art][1]) { return array(-1, $text); }
+    return array($art === 'dauer' ? (int) $v : round($v, 1), '');
+}
+
+/**
+ * Die Protokollzeile zu ro_bilanz_wert(): EINMAL je Wechsel des Rohwerts (ro_log_if_changed(), Merker
+ * /tmp/<ordner>/last_bilanz_<art>_<n>.txt) und eine Zeile, wenn der Wert wieder im Bereich liegt.
+ */
+function ro_bilanz_melden($dev, $art, $roh)
+{
+    $g = ro_bilanz_grenzen();
+    if (!isset($g[$art])) { return; }
+    $key = 'bilanz_' . $art . '_' . max(1, (int) $dev);
+    $merker = ro_tmpdir() . '/last_' . $key . '.txt';
+    if ((string) $roh !== '') {
+        ro_log_if_changed($key, 'Roboter ' . max(1, (int) $dev) . ': '
+            . ($art === 'dauer' ? 'Dauer' : 'Flaeche') . ' der letzten Reinigung vom Geraet nicht plausibel - Rohwert '
+            . ($art === 'dauer' ? 'time=' . $roh . ' s' : 'area=' . $roh . ' cm2') . ', erlaubt ' . (int) $g[$art][0]
+            . ' bis ' . (int) $g[$art][1] . ' ' . $g[$art][2] . '; gesendet wird -1 (ohne Messung).');
+        return;
+    }
+    if (is_file($merker)) {
+        ro_log($key . ': Roboter ' . max(1, (int) $dev) . ': ' . ($art === 'dauer' ? 'Dauer' : 'Flaeche')
+            . ' der letzten Reinigung wieder im Wertebereich.');
+        @unlink($merker);
+    }
+}
+
+/**
+ * Ein gespeicherter Zustand (gemessen_N.json, auch einer Vorfassung) oder ein gesendeter Wert: Dauer/Flaeche ausserhalb
+ * des Feldbereichs (oder keine Zahl) werden -1. -1 bleibt -1. Sonst uebernaehmen Ausfall und Teilausfall den alten
+ * Rohwert, und HTTP-Zeile und Oberflaeche zeigten ihn weiter.
+ */
+function ro_bilanz_gespeichert(array $st)
+{
+    foreach (ro_bilanz_grenzen() as $k => $b) {
+        if (!array_key_exists($k, $st)) { continue; }
+        $v = $st[$k];
+        if (is_numeric($v) && ((float) $v == -1 || ((float) $v >= $b[0] && (float) $v <= $b[1]))) { continue; }
+        $st[$k] = -1;
+    }
+    return $st;
+}
+
+/**
+ * Pruefzeile Reiter Test (1.1.37): liegen die Werte jedes Roboters im Feldbereich (ro_felder(), ohne ALTER - das sagt
+ * PRUEF.CRON), und hat der letzte Abruf einen Rohwert der Reinigungsbilanz abgewiesen? Aus den schon geholten
+ * Zustaenden, keine neue Abfrage. Rueckgabe array(Stand 1 | 0 | 2, Text).
+ */
+function ro_bilanz_pruefen(array $zustaende)
+{
+    if (!$zustaende) { return array(2, ro_t('PRUEF.KEIN_ROBOTER')); }
+    $g = ro_bilanz_grenzen();
+    $befund = array();
+    $werte = 0;
+    $gemessen = 0;
+    foreach ($zustaende as $n => $st) {
+        if (!is_array($st) || (empty($st['ok']) && empty($st['messung_ts']))) { continue; }
+        $gemessen++;
+        foreach ((isset($st['bilanz_roh']) && is_array($st['bilanz_roh'])) ? $st['bilanz_roh'] : array() as $art => $roh) {
+            if (!isset($g[$art])) { continue; }
+            $befund[] = sprintf(ro_t('PRUEF.BILANZ_ROH'), (int) $n, ro_t($art === 'dauer' ? 'PRUEF.BILANZ_DAUER' : 'PRUEF.BILANZ_FLAECHE'),
+                (string) $roh, (int) $g[$art][0], (int) $g[$art][1]);
+        }
+        $st['dev'] = (int) $n;
+        foreach (ro_felder() as $name => $f) {
+            if ($name === 'ALTER') { continue; }
+            $v = ro_feldwert($name, $st);
+            $werte++;
+            if (!is_numeric($v) || (float) $v < (float) $f[1] || (float) $v > (float) $f[2]) {
+                $befund[] = sprintf(ro_t('PRUEF.BILANZ_AUSSEN'), (int) $n, $name, (string) $v, (string) $f[1], (string) $f[2]);
+            }
+        }
+    }
+    if ($gemessen === 0) { return array(2, ro_t('PRUEF.NICHTS_GEMESSEN')); }
+    if ($befund) { return array(0, implode('; ', $befund)); }
+    return array(1, sprintf(ro_t('PRUEF.BILANZ_OK'), $werte, $gemessen));
 }
 
 /**
