@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.37 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,15 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.38
+
+- **Berichtigt: alle übrigen Messwerte werden auf ihren Wertebereich geprüft – wie in 1.1.37 Dauer und Fläche der letzten Reinigung.** Bisher gingen bei Valetudo Batterie, Fehlercode, Gesamtfläche, Zahl der Reinigungen, die Reststunden der Verbrauchsteile und die Zahl der offenen Ereignisse ohne Prüfung hinaus; ein Verbrauchsteil in Minuten konnte negativ unter -1 werden, und ein Verbrauchsteil in Prozent wurde still auf 0 bis 100 zurechtgebogen. Beim Xiaomi-Treiber wurde ein negativer Fehlerwert still zu 0, und ein Wert außerhalb des Bereichs bei Akku, Dauer, Fläche und Verbrauchsteilen wurde ohne Protokollzeile zu -1.
+- Jetzt gilt für jeden dieser Werte der Feldbereich der Vorlage (Batterie 0 bis 100 %, Fehlercode 0 bis 100000, Gesamtfläche 0 bis 10000000 m², Reinigungen 0 bis 100000, Verbrauchsteile 0 bis 10000 h bzw. 0 bis 100 %, offene Ereignisse 0 bis 99). Liegt ein Wert außerhalb oder ist er keine Zahl, gilt -1. Das Plugin rechnet nichts um und biegt nichts zurecht. Das Protokoll nennt den Rohwert einmal je Wechsel und meldet einmal, wenn der Wert wieder im Bereich liegt. Meldet das Gerät einen Wert gar nicht, bleibt es wie bisher bei -1 ohne Zeile.
+- Fehlercode und offene Ereignisse können damit -1 werden; ihr Feldbereich in der Vorlage beginnt jetzt bei -1 statt 0. Wer die Vorlage früher eingelesen hat, sollte an diesen beiden Eingängen -1 zulassen; sonst setzt Loxone dort den Wert aus „Wert, wenn außerhalb des Bereichs“. Der Fehlerzustand (Status 9) und die Ereignismeldungen hängen nicht an dieser Zahl und bleiben, wie sie waren.
+- Eine ältere Messung im Zwischenspeicher (`/tmp/<ordner>/gemessen_N.json`) mit einem Wert außerhalb des Bereichs wird beim Lesen zu -1, wie in 1.1.37 bei Dauer und Fläche.
+- Die Zeile „Messwerte im Wertebereich der Felder“ im Reiter Test nennt jetzt auch diese abgewiesenen Rohwerte mit Roboter, Feld und Grenze.
+- Gemessen im Prüfstand unter PHP 7.4, 8.4 und 8.5 auf dem Arbeitsrechner, mit einer Valetudo-Attrappe. Nicht gemessen am LoxBerry und am Roboter.
 
 ## Neu in 1.1.37
 

@@ -3673,7 +3673,8 @@ function ro_events_check($zustaende = null) {
         // Valetudo-Ereignis (hoechstens einmal je Ereignis)
         /* 1.1.30 (SR-3): je offenes Ereignis. Bis 1.1.29 zaehlte nur das letzte der Liste, die anderen kamen erst, wenn es
          * quittiert war. Ein Zustand der Vorfassung (Zwischenspeicher) kennt evoffen nicht. */
-        if (!empty($cfg['notify']['ereignis']) && $st['event'] > 0) {
+        // 1.1.38: -1 heisst "mehr offene Ereignisse als der Feldbereich" (ro_feld_messwert()); gemeldet wird trotzdem.
+        if (!empty($cfg['notify']['ereignis']) && ($st['event'] > 0 || ((int) $st['event'] === -1 && !empty($st['evoffen'])))) {
             $ev_offen = isset($st['evoffen']) && is_array($st['evoffen']) ? $st['evoffen']
                       : array(array('id' => (string) $st['evid'], 'typ' => (int) $st['evtyp']));
             $ev_saetze = array();
@@ -3869,7 +3870,8 @@ function ro_felder() {
         'CODE'     => array(1, 0, 9,     '',      'Statuszahl: 0 Ladestation, 1 bereit, 2 reinigt, 3 pausiert, 4 fährt zur Station, 5 fährt, 8 unbekannt, 9 Fehler', 1, 'Status'),
         'BATT'     => array(1, -1, 100,  '%',     'Batterie in Prozent (-1 = meldet das Gerät nicht)', 0, 'Batterie'),
         'LAEDT'    => array(0, 0, 1,     '',      '1 = lädt gerade', 1, 'Lädt'),
-        'FEHLER'   => array(1, 0, 100000, '',     'Herstellerfehlercode (0 = kein Fehler)', 1, 'Fehlercode'),
+        // 1.1.38: Untergrenze -1 ("nicht plausibel", ro_feld_messwert()) bei FEHLER und EVENT, wie bei den uebrigen Messwerten.
+        'FEHLER'   => array(1, -1, 100000, '',    'Herstellerfehlercode (0 = kein Fehler, -1 = nicht plausibel)', 1, 'Fehlercode'),
         'FSTUFE'   => array(1, -1, 4,    '',      'Schwere: -1 unbekannt, 0 keine, 1 Hinweis, 2 Warnung, 3 Fehler, 4 schwer', 1, 'Fehlerschwere'),
         'FTEIL'    => array(1, -1, 7,    '',      'Betroffenes Teil: -1 unbekannt, 0 keins, 1 Kern, 2 Strom, 3 Sensoren, 4 Motoren, 5 Navigation, 6 Anbauteile, 7 Station', 1, 'Fehler: Teil'),
         // Gruppe 2 (1.1.22, E3): die Reinigungsbilanz meldet -1, wenn das Geraet sie nicht liefert.
@@ -3898,7 +3900,7 @@ function ro_felder() {
         'SAUGST'   => array(1, -1, 7,    '',      'Saugstufe: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Saugstufe'),
         'WASSER'   => array(1, -1, 7,    '',      'Wischwasser: -1 unbekannt, 0 aus, 1 min, 2 niedrig, 3 mittel, 4 hoch, 5 max, 6 turbo, 7 eigen', 1, 'Wischwasser'),
         'MODUS'    => array(1, -1, 4,    '',      'Betriebsart: -1 unbekannt, 1 saugen, 2 wischen, 3 saugen und wischen, 4 erst saugen, dann wischen', 1, 'Betriebsart'),
-        'EVENT'    => array(1, 0, 99,    '',      'Anzahl offener Valetudo-Ereignisse', 1, 'Ereignisse offen'),
+        'EVENT'    => array(1, -1, 99,   '',      'Anzahl offener Valetudo-Ereignisse (-1 = mehr als 99)', 1, 'Ereignisse offen'),
         'EVTYP'    => array(1, 0, 8,     '',      'Jüngstes Ereignis: 0 keins, 1 Staubbehälter voll, 2 Verbrauchsteil leer, 3 Wischmodul prüfen, 4 Störung, 5 Karte geändert, 6 Valetudo aktualisiert, 7 Valetudo-Fehler, 8 unbekannt', 1, 'Ereignisart'),
         'EVMUELL'  => array(0, 0, 1,     '',      '1 = Staubbehälter voll (Valetudo meldet es)', 1, 'Behälter voll'),
         'ANN'      => array(0, 0, 1,     '',      'Meldefenster aktiv', 0, 'Meldefenster'),
@@ -5708,7 +5710,7 @@ function ro_miot_lesen(array &$z, array $liste, $versuche = 2)
  * Dritter Nachbau: beim Reinigen (Code 2 wie Valetudo "cleaning") steht in 'taetigkeit' der Statusname nach der
  * Tabelle (b106bk 5 saugt, 6 wischt, 7 saugt und wischt) - ro_state() haengt ihn an den Statustext; sonst ''.
  */
-function ro_miot_abbilden(array $st, array $w, $tab = null)
+function ro_miot_abbilden(array $st, array $w, $tab = null, $dev = 1)
 {
     if (!is_array($tab)) { $tab = ro_miot_tabelle(''); }
     $wert = function ($n) use ($w) { return isset($w[$n]) ? $w[$n][0] : null; };
@@ -5722,13 +5724,26 @@ function ro_miot_abbilden(array $st, array $w, $tab = null)
     $f = $wert('fehler');
     if ($f !== null && is_numeric($f)) {
         $st['miot_fehler'] = (int) $f;
-        $st['fehler'] = in_array((int) $f, $tab['hinweis'], true) ? 0 : max(0, (int) $f);
-        if ($st['fehler'] > 0) { $st['code'] = 9; }
+        /* 1.1.38: bis 1.1.37 bog max(0, ...) einen negativen Fehlerwert still auf 0, eine Obergrenze gab es nicht.
+         * Jetzt im Feldbereich (FEHLER 0 bis 100000), sonst -1 und eine Protokollzeile je Wechsel. Der Fehlerzustand
+         * (Code 9) haengt wie bisher daran, dass der Roboter einen Wert ueber 0 meldet. */
+        if (in_array((int) $f, $tab['hinweis'], true)) {
+            $st['fehler'] = 0;
+        } else {
+            ro_feld_messwert($st, $dev, 'fehler', $f, (int) $f, 'fault');
+        }
+        if ((int) $f > 0 && !in_array((int) $f, $tab['hinweis'], true)) { $st['code'] = 9; }
     }
     $st['taetigkeit'] = $st['code'] === 2
         ? (isset($tab['statusname'][$s]) ? $tab['statusname'][$s] : 'MIOT_STATUS_' . max(0, min(10, $s))) : '';
     $a = $wert('akku');
-    $st['batterie'] = ($a !== null && is_numeric($a) && $a >= 0 && $a <= 100) ? (int) $a : -1;
+    // 1.1.38: ausserhalb des Feldbereichs wie bisher -1, dazu jetzt eine Protokollzeile je Wechsel.
+    if ($a !== null) {
+        // Geprueft wird der Wert des Geraets (wie bis 1.1.37), hinaus geht er ganzzahlig.
+        $st['batterie'] = (int) ro_feld_messwert($st, $dev, 'batterie', $a, is_numeric($a) ? $a + 0 : null, 'battery-level');
+    } else {
+        $st['batterie'] = -1;
+    }
     $m = $wert('modus');
     $st['modus'] = ($m !== null && is_numeric($m) && isset($tab['modus'][(int) $m])) ? $tab['modus'][(int) $m] : -1;
     $g = $wert('saug');
@@ -5845,11 +5860,11 @@ function ro_miot_state($dev, array $r, array $st, $vorher = null)
         $st['grund'] = $lage === 'token' ? 'TOKEN' : ($lage === 'fehler' ? 'MIIO ' . (int) $code : 'KEINE_ANTWORT');
         return $st;
     }
-    $st = ro_miot_abbilden($st, $w, $tab);
+    $st = ro_miot_abbilden($st, $w, $tab, $dev);
     if ((int) $st['ok'] !== 1) { $st['grund'] = 'KEINE_ANTWORT'; return $st; }
     if (!empty($tab['zusatz'])) {
         if ($lz === 'ok') {
-            $st = ro_miot_zusatz_abbilden($st, $wz, $tab);
+            $st = ro_miot_zusatz_abbilden($st, $wz, $tab, $dev);
             $warn_h = max(0, (int) ro_config()['warn_hours']);
             foreach (array('buerste_haupt', 'buerste_seite', 'filter', 'mop') as $k) {
                 if ($st[$k] >= 0 && $st[$k] <= $warn_h) { $st['material_warn'] = 1; }
@@ -6208,7 +6223,10 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
         if (isset($s['error']) && is_array($s['error'])) {
             if (!empty($s['error']['message'])) { $st['fehlertext'] = (string) $s['error']['message']; }
             if (isset($s['error']['vendorErrorCode'])) {
-                $st['fehler'] = (int) preg_replace('/[^0-9]/', '', (string) $s['error']['vendorErrorCode']);
+                // 1.1.38: nur im Feldbereich (FEHLER bis 100000), sonst -1 und eine Protokollzeile je Wechsel.
+                $ro_fz = preg_replace('/[^0-9]/', '', (string) $s['error']['vendorErrorCode']);
+                ro_feld_messwert($st, $dev, 'fehler', $s['error']['vendorErrorCode'],
+                    ($ro_fz === '' ? 0 : (strlen($ro_fz) > 15 ? null : (int) $ro_fz)), 'vendorErrorCode');
             }
             if (isset($s['error']['severity']['level'])) {
                 $st['fstufe'] = ro_fstufe_code($s['error']['severity']['level']);
@@ -6222,7 +6240,12 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
     $b = ro_attr($j['attributes'], 'BatteryStateAttribute');
     if ($b) {
         // Gruppe 2 (1.1.22, E2): ohne "level" meldet das Geraet keinen Akkustand - -1, nicht 0 ("leer").
-        $st['batterie'] = (int) (isset($b['level']) ? $b['level'] : -1);
+        // 1.1.38: im Feldbereich (BATT 0 bis 100 %), sonst -1 und eine Protokollzeile je Wechsel.
+        if (isset($b['level'])) {
+            ro_feld_messwert($st, $dev, 'batterie', $b['level'], is_numeric($b['level']) ? (int) $b['level'] : null, 'level');
+        } else {
+            $st['batterie'] = -1;
+        }
         $st['laedt'] = (isset($b['flag']) && $b['flag'] === 'charging') ? 1 : 0;
     }
     // Valetudo: AttachmentStateAttribute, type = dustbin | watertank | mop
@@ -6267,9 +6290,15 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
     $gz = null;
     foreach ((array) $j as $e) {
         if (!isset($e['type']) || !isset($e['value'])) { continue; }
-        if ($e['type'] === 'area') { $st['flaeche_gesamt'] = round(((float) $e['value']) / 10000, 1); }
+        // 1.1.38: Flaeche (cm2 -> m2) und Anzahl nur im Feldbereich, sonst -1 und eine Protokollzeile je Wechsel.
+        if ($e['type'] === 'area') {
+            ro_feld_messwert($st, $dev, 'flaeche_gesamt', $e['value'],
+                is_numeric($e['value']) ? round(((float) $e['value']) / 10000, 1) : null, 'area');
+        }
         if ($e['type'] === 'time') { $gz = $e['value']; }
-        if ($e['type'] === 'count') { $st['anzahl_gesamt'] = (int) $e['value']; }
+        if ($e['type'] === 'count') {
+            ro_feld_messwert($st, $dev, 'anzahl_gesamt', $e['value'], is_numeric($e['value']) ? (int) $e['value'] : null, 'count');
+        }
     }
     // Nachbau 26.10. spaet: Gesamtzeit mit Plausibilitaet (Befund "Gesamt ... 498443.5 h") - ro_gesamt_stunden().
     if ($gz !== null) {
@@ -6290,11 +6319,16 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
             $st['material_fremd'][] = $typ . '/' . ($sub !== '' ? $sub : 'none');
             continue;
         }
+        /* 1.1.38: nur im Feldbereich - Prozent 0 bis 100, Stunden 0 bis 10000. Bis 1.1.37 bog max(0, min(100, ...))
+         * einen Prozentwert still zurecht, und negative Minuten ergaben Stunden unter -1. Sonst -1 und eine
+         * Protokollzeile je Wechsel. */
         if ($einheit === 'percent') {
-            $st[$feld] = (int) round(max(0, min(100, $wert)));
+            ro_feld_messwert($st, $dev, $feld, $e['remaining']['value'],
+                is_numeric($e['remaining']['value']) ? (int) round($wert) : null, 'remaining (%)', 0, 100);
         } else {
             // minutes -> Stunden, abgerundet.
-            $st[$feld] = (int) floor($wert / 60);
+            ro_feld_messwert($st, $dev, $feld, $e['remaining']['value'],
+                is_numeric($e['remaining']['value']) ? (int) floor($wert / 60) : null, 'remaining (min)');
         }
     }
     $warn_h = max(0, (int) $cfg['warn_hours']);
@@ -6325,6 +6359,9 @@ function ro_valetudo_state($dev, array $r, array $st, $vorher, array $cfg)
             $st['evid'] = isset($e['id']) ? (string) $e['id'] : '';
             $st['evoffen'][] = array('id' => $st['evid'], 'typ' => $c);     // 1.1.30 (SR-3)
         }
+        // 1.1.38: die Zahl der offenen Ereignisse nur im Feldbereich (EVENT bis 99), sonst -1 und eine Protokollzeile.
+        // Die Liste evoffen bleibt vollstaendig; die Meldungen gehen weiter je Ereignis (ro_events_check()).
+        ro_feld_messwert($st, $dev, 'event', count($ev) . ' Eintraege, ' . $st['event'] . ' offen', $st['event'], 'events');
     }
     return $st;
 }
@@ -6508,7 +6545,98 @@ function ro_bilanz_gespeichert(array $st)
         if (is_numeric($v) && ((float) $v == -1 || ((float) $v >= $b[0] && (float) $v <= $b[1]))) { continue; }
         $st[$k] = -1;
     }
+    /* 1.1.38: dieselbe Regel fuer die uebrigen Messwerte mit Feldbereich (ro_feld_grenzen()). */
+    foreach (ro_feld_grenzen() as $k => $b) {
+        if (!array_key_exists($k, $st) || isset(ro_bilanz_grenzen()[$k])) { continue; }
+        $v = $st[$k];
+        if (is_numeric($v) && ((float) $v == -1 || ((float) $v >= $b[0] && (float) $v <= $b[1]))) { continue; }
+        $st[$k] = -1;
+    }
     return $st;
+}
+
+/*
+ * 1.1.38: die uebrigen Messwerte nur im Feldbereich - Bauart 1.1.37 (ro_bilanz_*), Nachtpruefung 12.11.2026. Bis
+ * 1.1.37 gingen neun Stellen ohne Pruefung oder still zurechtgebogen hinaus: Valetudo Batterie, Fehlercode, Gesamt
+ * Flaeche, Gesamt Anzahl, Verbrauchsteile in Minuten (floor(/60), auch negativ unter -1), Verbrauchsteile in Prozent
+ * (max(0, min(100, ...)) bog still zurecht), Zahl der offenen Ereignisse; Xiaomi Fehlercode (max(0, ...) bog negative
+ * still auf 0, ohne Obergrenze); Xiaomi Dauer, Flaeche, Akku und Verbrauchsteile setzten -1 ohne Protokollzeile.
+ *
+ * Grenzen aus ro_felder() (Spalten 1 und 2) - EINE Stelle. Die -1 der Untergrenze ist das Zeichen "meldet das Geraet
+ * nicht" und kein Messwert: als Messwert gilt ab 0. Ausserhalb oder keine Zahl: -1, keine Umdeutung, eine
+ * Protokollzeile mit dem Rohwert je Wechsel (Merker /tmp/<ordner>/last_feld_<schluessel>_<n>.txt) und eine Zeile, wenn
+ * der Wert wieder im Bereich liegt. Meldet das Geraet einen Wert gar nicht, bleibt es bei -1 ohne Zeile.
+ * Rueckgabe: Schluessel des Zustands => array(untere Grenze, obere Grenze, Einheit, Feldname).
+ */
+function ro_feld_grenzen()
+{
+    static $aus = null;
+    if ($aus !== null) { return $aus; }
+    $f = ro_felder();
+    $aus = array();
+    foreach (array('batterie' => 'BATT', 'fehler' => 'FEHLER', 'flaeche_gesamt' => 'FLAECHEG',
+                   'anzahl_gesamt' => 'ANZAHLG', 'event' => 'EVENT', 'filter' => 'FILTER', 'filter2' => 'FILTER2',
+                   'buerste_haupt' => 'BHAUPT', 'buerste_seite' => 'BSEITE', 'buerste_seite2' => 'BSEITE2',
+                   'sensor' => 'SENSOR', 'raeder' => 'RAEDER', 'mop' => 'MOP', 'dock_filter' => 'DOCKFILTER',
+                   'dock_buerste' => 'DOCKBUERSTE', 'dock_behaelter' => 'DOCKBEHAELTER', 'reiniger' => 'REINIGER',
+                   'dauer' => 'DAUER', 'flaeche' => 'FLAECHE') as $k => $n) {
+        $aus[$k] = array(max(0, (float) $f[$n][1]), (float) $f[$n][2], (string) $f[$n][3], $n);
+    }
+    return $aus;
+}
+
+/**
+ * Ein Messwert im Bereich $lo bis $hi? $wert ist der Wert, der hinausginge (schon umgerechnet, null = keine Zahl),
+ * $roh der Wert des Geraets fuer die Protokollzeile. Rueckgabe array($wert | -1, '' | Rohwert als Text, hoechstens
+ * 40 Zeichen). Bauart ro_bilanz_wert().
+ */
+function ro_messwert_pruefen($roh, $wert, $lo, $hi)
+{
+    $text = is_scalar($roh) ? (string) $roh : (string) json_encode($roh);
+    $text = substr(preg_replace('/[\x00-\x1f\x7f]/', '?', $text), 0, 40);
+    if ($wert === null || !is_numeric($wert) || is_nan((float) $wert) || (float) $wert < $lo || (float) $wert > $hi) {
+        return array(-1, $text !== '' ? $text : '?');
+    }
+    return array($wert, '');
+}
+
+/**
+ * Pruefen und melden in einem (1.1.38): setzt $st[$k] auf den Wert oder -1, merkt einen abgewiesenen Rohwert in
+ * $st['feld_roh'][$k] (Reiter Test) und schreibt die Protokollzeile je Wechsel. $quelle nennt das Feld des Geraets
+ * (level, vendorErrorCode, area, count, remaining, fault, ...). $lo/$hi nur, wenn enger als der Feldbereich (Prozent).
+ * Rueckgabe: der gesetzte Wert.
+ */
+function ro_feld_messwert(array &$st, $dev, $k, $roh, $wert, $quelle, $lo = null, $hi = null)
+{
+    $g = ro_feld_grenzen();
+    if (!isset($g[$k])) { $st[$k] = -1; return -1; }
+    $lo = $lo === null ? $g[$k][0] : max($g[$k][0], (float) $lo);
+    $hi = $hi === null ? $g[$k][1] : min($g[$k][1], (float) $hi);
+    list($v, $text) = ro_messwert_pruefen($roh, $wert, $lo, $hi);
+    if (!isset($st['feld_roh']) || !is_array($st['feld_roh'])) { $st['feld_roh'] = array(); }
+    $dev = max(1, (int) $dev);
+    $key = 'feld_' . $k . '_' . $dev;
+    if ($text !== '') {
+        $st['feld_roh'][$k] = $text;
+        ro_log_if_changed($key, 'Roboter ' . $dev . ': ' . $g[$k][3] . ' vom Geraet nicht plausibel - Rohwert '
+            . $quelle . '=' . $text . ', erlaubt ' . ro_zahl_text($lo) . ' bis ' . ro_zahl_text($hi)
+            . ($g[$k][2] !== '' ? ' ' . $g[$k][2] : '') . '; gesendet wird -1 (ohne Messung).');
+    } else {
+        unset($st['feld_roh'][$k]);
+        $merker = ro_tmpdir() . '/last_' . $key . '.txt';
+        if (is_file($merker)) {
+            ro_log($key . ': Roboter ' . $dev . ': ' . $g[$k][3] . ' wieder im Wertebereich.');
+            @unlink($merker);
+        }
+    }
+    $st[$k] = $v;
+    return $v;
+}
+
+/** Eine Grenze fuer die Protokollzeile: ganze Zahl ohne Nachkommastelle, sonst mit Punkt. */
+function ro_zahl_text($z)
+{
+    return ((float) $z == floor((float) $z)) ? (string) (int) $z : (string) $z;
 }
 
 /**
@@ -6530,6 +6658,13 @@ function ro_bilanz_pruefen(array $zustaende)
             if (!isset($g[$art])) { continue; }
             $befund[] = sprintf(ro_t('PRUEF.BILANZ_ROH'), (int) $n, ro_t($art === 'dauer' ? 'PRUEF.BILANZ_DAUER' : 'PRUEF.BILANZ_FLAECHE'),
                 (string) $roh, (int) $g[$art][0], (int) $g[$art][1]);
+        }
+        // 1.1.38: die abgewiesenen Rohwerte der uebrigen Messwerte (ro_feld_messwert()).
+        $fg = ro_feld_grenzen();
+        foreach ((isset($st['feld_roh']) && is_array($st['feld_roh'])) ? $st['feld_roh'] : array() as $k => $roh) {
+            if (!isset($fg[$k])) { continue; }
+            $befund[] = sprintf(ro_t('PRUEF.FELD_ROH'), (int) $n, $fg[$k][3], (string) $roh, ro_zahl_text($fg[$k][0]),
+                ro_zahl_text($fg[$k][1]));
         }
         $st['dev'] = (int) $n;
         foreach (ro_felder() as $name => $f) {
@@ -6696,24 +6831,41 @@ function ro_stufe_name($code)
  *   wasser 7/6 water-state (0 Low, 1 Mid, 2 High)           -> wasserstufe 2/3/4 (Valetudo low/medium/high)
  * Ausserhalb des Feldbereichs (ro_felder()) oder nicht gemeldet: -1.
  */
-function ro_miot_zusatz_abbilden(array $st, array $w, array $tab)
+function ro_miot_zusatz_abbilden(array $st, array $w, array $tab, $dev = 1)
 {
     $wert = function ($n) use ($w) {
         return (isset($w[$n]) && $w[$n][0] !== null && is_numeric($w[$n][0])) ? $w[$n][0] + 0 : null;
     };
+    /* 1.1.38: ausserhalb des Feldbereichs wie bisher -1, dazu jetzt eine Protokollzeile je Wechsel
+     * (ro_feld_messwert()); meldet der Roboter einen Wert gar nicht (oder keine Zahl), bleibt es bei -1 - bei keiner
+     * Zahl mit Zeile. Grenzen aus ro_felder(): Verbrauchsteile 0 bis 10000 h, Dauer 0 bis 600 min, Flaeche 0 bis
+     * 1000 m2; die Prozentwerte (kein Feld, nur Seite und JSON) 0 bis 100. */
+    $da = function ($n) use ($w) { return isset($w[$n]) && $w[$n][0] !== null; };
     foreach (array('seite_h' => 'buerste_seite', 'haupt_h' => 'buerste_haupt', 'filter_h' => 'filter', 'mop_h' => 'mop') as $q => $k) {
-        $v = $wert($q);
-        $st[$k] = ($v !== null && $v >= 0 && $v <= 10000) ? (int) $v : -1;
+        $st[$k] = $da($q) ? (int) ro_feld_messwert($st, $dev, $k, $w[$q][0], $wert($q), $q) : -1;
     }
     foreach (array('seite_pct' => 'buerste_seite_pct', 'haupt_pct' => 'buerste_haupt_pct', 'filter_pct' => 'filter_pct',
                    'mop_pct' => 'mop_pct') as $q => $k) {
         $v = $wert($q);
-        $st[$k] = ($v !== null && $v >= 0 && $v <= 100) ? (int) $v : -1;
+        if (!$da($q)) { $st[$k] = -1; continue; }
+        list($v, $ro_pt) = ro_messwert_pruefen($w[$q][0], $v, 0, 100);
+        $st[$k] = (int) $v;
+        $ro_pk = 'feld_' . $k . '_' . max(1, (int) $dev);
+        if ($ro_pt !== '') {
+            ro_log_if_changed($ro_pk, 'Roboter ' . max(1, (int) $dev) . ': ' . $q . ' vom Geraet nicht plausibel - Rohwert '
+                . $q . '=' . $ro_pt . ', erlaubt 0 bis 100 %; gesetzt wird -1 (ohne Messung).');
+        } elseif (is_file(ro_tmpdir() . '/last_' . $ro_pk . '.txt')) {
+            ro_log($ro_pk . ': Roboter ' . max(1, (int) $dev) . ': ' . $q . ' wieder im Wertebereich.');
+            @unlink(ro_tmpdir() . '/last_' . $ro_pk . '.txt');
+        }
     }
-    $d = $wert('dauer');
-    $st['dauer'] = ($d !== null && $d >= 0 && $d <= 600) ? (int) $d : -1;
-    $f = $wert('flaeche');
-    $st['flaeche'] = ($f !== null && $f >= 0 && $f <= 1000) ? round((float) $f, 1) : -1;
+    $st['dauer'] = $da('dauer') ? (int) ro_feld_messwert($st, $dev, 'dauer', $w['dauer'][0], $wert('dauer'), 'dauer') : -1;
+    if ($da('flaeche')) {
+        $f = ro_feld_messwert($st, $dev, 'flaeche', $w['flaeche'][0], $wert('flaeche'), 'flaeche');
+        $st['flaeche'] = $f === -1 ? -1 : round((float) $f, 1);
+    } else {
+        $st['flaeche'] = -1;
+    }
     $s = $wert('wasser');
     $st['wasserstufe'] = ($s !== null && isset($tab['wasser'][(int) $s])) ? $tab['wasser'][(int) $s] : -1;
     return $st;
