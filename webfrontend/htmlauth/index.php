@@ -409,10 +409,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage'])) {
  * Sitzung und schuetzt gegen fremde Absender. Es wird aus dem Aktionstoken
  * abgeleitet und steht deshalb gar nicht erst in der Konfiguration. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_sichern'])) {
+    /* 1.1.39: Kopf (_hinweis, _plugin, _fassung, _stand) und Inhalt baut das gemeinsame Sicherungsmodul
+     * (ro_sicherung_bauen() -> sicherung_bauen()); nur die bekannten Schluessel, nie ein Sprechtoken. */
     $rb_sich = ro_sicherung_bauen();
-    $rb_js = json_encode($rb_sich,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($rb_js !== false) {
+    $rb_js = sicherung_json($rb_sich);
+    if ($rb_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="saugroboter_einstellungen_'
@@ -433,36 +434,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_sichern'])) {
 
 /* Einstellungen zurueckspielen.
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. U1: das Ergebnis reist mit der Umleitung. */
+ * 1.1.39: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Entscheidung des Hausherrn
+ * 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts
+ * geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls (256 KB, wie bis 1.1.38). Erst danach wird die Datei gelesen.
+ *
+ * Das Modul (sicherung_zurueckspielen(), Beschreibung ro_sicherung_beschreibung()) liest, prueft, verwirft
+ * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer Beanstandung GAR NICHTS
+ * (alle Beanstandungen, nicht nur die erste). ro_config_speichern() schreibt Konfiguration und Zweitschrift; das
+ * Modul misst danach, ob die Zweitschrift inhaltsgleich ist. U1: das Ergebnis reist mit der Umleitung; die
+ * Saetze sind fertig maskiert (Namen aus der Datei gehen durch rb_e()). */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
-    if (!isset($_FILES['ro_sicherung']) || !is_array($_FILES['ro_sicherung'])
-        || !isset($_FILES['ro_sicherung']['tmp_name']) || !is_string($_FILES['ro_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['ro_sicherung']['tmp_name'])) {
-        $rb_fehler[] = ro_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['ro_sicherung']['size'] > 262144) {
-        $rb_fehler[] = ro_t('TEXT.SICH_ZU_GROSS');
+    list($rb_roh, $rb_ab) = sicherung_eingang(ro_sicherung_beschreibung(), $_POST, $_FILES, 'ro_sicherung');
+    if ($rb_ab !== null) {
+        $rb_m = sicherung_meldungen(ro_sicherung_beschreibung(), $rb_ab);
     } else {
-        $rb_erg = array_pad(ro_sicherung_lesen(
-            (string) @file_get_contents($_FILES['ro_sicherung']['tmp_name'])), 5, array());
-        list($rb_neu, $rb_mangel, $rb_n, $rb_beh, $rb_spaet) = $rb_erg;
-        if ($rb_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $rb_fehler[] = ro_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $rb_mangel);
-        } elseif (ro_config_speichern($rb_neu)) {
-            $rb_meldungen[] = sprintf(ro_t('TEXT.SICH_UEBERNOMMEN'), $rb_n);
-            if (is_array($rb_beh) && in_array('aktionstoken', $rb_beh, true)) {
-                $rb_meldungen[] = rb_e(ro_t('TEXT.SICH_TOKEN_BEHALTEN'));
-            }
-            // Gruppe 28 (1.1.23, N7): Spaetschluessel, die die Sicherung nicht kannte, gelten weiter wie eingestellt.
-            foreach ((array) $rb_spaet as $rb_sp) { $rb_meldungen[] = rb_e((string) $rb_sp); }
-        } else {
-            $rb_fehler[] = ro_t('TEXT.SICH_SCHREIBFEHLER');
-        }
+        $rb_b = ro_sicherung_beschreibung();
+        $rb_b['speichern'] = function ($neu) { return ro_config_speichern($neu); };
+        $rb_b['zweitschrift'] = function () { $p = ro_paths(); return array($p['config'], $p['backup']); };
+        $rb_b['nachziehen'] = 'ro_sicherung_nachziehen';
+        $rb_b['log'] = 'ro_log';
+        $rb_r = sicherung_zurueckspielen($rb_b, $rb_roh);
+        $rb_m = sicherung_meldungen($rb_b, $rb_r);
     }
+    foreach ($rb_m['fehler'] as $rb_x) { $rb_fehler[] = $rb_x; }
+    foreach ($rb_m['hinweise'] as $rb_x) { $rb_meldungen[] = $rb_x; }
     rb_umleiten('tab-settings', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
 }
 
@@ -1202,16 +1198,18 @@ if ($rb_frame) {
 <?php
 /* MELDUNGEN AUSGEBEN - UND WAS DABEI MASKIERT GEHOERT.
  *
- * Die Texte selbst duerfen Auszeichnung tragen (TEXT.SICH_ABGELEHNT enthaelt
- * absichtlich <b>). Was NICHT roh durchgehen darf, ist alles, was aus einer
- * hochgeladenen Datei stammt: ro_sicherung_lesen() setzt fremde SCHLUESSEL in
- * die Beanstandung ein, und ro_wert_taugt() prueft nur Werte, nie Schluessel.
+ * Die Meldungen kommen fertig maskiert hierher (ein Text darf deshalb
+ * Auszeichnung tragen). Was NICHT roh durchgehen darf, ist alles, was aus einer
+ * hochgeladenen Datei stammt: das Zurueckspielen setzt fremde SCHLUESSEL in
+ * die Meldung ein (seit 1.1.39 das Sicherungsmodul, maskiert ueber 'e' => rb_e
+ * in ro_sicherung_beschreibung()), und ro_wert_taugt() prueft nur Werte, nie
+ * Schluessel.
  *
  * Gemessen am 04.09.2026 am laufenden Server, mit gueltigem Formularmerkmal:
  * eine Sicherungsdatei mit dem Schluessel <img src=x onerror=...> wurde
  * richtig abgelehnt - die Marke stand danach ROH in der Admin-Seite, auf der
  * auch das Aktionstoken steht. Maskiert wird deshalb jetzt an der Quelle
- * (ro_sicherung_lesen, ro_wert_pruefen), und diese Ausgabe bleibt so, wie sie
+ * (Sicherungsmodul, ro_sicherung_wert_mangel), und diese Ausgabe bleibt so, wie sie
  * ist; die Wache dagegen steht in der Bibliothek. */
 foreach ($rb_meldungen as $rb_m) { ?><div class="sm-hinweis"><?= $rb_m ?></div><?php }
 foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT.FEHLER')) ?></b> <?= $rb_f ?></div><?php } ?>
@@ -1678,6 +1676,7 @@ if ($rb_sich_warn) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <?= rb_fmt() ?>
     <input data-role="none" type="file" name="ro_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(ro_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ro_zurueck" value="1"><?= rb_e(ro_t('KNOPF.ZURUECK')) ?></button>
   </form>
 </div>

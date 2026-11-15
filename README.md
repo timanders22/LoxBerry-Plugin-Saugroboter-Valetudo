@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.38 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.39 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,21 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.39
+
+Am Gerät nicht gemessen. Gemessen wurde mit einem Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, der über einen Webserver die echten Knöpfe drückt, und mit einem nachgestellten Update-Lauf (WSL).
+
+- **Verhalten geändert – „Einstellungen sichern“ und „Einstellungen zurückspielen“ laufen über das gemeinsame Sicherungsmodul (Fassung 1.2.3):**
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen des Plugins (`_plugin` = `LoxBerry-Plugin-Saugroboter-Valetudo`) und die Fassung (`_fassung`). Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen. Sicherungen von 1.1.2 bis 1.1.38 werden an ihrem Kopf `_hinweis` erkannt und weiter angenommen; die Meldung sagt das. Bisher wurde eine fremde Datei gelesen wie eine eigene.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Roboterliste, Benachrichtigungen, Sprachausgabe, Automatik, Regeln „Wann gesprochen wird“). Die übrigen Einstellungen werden zurückgespielt. Bisher wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Aktionstoken, und zum Beispiel ein leeres MQTT-Thema wies die Datei ab. In den Einträgen der Roboterliste bleibt es wie bisher: ein leeres Kennwort in der Datei ist ein leeres Kennwort.
+  - Fehlt einer Sicherung eine Einstellung, die ihre Fassung noch nicht kannte, behält sie ihren geltenden Wert, und die Meldung nennt sie. Bisher gingen dabei „Befehle über MQTT annehmen“, „Eingreifende Befehle über MQTT annehmen“, die Automatik und die Regeln „Wann gesprochen wird“ auf die Werkseinstellung.
+  - Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es.
+  - Die Meldung sagt, was mit dem Abruf geschieht: Neu gestartet wird nichts; der Minutentakt liest die zurückgespielten Einstellungen bei seinem nächsten Lauf.
+  - Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, alle Beanstandungen werden genannt. Aktionstoken, Anmeldung an Valetudo und Token der Xiaomi-Roboter gehören in die Datei, die Sprechtoken nicht. Die Zweitschrift zieht mit; eine Datei darf höchstens 256 KB groß sein.
+- **Der Datenordner übersteht ein Update:** Bei jedem Update löscht LoxBerry den Datenordner des Plugins (`data/plugins/saugrobo/`). Bis 1.1.38 brachte das Plugin davon nur den Zeitpunkt der letzten Reinigung (`last_*.json`), die Merker der Automatik (`auto_*.json`) und die vorgemerkten MQTT-Altwerte (`mqtt_raeumen.json`) hinüber; verloren gingen unter anderem der Zustand und die Wächter-Merker der Befehlsbrücke (`befehle/`). Jetzt sichert `preupgrade.sh` über den gemeinsamen Baustein `upgrade_daten.sh` (Fassung 1.0.0) den ganzen Datenordner mit Unterordnern, Rechten und Zeitstempeln neben den Ordner (`data/plugins/saugrobo.upgrade_daten/`, Ordner 0700) – ohne Sperr- und PID-Dateien und Sockets – und zählt die Kopie Datei für Datei gegen. `postinstall.sh` spielt als Erstes jede Datei zurück, die nach dem Update fehlt; bei einer Neuinstallation geschieht dort nichts. Danach wird die Sicherung entfernt. Die drei bisherigen Einzelsicherungen bleiben wie sie sind.
+- **Verhalten geändert – lieber kein Update als ein leerer Datenordner:** Lässt sich der Datenordner nicht vollständig sichern (zu wenig Platz, fehlende Rechte, eine unlesbare Datei), meldet `preupgrade.sh` das mit `<FAIL>` und bricht die Aktualisierung ab; die bisherige Fassung bleibt mit ihrem Datenordner installiert. Eine Sicherung, die älter als eine Stunde ist, wird nicht eingespielt und bleibt liegen; die Deinstallation räumt sie mit ab.
 
 ## Neu in 1.1.38
 

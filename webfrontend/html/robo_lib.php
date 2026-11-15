@@ -44,6 +44,8 @@ date_default_timezone_set('Europe/Berlin');
  * Welle Mehrfach-Ziele). Liegt neben dieser Datei; sie legt
  * beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 1.1.39: das gemeinsame Sicherungsmodul (Abschrift der Stammfassung Werkzeuge/gemeinsam/sicherung.php). */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -4480,7 +4482,7 @@ function ro_wert_pruefen($schluessel, $wert)
              * Formular (ansage_formular_lesen()) und das Senden: Heimnetz fuer Adresse und Vorlage,
              * Zonen, Sprache aus zwei Buchstaben, Lautstaerken 1 bis 100, nur die angebotenen Ausgabe-
              * wege. Ein Teilblock (Sicherung einer aelteren Fassung) wird angenommen. Die Sprechtoken
-             * einer Sicherungsdatei weist ro_sicherung_lesen() schon vorher ab. */
+             * einer Sicherungsdatei weist ro_sicherung_tts_mangel() schon vorher ab (seit 1.1.39). */
             if (!is_array($wert)) { return ro_t('GRUND.LISTE'); }
             $g = '';
             if (ansage_wert_pruefen($wert, $g, ro_tts_wege()) === null) {
@@ -4519,206 +4521,220 @@ function ro_ganz_ok($w, $min, $max)
 }
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 1.1.39: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (sicherung.php neben dieser Bibliothek, Abschrift der Stammfassung
+ * Werkzeuge/gemeinsam/sicherung.php; Auftrag des Hausherrn 12.11.2026). Lesen,
+ * Pruefen und Zurueckspielen macht das Modul; bis 1.1.38 stand hier eine eigene
+ * Schleife (ro_sicherung_lesen()): ein unbekannter Schluessel - oben wie in den
+ * Bloecken robots, notify, tts, auto und ansage_regeln - wies die ganze Datei ab,
+ * eine Datei ohne Kennzeichen oder mit dem eines anderen Plugins wurde gelesen
+ * wie eine eigene, und ein leerer Wert wurde beanstandet (gemessen 15.11.2026 an
+ * 1.1.38 mit Werkzeuge/sicherung_pruefstand.py --profil ist, Klasse A).
  *
- * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
- * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
- * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
- * als die alte, und man sieht es ihr nicht an.
+ * Seither: der Kopf traegt _plugin = 'LoxBerry-Plugin-Saugroboter-Valetudo'
+ * (Name des Repositorys; bis 1.1.38 gab es kein Kennzeichen) und _fassung; eine
+ * Datei mit fremdem Kennzeichen wird abgewiesen, eine ohne nur dann gelesen,
+ * wenn sie eine aeltere eigene Sicherung ist (ro_sicherung_alt_erkennen(), ab
+ * 1.1.2); unbekannte Schluessel oben und in den Bloecken werden verworfen und
+ * mit Namen gemeldet; ein leerer Wert ueberschreibt keinen bestehenden (in den
+ * Eintraegen der Roboterliste nicht: sie hat keinen Zuordnungsschluessel, ein
+ * leeres Kennwort bleibt dort leer wie bisher).
  *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin. Schluessel,
- * die mit '_' beginnen, sind der lesbare Kopf der Datei und werden
- * UEBERGANGEN - sonst lehnte die Funktion die Datei ab, die dieselbe
- * Bibliothek zwei Zeilen vorher erzeugt hat.
+ * Wie bisher: jeder Wert geht durch ro_sicherung_wert_mangel() (Form ueber
+ * ro_wert_taugt(), Regel ueber ro_wert_pruefen() - dieselbe Positivliste wie
+ * das Formular); der Block tts durch ansage_wert_pruefen() (eine Datei mit
+ * Sprechtoken wird abgewiesen); ein leeres Aktionstoken ohne gespeichertes wird
+ * beanstandet; eine halb gueltige Datei aendert nichts, alle Beanstandungen
+ * werden gesammelt; der Vermerk ansage_token_herkunft kommt nie aus einer Datei
+ * und behaelt seinen geltenden Wert (Modul 1.2.1); die geltenden Sprechtoken
+ * bleiben.
  *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Was fehlen darf (Regeln/05 Punkt 6, Entscheidung des Hausherrn 12.11.2026
+ * "Ja, behalten"): ro_spaet_schluessel() und ro_spaet_geltend() behalten den
+ * geltenden Wert und werden genannt, ebenso die Liste der weiteren Ziele im Block
+ * tts. Bis 1.1.38 gingen befehle_mqtt_ein, befehle_mqtt_steuern, auto und
+ * ansage_regeln dabei auf die Werkseinstellung.
  */
-function ro_sicherung_lesen($roh)
+function ro_sicherung_beschreibung()
 {
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(ro_t('TEXT.SICH_KEIN_JSON')), 0);
+    $p = ro_paths();
+    $tts_s = array_merge(array_keys(ansage_vorgaben()), ansage_geheim());
+    $tts_knoten = array();
+    if (ro_mit_zielen()) {
+        $tts_s[] = 'ziele';
+        $tts_knoten['ziele'] = sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein')) + array('fehlt' => 'behalten');
     }
-    $neu = ro_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    // C7: was aus der geltenden Konfiguration behalten wurde (fuer die Meldung).
-    $behalten = array();
-    $jetzt = ro_config();
-    /* DER SCHLUESSELNAME KOMMT AUS EINER FREMDEN DATEI UND WIRD MASKIERT.
-     *
-     * ro_wert_taugt() prueft WERTE, nie Schluessel. Die Meldungen unten gehen
-     * unverändert in die Admin-Seite (index.php gibt sie roh aus, weil die
-     * Texte selbst Auszeichnung tragen duerfen). Gemessen am 04.09.2026 am
-     * laufenden Server, mit gueltigem Formularmerkmal: eine Sicherungsdatei
-     * mit dem Schluessel <img src=x onerror=...> wurde richtig abgelehnt - und
-     * die Marke stand danach ROH in der Seite, auf der auch das Aktionstoken
-     * steht. Der Weg ist eng (jemand muss den Bediener zum Einspielen einer
-     * untergeschobenen Datei bringen), aber es ist genau der Weg, zu dem der
-     * Knopf "Einstellungen zurueckspielen" einlaedt. */
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') { continue; }   // lesbarer Kopf
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) {     // 1.1.30: bis 1.1.29 stillschweigend uebergangen, die Datei galt als heil
-                $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e('config.ansage_regeln'), rb_e(ansage_kennung_text($s2_g !== '' ? $s2_g : 'M_R_BLOCK', ro_ansage_k())));
-                continue;
-            }
-            $neu['ansage_regeln'] = $s2_r;
-            
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(ro_t('TEXT.SICH_FREMD'), rb_e($k));
-            continue;
-        }
-        if (!ro_wert_taugt($w)) {
-            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), ro_t('TEXT.SICH_STEUERZEICHEN'));
-            continue;
-        }
-        /* C7 (Durchgang 01.10.2026, Bauart E): ein LEERES Aktionstoken in der
-         * Datei ersetzt das geltende nicht - das geltende bleibt. Bis 1.1.11
-         * wurde es angenommen ("9 Werte uebernommen"), der Endpunkt antwortete
-         * danach 403 KEIN_TOKEN_EINGERICHTET, und der naechste Seitenaufruf
-         * wuerfelte still ein neues Token: jede Loxone-Adresse war ungueltig
-         * (in WSL gemessen, Oberflaechen-Pruefer Fall 8). Ist keines gespeichert,
-         * wird die Datei beanstandet. */
-        /* Ansage-2: Sicherungen tragen nie ein Sprechtoken fuer Alexa-NG.
-         * Bringt eine Datei eines mit, wird sie abgewiesen - sie stammt nicht
-         * aus "Einstellungen sichern", und das geltende Token bleibt. */
-        /* Ansage-3: ebenso nie ein Sprechtoken fuer Chromecast 4 Lox NG (auch
-         * nicht als Liste oder leere Liste - nur "" oder ein fehlender Schluessel). */
-        if ($k === 'tts' && is_array($w)) {
-            $sprech_mangel = 0;
-            if (array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') {
-                $mangel[] = ro_t('TEXT.SICH_ALEXA_TOKEN');
-                $sprech_mangel++;
-            }
-            if (array_key_exists('google_token', $w) && $w['google_token'] !== '') {
-                $mangel[] = ro_t('TEXT.SICH_GOOGLE_TOKEN');
-                $sprech_mangel++;
-            }
-            /* 1.1.33: die uebrigen Sprechtoken aus der Liste des Stamms (ansage_geheim(), seit Stamm 1.4.0 auch
-             * homepod_token) - bis 1.1.32 nannte diese Stelle nur die beiden oben. */
-            foreach (ansage_sicherung_mangel($w) as $ro_sn) {
-                if ($ro_sn === 'tts.alexa_token' || $ro_sn === 'tts.google_token') { continue; }
-                $mangel[] = sprintf(ro_t('TEXT.SICH_SPRECHTOKEN'), rb_e($ro_sn));
-                $sprech_mangel++;
-            }
-            if ($sprech_mangel) { continue; }
-        }
-        if ($k === 'aktionstoken' && $w === '') {
-            $tok = (isset($jetzt['aktionstoken']) && is_string($jetzt['aktionstoken'])) ? $jetzt['aktionstoken'] : '';
-            if (ro_wert_pruefen('aktionstoken', $tok) === '') {
-                $neu['aktionstoken'] = $tok;
-                $behalten[] = 'aktionstoken';
-                $anzahl++;
-            } else {
-                $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), rb_e(ro_t('GRUND.TOKEN_LEER')));
-            }
-            continue;
-        }
-        $grund = ro_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            /* Auch der GRUND kann einen fremden Namen tragen:
-             * ro_wert_pruefen() setzt bei notify und tts den unbekannten
-             * Schalternamen in den Text ein. */
-            $mangel[] = sprintf(ro_t('TEXT.SICH_WERT'), rb_e($k), rb_e($grund));
-            continue;
-        }
-        $neu[$k] = $w;
-        if ($k === 'robots') {
-            // Gruppe 28 (1.1.23, E-E3): Token klein speichern (die Pruefung hat Grossbuchstaben angenommen).
-            foreach ($neu['robots'] as $ro_ri => $ro_rz) {
-                if (is_array($ro_rz) && isset($ro_rz['token']) && is_string($ro_rz['token'])) {
-                    $neu['robots'][$ro_ri]['token'] = strtolower($ro_rz['token']);
-                }
-            }
-        }
-        if ($k === 'tts') {
-            /* Nr. 36 b, Stufe 2: gepruefte Form (Zahlen als Zahl) und fehlende Eintraege mit ihrer
-             * Vorgabe - eine Sicherung aus 1.1.14 kennt sonos_zone/sonos_laut nicht. */
-            $ro_tg = '';
-            list($neu['tts']) = ansage_vervollstaendigen((array) ansage_wert_pruefen($w, $ro_tg, ro_tts_wege()), 'musicserver');
-        }
-        $anzahl++;
+    $schluessel = array(
+        'robots' => sicherung_liste(array('nr', 'name', 'ip', 'port', 'user', 'pass', 'typ', 'token')) + array(
+            'wandeln' => 'ro_sicherung_roboter_klein'),
+        'notify' => sicherung_block(array('audio', 'push', 'fertig', 'fehler', 'material', 'ereignis', 'automatik')),
+        'tts' => sicherung_block($tts_s, $tts_knoten) + array(
+            'sichern' => 'ansage_sicherung_bereinigen',
+            'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                return ro_sicherung_tts_mangel($w, $roh);
+            },
+            'wandeln' => function ($w) {
+                /* gepruefte Form (Zahlen als Zahl) und fehlende Eintraege mit ihrer Vorgabe - wie bis 1.1.38 */
+                $g = '';
+                list($t) = ansage_vervollstaendigen((array) ansage_wert_pruefen($w, $g, ro_tts_wege()), 'musicserver');
+                return $t;
+            }),
+        'auto' => sicherung_block(array_keys(ro_auto_vorgaben())),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'wandeln' => function ($w) {
+                $g = '';
+                $r = ansage_regeln_wert($w, $g);
+                return $r !== null ? $r : $w;
+            }),
+    );
+    foreach (array_merge(ro_spaet_schluessel(), ro_spaet_geltend()) as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
     }
-    if ($anzahl === 0) {
-        $mangel[] = ro_t('TEXT.SICH_LEER');
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Saugroboter-Valetudo',
+        /* Der Kopftext wie bis 1.1.38: ro_sicherung_alt_erkennen() erkennt aeltere Sicherungen an seinem Anfang. */
+        'hinweis' => ro_t('TEXT.SICH_HINWEIS_KOPF'),
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()). */
+        'home' => (string) $p['lbhome'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => ro_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'pruefen' => function ($k, $w) {
+            return ro_sicherung_wert_mangel($k, $w);
+        },
+        'warnung' => 'ro_sicherung_warnung_token',
+        'uebersetzer' => 'ro_sicherung_alt_erkennen',
+        'vorbereiten' => 'ro_sicherung_vorbereiten',
+        'jetzt' => function () { return ro_config(); },
+        't' => 'ro_t',
+        'e' => 'rb_e',
+    );
+}
+
+/**
+ * 1.1.39: Ein Wert der Sicherung - Form (ro_wert_taugt()), Regel
+ * (ro_wert_pruefen()). Ein leeres Aktionstoken erreicht diese Stelle nur, wenn
+ * kein Token gespeichert ist (sonst bleibt das geltende, Regel 3 des Moduls) -
+ * dann wird die Datei beanstandet wie bis 1.1.38: ein leeres Token schaltete
+ * jede Loxone-Adresse auf 403. Rueckgabe: '' oder der Text, Namen maskiert.
+ */
+function ro_sicherung_wert_mangel($k, $w)
+{
+    if (!ro_wert_taugt($w)) {
+        return sprintf(ro_t('TEXT.SICH_WERT'), rb_e((string) $k), ro_t('TEXT.SICH_STEUERZEICHEN'));
     }
-    /* Ansage-2/-3: die geltenden Sprechtoken bleiben (die Sicherung traegt keine). 1.1.33: alle aus der Liste des
-     * Stamms (ansage_sicherung_tokens_behalten()), dazu ihre Herkunft - ein uebernommenes Token bleibt uebernommen. */
+    if ($k === 'aktionstoken' && $w === '') {
+        return sprintf(ro_t('TEXT.SICH_WERT'), rb_e((string) $k), rb_e(ro_t('GRUND.TOKEN_LEER')));
+    }
+    /* Auch der GRUND kann einen fremden Namen tragen (notify, tts, auto) - maskiert. */
+    $g = ro_wert_pruefen((string) $k, $w);
+    return $g === '' ? '' : sprintf(ro_t('TEXT.SICH_WERT'), rb_e((string) $k), rb_e($g));
+}
+
+/**
+ * 1.1.39: Der Block tts. Eine Sicherung dieses Plugins traegt nie ein
+ * Sprechtoken (Ansage-2/-3, seit 1.1.33 alle aus ansage_geheim()) - traegt die
+ * DATEI eines, wird sie abgewiesen. Gemessen am Block, wie er in der Datei
+ * steht ($roh), denn Regel 3 des Moduls setzt ein leeres Feld vorher auf den
+ * geltenden Wert. Danach dieselbe Pruefung wie jeder andere Wert.
+ */
+function ro_sicherung_tts_mangel($w, $roh)
+{
+    $m = array();
+    foreach (ansage_sicherung_mangel($roh) as $n) {
+        if ($n === 'tts.alexa_token') { $m[] = ro_t('TEXT.SICH_ALEXA_TOKEN'); }
+        elseif ($n === 'tts.google_token') { $m[] = ro_t('TEXT.SICH_GOOGLE_TOKEN'); }
+        else { $m[] = sprintf(ro_t('TEXT.SICH_SPRECHTOKEN'), rb_e($n)); }
+    }
+    if ($m) { return $m; }
+    return ro_sicherung_wert_mangel('tts', $w);
+}
+
+/** 1.1.39: Die Token der Roboterliste klein speichern, wie das Formular (Gruppe 28, 1.1.23, E-E3). */
+function ro_sicherung_roboter_klein($w)
+{
+    if (!is_array($w)) { return $w; }
+    foreach ($w as $i => $r) {
+        if (is_array($r) && isset($r['token']) && is_string($r['token'])) { $w[$i]['token'] = strtolower($r['token']); }
+    }
+    return $w;
+}
+
+/**
+ * 1.1.39: Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin
+ * (1.1.2 bis 1.1.38) traegt den lesbaren Kopf _hinweis, den nur der
+ * Sichern-Knopf dieser Linie schreibt. Gemessen 15.11.2026 an allen Fassungen
+ * 1.1.2 bis 1.1.38 im Arbeitsordner (Ordner und Archive): bis 1.1.22 fest im
+ * Code, ab 1.1.23 aus TEXT.SICH_HINWEIS_KOPF; jeder Wortlaut beginnt mit einem
+ * der beiden Anfaenge unten (deutsch bzw. englisch). Daran wird sie erkannt.
+ * Eine Datei ganz ohne diesen Kopf wird abgewiesen (Entscheidung des Hausherrn
+ * 12.11.2026). Rueckgabe: die Daten oder null.
+ */
+function ro_sicherung_alt_erkennen($d)
+{
+    if (!is_array($d) || !isset($d['_hinweis']) || !is_string($d['_hinweis'])) { return null; }
+    foreach (array('Sicherung des LoxBerry-Plugins Saugroboter (Valetudo).',
+                   'Backup of the LoxBerry plugin Saugroboter (Valetudo).') as $anfang) {
+        if (strpos($d['_hinweis'], $anfang) === 0) { return $d; }
+    }
+    return null;
+}
+
+/**
+ * 1.1.39 (Rueckruf 'warnung' des Moduls): eine Xiaomi-Zeile mit Adresse, aber
+ * ohne Token wird nicht abgewiesen (Gruppe 28, 1.1.23, E-E3) - der Kopf nennt
+ * sie. Bis 1.1.38 stand der Satz unter _warnung_token, seither in _warnung.
+ */
+function ro_sicherung_warnung_token($cfg)
+{
+    $ohne = array();
+    foreach (ro_robots_aus($cfg) as $n => $r) {
+        if ($r['typ'] === 'miot' && $r['token'] === '') { $ohne[] = $n; }
+    }
+    return $ohne ? array(sprintf(ro_t('TEXT.SICH_TOKEN_FEHLT_KOPF'), implode(', ', $ohne))) : array();
+}
+
+/**
+ * 1.1.39 (Rueckruf 'vorbereiten' des Moduls): die geltenden Sprechtoken bleiben
+ * (die Sicherung traegt keine), wie bis 1.1.38 ueber
+ * ansage_sicherung_tokens_behalten().
+ */
+function ro_sicherung_vorbereiten($neu, $jetzt, $r)
+{
     if (isset($neu['tts']) && is_array($neu['tts'])) {
-        $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'], isset($jetzt['tts']) ? $jetzt['tts'] : null);
+        $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'],
+            (is_array($jetzt) && isset($jetzt['tts'])) ? $jetzt['tts'] : null);
     }
-    $neu['ansage_token_herkunft'] = (isset($jetzt['ansage_token_herkunft']) && is_array($jetzt['ansage_token_herkunft'])
-        && ro_wert_pruefen('ansage_token_herkunft', $jetzt['ansage_token_herkunft']) === '')
-        ? $jetzt['ansage_token_herkunft'] : array();
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    foreach (array_keys(ro_vorgaben()) as $fk) {
-        if ($fk === 'ansage_token_herkunft') { continue; }     // 1.1.33: steht nie in einer Sicherung (s. oben)
-        // Gruppe 2 (1.1.22): die Haken der Befehlsbruecke darf eine aeltere Sicherung nicht kennen (ro_spaet_schluessel()).
-        if (!array_key_exists($fk, $daten) && !in_array($fk, ro_spaet_schluessel(), true)
-            && !in_array($fk, ro_spaet_geltend(), true)) {
-            $fehlend[] = $fk;
-        }
+    return $neu;
+}
+
+/**
+ * 1.1.39 (Rueckruf 'nachziehen' des Moduls): sagen, was mit dem Abruf
+ * geschieht. Es gibt keinen Dienst, der neu zu starten waere: bin/cron.php
+ * liest die Einstellungen in jedem Lauf neu, fuehrt die Abo-Datei des
+ * MQTT-Gateways nach (ro_abo_datei()) und schaltet die Befehlsbruecke ueber ihren
+ * Waechter (bb_waechter()). Ein leeres Aktionstoken in der Datei liess das
+ * geltende stehen - das sagt der Satz wie bis 1.1.38. Rueckgabe: fertig
+ * maskierte Saetze.
+ */
+function ro_sicherung_nachziehen($neu, $jetzt, $r)
+{
+    $h = array();
+    if (in_array('aktionstoken', $r['leer_behalten'], true)) {
+        $h[] = rb_e(ro_t('TEXT.SICH_TOKEN_BEHALTEN'));
     }
-    if ($fehlend) {
-        $mangel[] = sprintf(ro_t('TEXT.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    /* Gruppe 28 (1.1.23, N7): fehlt ein Spaetschluessel mit geltendem Wert (ro_spaet_geltend()), bleibt der
-     * geltende - die Oberflaeche sagt es (fuenfter Rueckgabewert). */
-    $spaet = array();
-    foreach (ro_spaet_geltend() as $ro_sk) {
-        if (!array_key_exists($ro_sk, $daten)) {
-            $neu[$ro_sk] = isset($jetzt[$ro_sk]) ? (int) $jetzt[$ro_sk] : $neu[$ro_sk];
-            $spaet[] = $ro_sk;
-        }
-    }
-    $ro_zspaet = array();
-    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-     * heisst "keine weiteren Ziele" und wird so uebernommen. */
-    $rb_spaete = array();
-    if (isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
-        list($neu['tts'], $rb_spaete) = ansage_sicherung_spaet($neu['tts'],
-            (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null);
-    }
-    foreach ($rb_spaete as $rb_sn) { $ro_zspaet[] = $rb_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-    return array($mangel ? null : $neu, $mangel, $anzahl, $behalten, array_merge(
-                 $spaet ? array(sprintf(ro_t('TEXT.SICH_SPAET_BEHALTEN'), implode(', ', $spaet))) : array(),
-                 $ro_zspaet ? array(sprintf(ro_t('TEXT.SICH_SPAET'), implode(', ', $ro_zspaet))) : array()));
+    $h[] = rb_e(ro_t('TEXT.SICH_DIENST_TAKT'));
+    return $h;
 }
 
 /**
  * X-3 (Durchgang 01.10.2026): Welche Einstellungen wuerde das Zurueckspielen
- * der EIGENEN Sicherung abweisen? Gebaut wird genau die Datei, die
- * "Einstellungen sichern" liefert, und durch dieselbe Pruefung geschickt wie
- * beim Zurueckspielen (ro_sicherung_lesen()). Rueckgabe: Namen, nie Werte;
- * leer heisst "wuerde angenommen".
+ * der EIGENEN Sicherung abweisen? Seit 1.1.39 dieselbe Pruefung wie beim
+ * Zurueckspielen ueber das gemeinsame Sicherungsmodul
+ * (sicherung_selbstpruefung()) an genau der Datei, die "Einstellungen sichern"
+ * liefert. Rueckgabe: Namen, nie Werte; leer heisst "wuerde angenommen".
  *
  * Der Fall, der hier anschlaegt: ein gespeicherter Wert, den eine aeltere
  * Fassung oder eine Handaenderung hinterlassen hat (gemessen: cache_sec=999 -
@@ -4727,52 +4743,22 @@ function ro_sicherung_lesen($roh)
  */
 function ro_sicherung_warnung(array $aus)
 {
-    $namen = array();
-    foreach ($aus as $k => $w) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') { continue; }
-        if ($k === 'aktionstoken' && $w === '') { continue; }   // das geltende bliebe
-        if (!ro_wert_taugt($w) || ro_wert_pruefen($k, $w) !== '') { $namen[] = $k; }
-    }
-    return $namen;
+    unset($aus['_warnung']);
+    return sicherung_selbstpruefung(ro_sicherung_beschreibung(), $aus, ro_config());
 }
 
-/** Was in die Sicherungsdatei geschrieben wird - mit lesbarem Kopf. */
-function ro_sicherung_bauen()
+/**
+ * Was in die Sicherungsdatei geschrieben wird: der lesbare Kopf (_hinweis,
+ * _plugin, _fassung, _stand, bei Bedarf _warnung) und alle Schluessel der
+ * Vorgaben aus der geltenden Konfiguration, gebaut vom gemeinsamen
+ * Sicherungsmodul (sicherung_bauen()). Nur bekannte Schluessel; die Sprechtoken
+ * gehen nie mit (ansage_sicherung_bereinigen()), der Vermerk
+ * ansage_token_herkunft auch nicht.
+ */
+function ro_sicherung_bauen($cfg = null)
 {
-    $cfg = ro_config();
-    $aus = array(
-        // Gruppe 28 (1.1.23, E3/E-E2): der Kopf nennt alle Geheimnisse der Datei - aus der Sprachdatei.
-        '_hinweis' => ro_t('TEXT.SICH_HINWEIS_KOPF'),
-        '_stand'   => date('Y-m-d H:i'),
-        '_fassung' => ro_pluginversion(),
-    );
-    // Nur die bekannten Schluessel, in der Reihenfolge der Vorgaben. So kann
-    // nichts in die Datei geraten, was die Leseseite danach ablehnt.
-    foreach (array_keys(ro_vorgaben()) as $k) {
-        $aus[$k] = isset($cfg[$k]) ? $cfg[$k] : null;
-    }
-    /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
-     * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
-     * geltende (ro_sicherung_lesen()). */
-    unset($aus['ansage_token_herkunft']);     // 1.1.27
-    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }   // Nr. 36 b: eine Quelle
-    /* Gruppe 28 (1.1.23, E-E3): eine Xiaomi-Zeile mit Adresse, aber ohne Token wird nicht abgewiesen (Ganzstand wie
-     * das Kennwort, S11) - der Kopf nennt sie. */
-    $ohne = array();
-    foreach (ro_robots_aus($cfg) as $n => $r) {
-        if ($r['typ'] === 'miot' && $r['token'] === '') { $ohne[] = $n; }
-    }
-    /* X-3: wuerde das eigene Zurueckspielen diese Datei abweisen, sagt es der
-     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
-    $warn = ro_sicherung_warnung($aus);
-    if ($ohne) {
-        $aus = array('_warnung_token' => sprintf(ro_t('TEXT.SICH_TOKEN_FEHLT_KOPF'), implode(', ', $ohne))) + $aus;
-    }
-    if ($warn) {
-        $aus = array('_warnung' => sprintf(ro_t('TEXT.SICH_WARN_KOPF'), implode(', ', $warn))) + $aus;
-    }
-    return $aus;
+    if (!is_array($cfg)) { $cfg = ro_config(); }
+    return sicherung_bauen(ro_sicherung_beschreibung(), $cfg);
 }
 
 /**
@@ -6439,7 +6425,7 @@ function ro_meldung_pruefen()
 /**
  * Gruppe 28 (1.1.23, N7; Bauart G26/G27): Spaetschluessel mit GELTENDEM Wert - fehlen sie in einer Sicherung (aelter
  * als 1.1.23), gilt der geltende Wert, nicht die Vorgabe; sonst schaltete ein Zurueckspielen einer laufenden Anlage den
- * Lesezweig ab. Die Oberflaeche sagt es (TEXT.SICH_SPAET_BEHALTEN).
+ * Lesezweig ab. Seit 1.1.39 nennt das Sicherungsmodul ihn in der Meldung (fehlt => behalten).
  */
 function ro_spaet_geltend()
 {
