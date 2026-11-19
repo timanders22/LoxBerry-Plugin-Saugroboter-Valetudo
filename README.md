@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Saugroboter (Valetudo)
 
-Version 1.1.42 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
+Version 1.1.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.x · am Gerät gemessen mit Valetudo und mit dem Xiaomi T12
 
 Bindet Saugroboter an Loxone an – **mit der cloudfreien Firmware Valetudo** oder **als Xiaomi-Saugroboter direkt
 über miIO** (ohne Valetudo, im Heimnetz, ohne Cloud im Betrieb). **Bis zu fünf Roboter**, beide Arten gemischt.
@@ -17,6 +17,11 @@ Die Werte gehen per MQTT an das MQTT-Gateway (Virtuelle Eingänge), Befehle übe
 ab Werk aus). Der bisherige Weg mit einfachen GET-Aufrufen und Aktionstoken bleibt für bestehende Anlagen.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x).
+
+## Neu in 1.1.43
+
+- **Geändert – PHP-Abfrage der Upgrade-Marke nach der gemeinsamen Regel:** Der Minutenlauf (`bin/cron.php`) und das Vervollständigen der Konfiguration lesen die Marke einer laufenden Aktualisierung jetzt nach derselben Regel wie der Takt selbst: Sie gilt nur, wenn sie eine Unixzeit enthält, die nicht in der Zukunft liegt und weniger als eine Stunde zurückliegt. Bis 1.1.42 zählte die Änderungszeit der Datei; eine Marke mit unlesbarem Inhalt, mit einer Zeit aus der Zukunft oder mit einer Zeit älter als eine Stunde hielt den Lauf dann bis zu einer Stunde lang an, obwohl der Takt sie schon nicht mehr gelten ließ. Gemessen auf dem Arbeitsrechner (WSL mit PHP 8.3, Windows mit PHP 7.4 und 8.4) an zehn Fällen, die Fassung 1.1.42 zur Gegenprobe; am Gerät nicht gemessen.
+- **Neu – Prüfzeile „Ist die Systemuhr synchron?“ (gemeinsames Uhrmodul):** Der Reiter „Test“ vergleicht die Systemuhr des LoxBerry mit der Kopfzeile Date der Antworten von der Xiaomi-Cloud und meldet nur: Haken bis 30 s Abweichung, gelber Punkt darüber, ohne Messung „nicht feststellbar“. `timedatectl` steht nur als Hinweis dabei. Die letzte Abweichung liegt in `data/plugins/saugrobo/uhr.json`; dafür liest das Plugin bei den Anfragen beim Holen der Schlüssel (gemeinsames Modul xiaomi_cloud.php 1.0.2) die Kopfzeile Date mit, am Abruf selbst ändert sich nichts. Die Cloud wird nur beim Holen der Schlüssel gefragt; eine Messung älter als 30 Tage gilt deshalb als „nicht feststellbar“. Ob eine falsche Uhr die Anmeldung bricht, ist nicht gemessen. Gemessen auf dem Arbeitsrechner: Selbsttest des Moduls unter PHP 7.4, 8.4 und 8.5 und mit Python, Kreuzprobe PHP/Python, Syntax aller geänderten Dateien; die Messung gegen die echte Cloud und am Gerät ist nicht gemessen.
 
 ## Neu in 1.1.42
 

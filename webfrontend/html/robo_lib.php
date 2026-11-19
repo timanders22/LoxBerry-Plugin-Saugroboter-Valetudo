@@ -46,6 +46,7 @@ date_default_timezone_set('Europe/Berlin');
 require_once __DIR__ . '/sprachausgabe.php';
 /* 1.1.39: das gemeinsame Sicherungsmodul (Abschrift der Stammfassung Werkzeuge/gemeinsam/sicherung.php). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -5295,6 +5296,11 @@ function ro_selbsttest($opt = array())
      * (haus_quellen.json, auto_<n>.json), keine Sitzung am Broker beim Seitenaufbau. */
     ro_auto_pruefzeilen($cfg, $add);
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Xiaomi-Cloud (Hoechstalter 30 Tage, Entscheidung 106). */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => ro_paths()['datadir'], 'dienst' => 'Xiaomi', 't' => 'ro_t',
+        'hoechstalter_s' => 2592000));
+    $z[] = array('bez' => 'UHR.F_UHR', 'ok' => $uhr_s === 1 ? 1 : -1, 'text' => $uhr_t, 'uhr' => $uhr_s);
+
     return $z;
 }
 
@@ -6690,7 +6696,10 @@ function ro_wechsel_verwerfen($vorher, $nachher)
     return $weg;
 }
 
-/** Gruppe 28 (1.1.23, S19): liegt eine frische Upgrade-Marke (juenger als 3600 s, nicht aus der Zukunft)? */
+/** Gruppe 28 (1.1.23, S19): liegt eine frische Upgrade-Marke (juenger als 3600 s, nicht aus der Zukunft)?
+ *  1.1.43 (Frage 83, Entscheidung des Hausherrn 19.11.2026): dieselbe Regel wie der Takt-Stammblock
+ *  (Werkzeuge/gemeinsam/takt_upgrade_marke.txt) - der INHALT ist die Unixzeit, nicht aus der Zukunft, juenger als
+ *  3600 s; ohne Zahl oder aus der Zukunft gilt die Marke nicht. Bis 1.1.42 zaehlte die Aenderungszeit der Datei. */
 function ro_upgrade_marke_frisch()
 {
     $p = ro_paths();
@@ -6698,7 +6707,9 @@ function ro_upgrade_marke_frisch()
     $m = $p['lbhome'] . '/data/plugins/' . $p['plugin'] . '.upgrade_laeuft';
     clearstatcache(true, $m);
     if (!is_file($m)) { return false; }
-    $alter = time() - (int) @filemtime($m);
+    $roh = trim((string) @file_get_contents($m));
+    if (preg_match('/^[0-9]{1,12}$/', $roh) !== 1) { return false; }
+    $alter = time() - (int) $roh;
     return $alter >= 0 && $alter < 3600;
 }
 

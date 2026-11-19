@@ -2144,6 +2144,7 @@ $rb_bs_seiten = array(
 foreach (ro_selbsttest(array('test_offen' => $rb_tab === 'tab-test')) as $rb_z) {
     $rb_zeichen = $rb_z['ok'] === 1 ? '&#10003;' : ($rb_z['ok'] === 0 ? '&#10007;' : '&ndash;');
     $rb_farbe = $rb_z['ok'] === 1 ? '#4f7d17' : ($rb_z['ok'] === 0 ? '#c62828' : '#888'); ?>
+<?php if (isset($rb_z['uhr'])) { $rb_zeichen = uhr_zeichen($rb_z['uhr']); $rb_farbe = 'inherit'; }   // Uhrmodul (Frage 95) ?>
 <tr><td style="color:<?= $rb_farbe ?>;"><?= $rb_zeichen ?></td><td><?= rb_e(ro_t($rb_z['bez'])) ?></td><td><?= rb_e($rb_z['text']) ?></td></tr>
 <?php } ?>
 </table>
