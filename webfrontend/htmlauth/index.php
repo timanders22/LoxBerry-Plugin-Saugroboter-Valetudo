@@ -1079,7 +1079,8 @@ function rb_fmt() {
 /* ---------- 6. Erst jetzt der Seitenkopf ---------- */
 $rb_frame = class_exists('LBWeb', false);
 if ($rb_frame) {
-    LBWeb::lbheader(ro_t('TEXT.TITEL') . ' ' . ro_pluginversion(),
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(ro_t('TEXT.TITEL'), __DIR__),
         'https://wiki.loxberry.de/plugins/saugrobo/start', 'help.html');   // Gruppe 28 (1.1.23, S10): eigene Wiki-Seite
 } else {
     echo '<!DOCTYPE html><html lang="' . rb_e(ro_sprache()) . '"><head><meta charset="utf-8">'

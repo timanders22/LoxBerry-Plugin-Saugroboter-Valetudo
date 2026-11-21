@@ -4772,67 +4772,11 @@ function ro_sicherung_bauen($cfg = null)
  */
 function ro_pluginversion()
 {
-    static $v = null;
-    if ($v !== null) { return $v; }
-    $v = '';
-    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'pluginversion')) {
-        /* Ueber den Ordnernamen fragen (Regeln/03): ohne Argument haengt die
-         * Antwort am ersten eingebundenen Skript - am Geraet gemessen
-         * 17.09.2026: aus einem fremden Einstieg (php -r) NULL, mit dem
-         * Ordnernamen die installierte Fassung. Installiert liegt diese Datei
-         * unter webfrontend/html(auth)/plugins/<ordner>/. */
-        $v = (string) LBSystem::pluginversion(basename(__DIR__));
-    }
-    /* DIE plugin.cfg WIRD GAR NICHT MITINSTALLIERT.
-     *
-     * Gemessen am 05.09.2026 an sbin/plugininstall.pl des LoxBerry-Kerns
-     * (Zweig master): die Datei wird ausschliesslich im Auspackordner gelesen
-     * (Zeilen 427-450) und an keiner Stelle in den Installationsbaum kopiert.
-     * Die beiden frueheren Rueckfallpfade zeigten auf
-     * <home>/webfrontend/plugin.cfg und <home>/webfrontend/html/plugin.cfg -
-     * beides gibt es installiert nicht; sie trafen nur den ausgepackten
-     * Archivbau. Gemessen am laufenden Server in der Installationslage
-     * antwortete ?selftest=1 deshalb mit "FASSUNG=" - leer.
-     *
-     * Die belegte Quelle ist die Plugin-Datenbank des Kerns. Der Endpunkt
-     * laedt das SDK nicht (das taete nur die Oberflaeche), liest die Datei
-     * also selbst. */
-    if ($v === '') {
-        $p = ro_paths();
-        if ($p['lbhome'] !== '') {
-            /* Der Ort und die Gestalt sind am SDK des Kerns abgelesen, nicht
-             * geraten: LBSDATADIR = LBHOMEDIR . "/data/system" und
-             * PLUGINDATABASE = "$lbsdatadir/plugindatabase.json"
-             * (libs/phplib/loxberry_system.php, Zeilen 73 und 111). Verglichen
-             * wird "folder" gegen den Plugin-Ordner, genau wie LBSystem::
-             * plugindata() es tut (ebenda, Zeile 637). */
-            $db = @json_decode((string) @file_get_contents(
-                $p['lbhome'] . '/data/system/plugindatabase.json'), true);
-            $ordner = ro_plugin_ordner();
-            $liste = isset($db['plugins']) && is_array($db['plugins']) ? $db['plugins'] : array();
-            foreach ($liste as $eintrag) {
-                if (!is_array($eintrag)) { continue; }
-                if (isset($eintrag['folder']) && (string) $eintrag['folder'] === $ordner
-                    && isset($eintrag['version']) && (string) $eintrag['version'] !== '') {
-                    $v = (string) $eintrag['version'];
-                    break;
-                }
-            }
-        }
-    }
-    /* Rueckfall fuer den ausgepackten Archivbau (Entwicklung, Pruefstand):
-     * dort liegt die plugin.cfg zwei Ebenen ueber dieser Datei. */
-    if ($v === '') {
-        $f = dirname(dirname(__DIR__)) . '/plugin.cfg';
-        if (is_file($f)) {
-            foreach (ro_log_tail($f, 200) as $z) {
-                if (preg_match('/^VERSION\s*=\s*([0-9][0-9A-Za-z\.\-]*)/', trim($z), $m)) {
-                    $v = $m[1]; break;
-                }
-            }
-        }
-    }
-    return $v;
+    /* 21.11.2026 (Fassung im Titel, Entscheidung des Hausherrn): aus dem gemeinsamen Stueck fassung.php,
+     * fuer alle Linien gleich - LBSystem::pluginversion(<ordner>), Plugin-Datenbank ueber den Ordnernamen,
+     * plugin.cfg des entpackten Archivs; nichts gefunden: ''. */
+    require_once __DIR__ . '/fassung.php';
+    return plugin_fassung(__DIR__);
 }
 
 /* ==================================================================
