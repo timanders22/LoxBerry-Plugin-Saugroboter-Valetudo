@@ -44,8 +44,10 @@ date_default_timezone_set('Europe/Berlin');
  * Welle Mehrfach-Ziele). Liegt neben dieser Datei; sie legt
  * beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.1.46)
 /* 1.1.39: das gemeinsame Sicherungsmodul (Abschrift der Stammfassung Werkzeuge/gemeinsam/sicherung.php). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.1.46, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 
 
@@ -255,6 +257,7 @@ function ro_vorgaben()
     'befehle_mqtt_steuern' => 0, // zweiter Haken: "Eingreifende Befehle ueber MQTT annehmen", ab Werk aus (E4)
     'notify' => array(),
     'tts' => array(),
+    'meldung' => meld_vorgaben(ro_meld_anlaesse(), ro_meld_haken_vorgabe()),     // 1.1.46: Meldungen an SignalBot, ab Werk aus
     'aktionstoken' => '',        // schuetzt ?cmd= (unangemeldeter Endpunkt)
     'endpunkt_ein' => 0,         // Gruppe 28 (1.1.23, E-E12): HTTP-Lesezweig fuer Loxone; Neuinstallation aus, Update an (ro_config())
     'auto' => ro_auto_vorgaben(), // 1.1.31: "Automatisch saugen, wenn alle weg sind" - ab Werk fuer keinen Roboter an
@@ -2609,6 +2612,7 @@ function ro_mqtt_senden($st, $dev = 1, $voll = false) {
     if ($st === null) { $st = ro_state($dev); }
     $wurzel = ro_mqtt_thema_saeubern($cfg['mqtt_topic']);
     $prefix = ro_mqtt_praefix($wurzel, $dev);
+    ro_praefix_haus_melden($cfg);   // 1.1.46: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $werte = ro_mqtt_auswahl($st, $dev);
     $platz = ro_mqtt_platzhalter($st);
     $af = ro_tmpdir() . '/mqtt_gesendet_' . (int) $dev . '.json';
@@ -3554,6 +3558,8 @@ function ro_ansage_senden($jetzt = null)
         $conf = ro_config();
         ro_ansage_token_pflegen($conf);
         $conf = ro_config();
+        ro_meld_senden($frisch, $conf);     // 1.1.46: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = ro_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, ro_tts($conf), ro_ansage_regeln($conf), ro_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -3712,7 +3718,7 @@ function ro_events_check($zustaende = null) {
             /* Saugroboter-k1 (1.1.15, Entscheidung Nr. 18): der Satz ist zugleich der Ansagetext
              * (Gruss davor) - ins Protokoll kommen nur die Anlaesse und seine Laenge. */
             ro_log('Meldung: ' . implode(', ', array_keys($meldungen)) . ' (' . ansage_zeichen($text) . ' Zeichen)');
-            if (!empty($cfg['notify']['audio'])) {
+            if (!empty($cfg['notify']['audio']) || ro_meld_aktiv($cfg)) {     // 1.1.46: auch fuer die Meldung an SignalBot
                 /* 1.1.27: je Anlass ein Eintrag (Sperre je Anlass und Roboter, Nachtruhe aus dem Stamm), der Gruss vor dem ersten. Gesprochen wird in einem eigenen Vorgang. */
                 $ro_legen = array();
                 foreach ($meldungen as $ro_ma => $ro_mt) {
@@ -4176,9 +4182,14 @@ function ro_vo_vorlage($dev = 1) {
  *      geaenderten Roboteradresse bis zu cache_sec Sekunden den Zustand des
  *      alten Geraets, mit dessen Namen.
  */
-function ro_config_speichern($cfg)
+function ro_config_speichern($cfg, $lade_behalten = true)
 {
     $p = ro_paths();
+    /* 1.1.46 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert - jeder Speicherweg
+     * liest ro_config(), aendert einen Teil und schreibt hier ganz zurueck. Nicht beim Zurueckspielen und nicht beim
+     * Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = ro_lade_behalten($cfg); }
     /* ZWEI WACHEN, NICHT EINE.
      *
      * Bis 1.1.3 stand hier nur ro_wert_taugt() - die Formwache. Der Kopf von
@@ -4192,7 +4203,12 @@ function ro_config_speichern($cfg)
      *
      * Fail closed: bei einem Durchfall wird GAR NICHTS geschrieben, und der
      * Grund steht im Protokoll - sonst sucht der Betreiber ihn in Loxone. */
+    /* 1.1.46 (Lade-Beanstandungen, Entscheidung des Hausherrn 24.11.2026 Punkt 4): ein beim Laden beanstandeter Wert,
+     * der unveraendert so bleibt, wie er in der Datei steht ("Dateiwert behalten", auch ein formwidriges Token), ist
+     * keine Eingabe - er bleibt gemeldet, und das Speichern geht. Bis 1.1.45 blockierte er jedes Speichern. */
+    $ro_unv = is_array($cfg) ? ro_lade_unveraendert($cfg) : array();
     foreach ($cfg as $k => $v) {
+        if (in_array((string) $k, $ro_unv, true)) { continue; }
         if (!ro_wert_taugt($v)) {
             ro_log('Nicht gespeichert: der Wert von "' . $k . '" traegt Steuerzeichen '
                  . 'oder ist zu lang.');
@@ -4234,6 +4250,90 @@ function ro_config_speichern($cfg)
     }
     ro_cache_leeren();
     return true;
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (1.1.46; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * ro_config() setzt fuer einen Block, der kein Feld ist, die Vorgabe ein und bringt die Automatik in Form (ungueltige
+ * Werte -> Vorgabe, ungueltige Nummern und Raeume fallen weg). Das bleibt - aber jede solche Ersetzung wird gemeldet
+ * (Reiter Test rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben; ebenso jeder gespeicherte
+ * Wert, den die Pruefung der Sicherung (ro_wert_pruefen()) abweisen wuerde.
+ * ================================================================== */
+
+/** Die rohen Werte von robo.json (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function ro_lade_roh()
+{
+    $p = ro_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen; geheim sind Kennwort und miIO-Token je Roboter und die Sprechtoken
+ *  (aktionstoken immer). $maskiert = false fuer Vergleich, Schreiben und den Reiter Test (er maskiert bei der Ausgabe). */
+function ro_lade_b($maskiert = true)
+{
+    $b = ro_sicherung_beschreibung();
+    $b['geheim'] = array_merge(array('robots[].pass', 'robots[].token'),
+                               array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    $b['e'] = $maskiert ? 'rb_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst ro_config(false)). */
+function ro_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = ro_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(ro_lade_b($maskiert), $d, is_array($cfg) ? $cfg : ro_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function ro_lade_behalten(array $cfg)
+{
+    $d = ro_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = ro_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(ro_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Die Schluessel der obersten Ebene, die beim Laden beanstandet sind und in $cfg genau ihren Dateiwert tragen
+ *  ("Dateiwert behalten"): keine Eingabe - die Wachen beim Speichern pruefen sie nicht (Kennung S). */
+function ro_lade_unveraendert(array $cfg)
+{
+    $d = ro_lade_roh();
+    if ($d === null) { return array(); }
+    $aus = array();
+    foreach (sicherung_lade_beanstandungen(ro_lade_b(false), $d, ro_config(false)) as $x) {
+        if (!isset($x['pfad']) || !is_array($x['pfad']) || !isset($x['pfad'][0])) { continue; }
+        $k = (string) $x['pfad'][0];
+        if (array_key_exists($k, $cfg) && array_key_exists($k, $d) && sicherung_lade_gleich_tief($cfg[$k], $d[$k])) {
+            $aus[$k] = $k;
+        }
+    }
+    return array_values($aus);
+}
+
+/** Minutenlauf (bin/cron.php): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden.
+ *  Rueckgabe wie ro_config_vervollstaendigen(). */
+function ro_dienst_pflege()
+{
+    $r = ro_config_vervollstaendigen();
+    ro_lade_melden(ro_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function ro_lade_melden(array $beanst)
+{
+    $d = ro_paths()['datadir'];
+    if ($d === '' || (!is_dir($d) && !@mkdir($d, 0775, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        ro_log(sicherung_lade_protokollzeile($beanst));
+    }
 }
 
 /** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026, Muster
@@ -4322,16 +4422,9 @@ function ro_config_vervollstaendigen()
     if (!$fehlend) {
         return array('stand' => 'vollstaendig', 'schluessel' => array());
     }
-    $vorgaben = ro_vorgaben();
-    foreach ($datei as $k => $v) {
-        $grund = !ro_wert_taugt($v) ? 'Steuerzeichen oder zu lang'
-               : (array_key_exists($k, $vorgaben) ? ro_wert_pruefen($k, $v) : '');
-        if ($grund !== '') {
-            ro_log_if_changed('vervollstaendigen', 'Die Konfiguration wurde nicht vervollstaendigt: unzulaessiger '
-                . 'Wert bei "' . $k . '" - ' . $grund . '. Fehlend: ' . implode(', ', $fehlend) . '.');
-            return array('stand' => 'ungueltig', 'schluessel' => $fehlend);
-        }
-    }
+    /* 1.1.46 (Entscheidung des Hausherrn 24.11.2026, Punkt 5): auch bei einem ungueltigen Dateiwert wird vervollstaendigt -
+     * geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Schluessel; der ungueltige Wert bleibt also stehen
+     * und wird weiter gemeldet (ro_lade_beanstandungen()). Bis 1.1.45 brach das Vervollstaendigen hier ab. */
     // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
     // als [] zurueck - die leeren Objekte des Rohtextes bleiben Objekte (11.11.2026). Erst NACH der Wertpruefung:
     // ro_wert_pruefen() verlangt fuer notify, tts und ansage_token_herkunft ein Feld und wiese ein Objekt ab.
@@ -4403,6 +4496,10 @@ function ro_wert_taugt($v)
  */
 function ro_wert_pruefen($schluessel, $wert)
 {
+    if ($schluessel === 'meldung') {     // 1.1.46: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        $f = meld_block_pruefen($wert, ro_meld_anlaesse());
+        return $f ? meld_beanstandung_text($f[0], ro_meld_k()) : '';
+    }
     /* C7 (Durchgang 01.10.2026, Bauart E): ERST der Typ, dann das Muster.
      * Bis 1.1.11 wurde vor jedem Muster mit (string) oder (int) umgewandelt -
      * eine Liste wurde zu "Array" oder 1, und 7 von 9 kaputten Sicherungen
@@ -4569,6 +4666,7 @@ function ro_sicherung_beschreibung()
         'robots' => sicherung_liste(array('nr', 'name', 'ip', 'port', 'user', 'pass', 'typ', 'token')) + array(
             'wandeln' => 'ro_sicherung_roboter_klein'),
         'notify' => sicherung_block(array('audio', 'push', 'fertig', 'fehler', 'material', 'ereignis', 'automatik')),
+        'meldung' => meld_sicherung_knoten(ro_meld_anlaesse(), ro_meld_k()),     // 1.1.46
         'tts' => sicherung_block($tts_s, $tts_knoten) + array(
             'sichern' => 'ansage_sicherung_bereinigen',
             'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
@@ -4628,6 +4726,12 @@ function ro_sicherung_wert_mangel($k, $w)
     }
     if ($k === 'aktionstoken' && $w === '') {
         return sprintf(ro_t('TEXT.SICH_WERT'), rb_e((string) $k), rb_e(ro_t('GRUND.TOKEN_LEER')));
+    }
+    /* 1.1.46: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular; nicht in
+     * ro_wert_pruefen(), die bei jedem Speichern und im Cron alle Schluessel prueft. */
+    if ($k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+        return sprintf(ro_t('TEXT.SICH_WERT'), rb_e((string) $k),
+            rb_e(sprintf(ro_t('HAUSBEREICH.SICH_W'), hb_bereich($w))));
     }
     /* Auch der GRUND kann einen fremden Namen tragen (notify, tts, auto) - maskiert. */
     $g = ro_wert_pruefen((string) $k, $w);
@@ -4951,6 +5055,9 @@ function ro_selbsttest($opt = array())
         $z[] = array('bez' => $schluessel, 'ok' => (int) $ok, 'text' => (string) $text);
     };
 
+    // 1.1.46: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $ro_hb = ro_pruef_praefix_haus($cfg);
+    $add('HAUSBEREICH.F_TEST', $ro_hb[0] === -1 ? 2 : $ro_hb[0], $ro_hb[1]);
     $robots = ro_robots();
     $add('PRUEF.ROBOTER', $robots ? 1 : 0, (string) count($robots));
     $add('PRUEF.TOKEN', trim((string) $cfg['aktionstoken']) !== '' ? 1 : 0, '');
@@ -5239,6 +5346,12 @@ function ro_selbsttest($opt = array())
     /* 1.1.31: "Anwesenheit empfangen: ..., zuletzt um ..." und je Roboter mit Automatik der Stand - nur aus den Ablagen
      * (haus_quellen.json, auto_<n>.json), keine Sitzung am Broker beim Seitenaufbau. */
     ro_auto_pruefzeilen($cfg, $add);
+    /* 1.1.46: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist. */
+    $ro_lb = ro_lade_b(false);
+    $ro_la = ro_lade_beanstandungen($cfg, false);
+    $add('SICHERUNG.K_LADE_FRAGE', $ro_la ? 0 : 1,
+        $ro_la ? implode(' ', sicherung_lade_saetze($ro_lb, $ro_la)) : sicherung_t('K_LADE_KEINE', $ro_lb));
 
     /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Xiaomi-Cloud (Hoechstalter 30 Tage, Entscheidung 106). */
     list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => ro_paths()['datadir'], 'dienst' => 'Xiaomi', 't' => 'ro_t',
@@ -7533,7 +7646,7 @@ function ro_auto_melden($n, $text, $cfg)
     @file_put_contents($tf, implode(' ', $teile));
     ro_write_json($jf, array('teile' => $teile, 'ts' => time()));
     ro_log('Meldung: automatik (' . ansage_zeichen($text) . ' Zeichen)');
-    if (!empty($cfg['notify']['audio'])) {
+    if (!empty($cfg['notify']['audio']) || ro_meld_aktiv($cfg)) {     // 1.1.46: auch fuer die Meldung an SignalBot
         ro_ansage_token_pflegen($cfg);
         ro_ansage_legen(array(array('schluessel' => 'automatik|' . $n, 'text' => ro_t('MELDUNG.GRUSS') . ' ' . $text)));
     }
@@ -7662,4 +7775,159 @@ function ro_auto_pruefzeilen($cfg, $add)
         }
         $add('AUTO.PRUEF_ROBOTER', in_array($g, array('START_AUFGEGEBEN', 'HEIM_AUFGEGEBEN', 'NICHT_ERREICHBAR', 'FEHLER'), true) ? 0 : 2, $text);
     }
+}
+
+/**
+ * 1.1.46 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function ro_pruef_praefix_haus($cfg)
+{
+    $p = ro_mqtt_thema_saeubern(isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : '');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_enabled']))) {
+            return array(-1, sprintf(ro_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(ro_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(ro_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.1.46: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function ro_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = ro_mqtt_thema_saeubern(isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : '');
+    if ($merk === null) {
+        $merk = ro_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        ro_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('ro_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.1.46, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (ro_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (ro_meld_will()); der Sender trennt die Wege wieder (ro_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function ro_meld_anlaesse()
+{
+    return array('fertig' => ro_t('EINST.N_FERTIG'), 'fehler' => ro_t('EINST.N_FEHLER'), 'material' => ro_t('EINST.N_MATERIAL'), 'ereignis' => ro_t('EINST.N_EREIGNIS'), 'automatik' => ro_t('AUTO.N_AUTOMATIK'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function ro_meld_haken_vorgabe()
+{
+    return array('fertig' => 1, 'fehler' => 1, 'material' => 1, 'ereignis' => 1, 'automatik' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function ro_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    return in_array((string) $a, array('fertig', 'fehler', 'material', 'ereignis', 'automatik'), true) && is_array($cfg)
+        && isset($cfg['notify']) && is_array($cfg['notify']) && !empty($cfg['notify']['audio']);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function ro_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ro_meld_anlaesse(), ro_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function ro_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ro_meld_anlaesse(), ro_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function ro_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(ro_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function ro_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    return ro_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(ro_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function ro_meld_k()
+{
+    return (function () { $p = ro_paths(); $d = isset($p['datadir']) ? (string) $p['datadir'] : ''; return array('plugin' => isset($p['plugin']) ? (string) $p['plugin'] : basename($d), 'ordner' => ($d !== '' && @is_dir($d)) ? $d : ro_tmpdir()) + ro_ansage_k(); })();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function ro_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $anl = ro_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !ro_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function ro_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $b = ro_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, ro_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        ro_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function ro_meld_test()
+{
+    $r = meld_testmeldung(ro_meld_k());
+    ro_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function ro_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = ro_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = ro_meld_k();
+    $o = array();
+    /* 1.1.46: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(ro_meld_block($cfg), ro_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(ro_meld_block($cfg), ro_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

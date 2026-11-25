@@ -128,7 +128,7 @@ if (!flock($ro_lock, LOCK_EX | LOCK_NB)) {
 /* 1.1.36 (Regeln/05): fehlende Vorgaben einmal in robo.json schreiben - nach der Sperre und vor dem ersten Lesen
  * der Konfiguration in diesem Lauf (ro_robots() unten). Waehrend einer Aktualisierung ist der Lauf oben schon
  * ausgestiegen; die Funktion prueft die Marke trotzdem selbst. Schreibt nur, wenn etwas fehlt. */
-ro_config_vervollstaendigen();
+ro_dienst_pflege();     // 1.1.46: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 
 /* Den Zustand EINMAL holen und weiterreichen.
  *

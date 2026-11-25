@@ -93,7 +93,13 @@ $rb_cfg = ro_config();
 // nicht mehr passen. Bis 1.1.11 wurde still gewuerfelt (Oberflaechen-Pruefer
 // Fall 8, nach einer Sicherung mit leerem Token).
 $rb_token_meldung = '';
-if (empty($rb_cfg['aktionstoken'])) {
+/* Begruendete Abweichung von Regeln/05 "neu nur, wenn der Schluessel fehlt" (Entscheidung des Hausherrn 24.11.2026,
+ * Lade-Beanstandungen Punkt 1): ein LEERES Token erzeugt hier ein neues, weil das Formularmerkmal (ro_formtoken())
+ * am Token haengt - ohne Token liesse sich kein Formular mehr absenden. Ein vorhandenes, auch formwidriges Token
+ * bleibt (gemeldet, ro_lade_beanstandungen()). */
+/* 1.1.46 (Entscheidung des Hausherrn 24.11.2026, Punkt 4): "leer" heisst kein Text oder nur Leerraum - nicht empty();
+ * ein Token "0" ist vorhanden (formwidrig, gemeldet) und bleibt. */
+if (!is_string($rb_cfg['aktionstoken']) || trim($rb_cfg['aktionstoken']) === '') {
     $rb_cfg['aktionstoken'] = ro_token_erzeugen();
     ro_config_speichern($rb_cfg);
     $rb_cfg = ro_config();
@@ -450,7 +456,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
         $rb_m = sicherung_meldungen(ro_sicherung_beschreibung(), $rb_ab);
     } else {
         $rb_b = ro_sicherung_beschreibung();
-        $rb_b['speichern'] = function ($neu) { return ro_config_speichern($neu); };
+        // 1.1.46: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $rb_b['speichern'] = function ($neu) { return ro_config_speichern($neu, false); };
         $rb_b['zweitschrift'] = function () { $p = ro_paths(); return array($p['config'], $p['backup']); };
         $rb_b['nachziehen'] = 'ro_sicherung_nachziehen';
         $rb_b['log'] = 'ro_log';
@@ -460,6 +467,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ro_zurueck'])) {
     foreach ($rb_m['fehler'] as $rb_x) { $rb_fehler[] = $rb_x; }
     foreach ($rb_m['hinweise'] as $rb_x) { $rb_meldungen[] = $rb_x; }
     rb_umleiten('tab-settings', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
+}
+
+// --- Lade-Beanstandungen: angezeigte Werte uebernehmen (1.1.46) ---
+/* Nur mit gesetztem Haken (Entscheidung des Hausherrn 24.11.2026, "Haken im gelben Kasten"); ohne ihn bleibt die Datei
+ * byte-gleich. Geschrieben ohne "Dateiwert behalten". Der Wachposten oben hat $_POST bei fremdem Merkmal schon geleert. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && sicherung_lade_eingang($_POST) !== '') {
+    $rb_lb = ro_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $rb_fehler[] = rb_e(sicherung_t('K_LADE_HAKEN_FEHLT', $rb_lb));
+    } else {
+        $rb_laded = ro_lade_roh();
+        $rb_lv = ro_config(false);
+        $rb_un = array();
+        if ($rb_laded !== null) {
+            list($rb_lneu, $rb_un) = sicherung_lade_uebernehmen_stand($rb_laded, $rb_lv, sicherung_lade_beanstandungen($rb_lb, $rb_laded, $rb_lv));
+            if ($rb_un && !ro_config_speichern($rb_lneu, false)) {
+                $rb_fehler[] = rb_e(sicherung_t('K_SCHREIBFEHLER', $rb_lb));
+                $rb_un = array();
+            }
+        }
+        if ($rb_un) {
+            ro_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $rb_un)));
+            $rb_meldungen[] = sprintf(rb_e(sicherung_t('K_LADE_UEBERNOMMEN', $rb_lb)), rb_e(implode(', ', $rb_un)));
+        }
+    }
+    rb_umleiten($rb_tab, array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler));
 }
 
 // --- Protokoll leeren ---
@@ -530,6 +563,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['neu_lesen'])) {
  * und dieser hier wartete zusaetzlich auf einen Knopf 'ansage_test', den keine Seite anbietet. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.1.46: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = ro_meld_test();
+    if ($meld_ok) { $rb_meldungen[] = rb_e($meld_satz); rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler)); } else { $rb_fehler[] = rb_e($meld_satz); rb_umleiten('tab-test', array('meldungen' => $rb_meldungen, 'fehler' => $rb_fehler)); }
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ro_testansage']) || isset($_POST['ansage_test_ziel']))) {
     $rb_tk = ro_ansage_k();
     $rb_tnur = (isset($_POST['ansage_test_ziel']) && ro_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -677,6 +715,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
         rb_umleiten('tab-mqtt', array('fehler' => array(rb_e(ro_t('TEXT.NICHTS_GESPEICHERT')),
             $rb_thema === '' ? rb_e(ro_t('TEXT.MQTT_THEMA_LEER'))
                              : sprintf(ro_t('TEXT.MQTT_THEMA_UNGUELTIG'), rb_e((string) $rb_thema))),
+            'eingaben' => rb_eingaben_sammeln('mqtt')));
+    }
+    /* 1.1.46 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+     * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+     * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+    if (hb_bereich($rb_thema) !== '' && $rb_thema !== (string) ro_config()['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        rb_bean('mqtt_topic');
+        rb_umleiten('tab-mqtt', array('fehler' => array(rb_e(ro_t('TEXT.NICHTS_GESPEICHERT')),
+            sprintf(rb_e(ro_t('HAUSBEREICH.FEHLER')), rb_e($rb_thema), rb_e(hb_bereich($rb_thema)))),
             'eingaben' => rb_eingaben_sammeln('mqtt')));
     }
     $rb_neu = ro_config();
@@ -1010,6 +1058,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $rb_neu['tts'] = ansage_formular_lesen($_POST, ro_tts(), $rb_tmangel, $rb_tbean,
         array('modi' => ro_tts_wege(), 'ziele' => ro_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ro_ansage_k(), $rb_thinw);
     list($rb_neu['ansage_regeln']) = ansage_regeln_formular($_POST, ro_ansage_regeln(), array(), $rb_tmangel, $rb_tbean, ro_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 1.1.46: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $rb_neu['meldung'] = meld_formular_lesen($_POST, isset($rb_neu['meldung']) ? $rb_neu['meldung'] : null, ro_meld_anlaesse(), $rb_tmangel, $rb_tbean, ro_meld_k(), ro_meld_haken_vorgabe());
     // 1.1.30: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.1.29 ueberschrieb es der naechste Abgleich.
     $rb_neu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($rb_neu['ansage_token_herkunft']) ? $rb_neu['ansage_token_herkunft'] : array());
     foreach ($rb_tmangel as $rb_tm) { $rb_hw[] = $rb_wert(ro_t('EINST.H_SPRACHAUSGABE'), $rb_tm['text']); }
@@ -1018,8 +1068,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
      * zulaessige Werte gibt es nicht. Sie laeuft auf den GEPRUEFTEN Werten;
      * vorher stand sie hinter dem Klemmen und schlug nie an. */
     if (!$rb_hw) {
+        /* 1.1.46 (Lade-Beanstandungen, Entscheidung des Hausherrn 24.11.2026 Punkt 4): ein beanstandeter Dateiwert, den
+         * dieses Formular nicht mitschickt oder unveraendert sendet (das Token, ein Block), ist keine Eingabe. */
+        $rb_unv = ro_lade_unveraendert($rb_neu);
         foreach ($rb_neu as $rb_k => $rb_v) {
             if (!array_key_exists($rb_k, ro_vorgaben())) { continue; }
+            if (in_array((string) $rb_k, $rb_unv, true)) { continue; }
             $rb_grund = ro_wert_taugt($rb_v) ? ro_wert_pruefen($rb_k, $rb_v) : ro_t('TEXT.SICH_STEUERZEICHEN');
             if ($rb_grund !== '') {
                 $rb_hw[] = $rb_wert($rb_k, $rb_grund);
@@ -1214,7 +1268,12 @@ if ($rb_frame) {
  * ist; die Wache dagegen steht in der Bibliothek. */
 foreach ($rb_meldungen as $rb_m) { ?><div class="sm-hinweis"><?= $rb_m ?></div><?php }
 foreach ($rb_fehler as $rb_f) { ?><div class="sm-warnung"><b><?= rb_e(ro_t('TEXT.FEHLER')) ?></b> <?= $rb_f ?></div><?php } ?>
+<?php /* 1.1.46: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$rb_lade = ro_lade_beanstandungen($rb_cfg);
+ro_lade_melden($rb_lade); ?>
 
+<?= sicherung_lade_kasten(ro_lade_b(true), isset($rb_lade) ? $rb_lade : ro_lade_beanstandungen($rb_cfg),
+        rb_fmt() . '<input data-role="none" type="hidden" name="activetab" value="' . rb_e($rb_tab) . '">') ?>
 <?php if (!$rb_robots) { ?>
 <div class="sm-alert sm-info"><b><?= rb_e(ro_t('TEXT.NOCH_KEIN_ROBOTER')) ?></b> <?= rb_e(ro_t('TEXT.BITTE_ADRESSE_EINTRAGEN')) ?></div>
 <?php } ?>
@@ -1510,6 +1569,7 @@ $rb_auto = ro_auto_einst(isset($rb_cfg['auto']) ? $rb_cfg['auto'] : null); ?>
     'm' => function ($n) { return rb_m($n); },
     'c' => function ($n, $g) { return rb_haken($n, $g); },
     'token_vor_ort' => true), ro_ansage_k()) ?>
+<?= ro_meld_form_html($rb_cfg) ?>
 
 <?php /* U10 (Durchgang 01.10.2026): EINE Legende je Reiter, oben, ueber der
          ersten Knopfreihe, mit allen Farben des Reiters (Regeln/04). Bis
